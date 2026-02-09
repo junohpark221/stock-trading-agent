@@ -405,6 +405,7 @@ class Settings(BaseSettings):
     # Phase 0: 기본
     DATABASE_URL: str
     REDIS_URL: str
+    LOG_LEVEL: str = "DEBUG"           # DEBUG(dev) | INFO(prod)
 
     # Phase 1: 브로커
     KIS_APP_KEY: str = ""
@@ -705,7 +706,7 @@ KIS SDK 레포지토리(`/Users/oliver.p/Desktop/Personal/open-trading-api`)를 
 ```bash
 # ===== Phase 0: 기본 환경 =====
 ENV=development                    # development | production
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/trading
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/trading_agent
 REDIS_URL=redis://localhost:6379/0
 LOG_LEVEL=DEBUG                    # DEBUG(dev) | INFO(prod)
 

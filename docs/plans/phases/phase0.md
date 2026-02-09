@@ -47,7 +47,7 @@ pytest, pytest-asyncio, pytest-cov, httpx, ruff, mypy
 | `src/__init__.py` | 빈 파일 (패키지 선언) |
 | `src/core/__init__.py` | 빈 파일 |
 | `src/db/__init__.py` | 빈 파일 |
-| `src/core/enums.py` | StrEnum 정의 — Environment, MarketType, OrderSide, OrderType, OrderStatus, PositionStatus, SignalAction, DecisionStage, AgentType, LLMProviderType, ApprovalStatus |
+| `src/core/enums.py` | StrEnum 정의 — Environment, MarketType, OrderSide, OrderType, OrderStatus, PositionStatus, SignalAction, DecisionStage, AgentType, LLMProviderType, ApprovalStatus, RoutingMode, DecisionAction, DecisionOutcome |
 | `src/core/exceptions.py` | 예외 계층 — TradingAgentError → ConfigurationError, DatabaseError, BrokerError(+AuthError, APIError, OrderError, InsufficientFundsError), RiskLimitError, LLMError(+ProviderError, BudgetExceededError), ApprovalError(+TimeoutError) |
 | `src/config.py` | pydantic-settings Settings 클래스 + `@lru_cache` 싱글톤 `get_settings()`. `Literal["development", "production"]` 검증. Phase별 환경변수 그룹핑 |
 
@@ -159,10 +159,10 @@ pytest, pytest-asyncio, pytest-cov, httpx, ruff, mypy
 
 ## 진행 추적
 
-- [ ] Git 브랜치 설정: main → develop 리네임, production 브랜치 생성
+- [x] Git 브랜치 설정: main → develop 리네임, production 브랜치 생성
 - [x] Step 1: 인프라 파일 + commit #1
-- [ ] uv sync 성공
-- [ ] Step 2: 코어 도메인 + 설정 + commit #2
+- [x] uv sync 성공
+- [x] Step 2: 코어 도메인 + 설정 + commit #2
 - [ ] Step 3: DB 레이어 + commit #3
 - [ ] Step 4: Alembic + commit #4
 - [ ] Step 5: 도메인 모델 + FastAPI 앱 + commit #5

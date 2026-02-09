@@ -40,3 +40,6 @@ htmlcov/
 
 # Linting
 .ruff_cache/
+
+# Claude Code
+.claude/settings.local.json

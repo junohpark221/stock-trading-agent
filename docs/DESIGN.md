@@ -1234,17 +1234,17 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 > - `[ ]` 미시작 | `[~]` 진행중 | `[x]` 완료
 
 ### Phase 0: 프로젝트 기반 구축
-- [ ] Git 브랜치 설정: `develop` + `production` 브랜치 생성, `main`에서 전환
-- [ ] `pyproject.toml` 생성 (의존성 정의)
-- [ ] `.gitignore` 생성
-- [ ] `.env.example` 환경변수 템플릿 작성 (Phase별 구분)
-- [ ] `docker-compose.yml` 작성 (PostgreSQL + Redis)
-- [ ] `src/config.py` 설정 클래스 구현 (환경별 분기)
-- [ ] `src/core/enums.py` Enum 정의
+- [x] Git 브랜치 설정: `develop` + `production` 브랜치 생성, `main`에서 전환
+- [x] `pyproject.toml` 생성 (의존성 정의)
+- [x] `.gitignore` 생성
+- [x] `.env.example` 환경변수 템플릿 작성 (Phase별 구분)
+- [x] `docker-compose.yml` 작성 (PostgreSQL + Redis)
+- [x] `src/config.py` 설정 클래스 구현 (환경별 분기)
+- [x] `src/core/enums.py` Enum 정의
 - [ ] `src/core/models.py` 도메인 모델 정의 (Pydantic)
-- [ ] `src/core/exceptions.py` 커스텀 예외 정의
-- [ ] `src/db/base.py` SQLAlchemy Base 클래스
-- [ ] `src/db/session.py` async 세션 팩토리
+- [x] `src/core/exceptions.py` 커스텀 예외 정의
+- [x] `src/db/base.py` SQLAlchemy Base 클래스
+- [x] `src/db/session.py` async 세션 팩토리
 - [ ] Alembic 초기화 (`alembic.ini`, `alembic/env.py`)
 - [ ] `src/main.py` FastAPI 앱 + `/health` 엔드포인트
 - [ ] Docker Compose 기동 테스트

@@ -166,7 +166,7 @@ pytest, pytest-asyncio, pytest-cov, httpx, ruff, mypy
 - [x] Step 3: DB 레이어 + commit #3
 - [x] Step 4: Alembic + commit #4
 - [x] Step 5: 도메인 모델 + FastAPI 앱 + commit #5
-- [ ] Step 6: 테스트 + commit #6
+- [x] Step 6: 테스트 + commit #6
 - [ ] docker compose up 성공
 - [ ] /health 엔드포인트 응답 확인
 - [ ] pytest 통과

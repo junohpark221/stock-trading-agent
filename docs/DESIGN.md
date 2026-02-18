@@ -1245,7 +1245,7 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [x] `src/core/exceptions.py` 커스텀 예외 정의
 - [x] `src/db/base.py` SQLAlchemy Base 클래스
 - [x] `src/db/session.py` async 세션 팩토리
-- [ ] Alembic 초기화 (`alembic.ini`, `alembic/env.py`)
+- [x] Alembic 초기화 (`alembic.ini`, `alembic/env.py`)
 - [ ] `src/main.py` FastAPI 앱 + `/health` 엔드포인트
 - [ ] Docker Compose 기동 테스트
 - [ ] uvicorn 서버 시작 + 헬스체크 확인

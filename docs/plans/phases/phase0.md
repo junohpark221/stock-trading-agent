@@ -1,6 +1,6 @@
 # Phase 0: 프로젝트 기반 구축 — 구현 계획
 
-> **상태**: 미시작
+> **상태**: 코드 완료 — 수동 검증 대기 (docker compose up, /health, pytest, git tag)
 > **작성일**: 2026-02-09
 > **완료 기준**: `docker-compose up` → DB/Redis 기동 → `uvicorn` 서버 시작 → `/health` 엔드포인트 응답
 

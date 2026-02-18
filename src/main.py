@@ -16,12 +16,14 @@ import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
+from sqlalchemy import text
 
 from src.config import get_settings
 from src.core.models import HealthStatus
 from src.db.session import close_db, get_db_session, init_db
 
 _redis_client: Redis | None = None
+logger = structlog.get_logger(__name__)
 
 
 def setup_logging(*, is_dev: bool) -> None:
@@ -122,10 +124,11 @@ async def health_check() -> JSONResponse:
     db_status = "disconnected"
     try:
         async for session in get_db_session():
-            await session.execute(__import__("sqlalchemy").text("SELECT 1"))
+            await session.execute(text("SELECT 1"))
             db_status = "connected"
             break
     except Exception:
+        logger.warning("health_check_db_failed", exc_info=True)
         db_status = "disconnected"
 
     # ── Redis 확인 ───────────────────────────────────────────────────
@@ -134,6 +137,7 @@ async def health_check() -> JSONResponse:
         await get_redis().ping()
         redis_status = "connected"
     except Exception:
+        logger.warning("health_check_redis_failed", exc_info=True)
         redis_status = "disconnected"
 
     # ── 응답 구성 ────────────────────────────────────────────────────

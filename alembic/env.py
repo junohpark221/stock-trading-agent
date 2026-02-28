@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from src.config import get_settings
 from src.db.base import Base
+from src.db.models import market_data  # noqa: F401
 
 config = context.config
 

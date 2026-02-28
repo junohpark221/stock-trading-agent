@@ -3,8 +3,8 @@
 > **이 문서는 프로젝트의 핵심 코어 문서입니다.**
 > 프로젝트에 변경사항이 생기거나 수정/최신화해야 하는 정보가 있으면 반드시 이 문서를 업데이트합니다.
 >
-> **최종 수정일: 2026-02-09**
-> **버전: 1.3**
+> **최종 수정일: 2026-02-28**
+> **버전: 1.6**
 
 ---
 
@@ -12,7 +12,7 @@
 
 개인 프로젝트로 한국 주식시장(KOSPI/KOSDAQ) 자동매매 에이전트를 구축한다. **멀티 LLM**(Claude, OpenAI GPT, Google Gemini)이 핵심 의사결정자로서 시장 분석, 매매 판단, 리포트 생성을 주도하되, 중요 의사결정은 텔레그램을 통한 사용자 승인을 거친다. 포지션 트레이딩(주력) + 스윙 트레이딩(부) 혼합 전략을 사용하며, 향후 미국 시장으로 확장 가능한 구조를 설계한다.
 
-**현재 상태:** Claude Code 에이전트 8개와 스킬 5개가 설정되어 있으나 소스코드는 없는 그린필드 프로젝트.
+**현재 상태:** Phase 0 완료 (v0.1.0-phase0). FastAPI + DB/Redis 인프라 + /health 동작. Phase 1 진행 대기.
 
 **참조 리소스:**
 - KIS Open Trading API SDK: `/Users/oliver.p/Desktop/Personal/open-trading-api`
@@ -23,12 +23,13 @@
   - `kis_devlp.yaml` — API 키/계좌 설정 템플릿
 
 **관련 문서:**
+- [외부 서비스 & 데이터 소스](./EXTERNAL_SERVICES.md) — 모든 외부 API/데이터 소스 레퍼런스 (KIS, DART, ECOS, FRED, 네이버 등)
 - [AWS 인프라 운영 가이드](./AWS_INFRASTRUCTURE_GUIDE.md) — AWS 클라우드 배포/운영 상세 가이드
 - [매매 로직 레퍼런스](./TRADING_LOGIC.md) — 매매 전략, 분석 차트 생성 로직 통합 문서 (Phase 2~4 구현 시 작성)
 
 **Phase별 상세 계획:**
-- [Phase 0: 프로젝트 기반 구축](./plans/phases/phase0.md)
-- (이후 Phase는 구현 시 추가)
+- [Phase 0: 프로젝트 기반 구축](./plans/phases/phase0.md) ✅
+- [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) (구현 시 작성)
 
 ---
 
@@ -121,7 +122,7 @@ class GeminiProvider(LLMProvider):
     """Gemini (보조/1차 분석) — 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite"""
 
 class AnthropicProvider(LLMProvider):
-    """Claude (백업) — Opus 4.5, Sonnet 4.5, Haiku 4.5 (prompt caching 활용)"""
+    """Claude (백업) — Opus 4.6, Sonnet 4.6, Haiku 4.5 (prompt caching 활용)"""
 ```
 
 ### 에이전트별 LLM 모델 배분 전략 (혼합 라우팅)
@@ -218,7 +219,7 @@ GET    /api/admin/llm/models              — 사용 가능한 모델 목록 + �
 ```json
 PUT /api/admin/llm/config/trader
 {
-    "primary_model": "anthropic/claude-opus-4.5",
+    "primary_model": "anthropic/claude-opus-4.6",
     "escalation_model": null,
     "routing_mode": "fixed"
 }
@@ -233,7 +234,7 @@ PUT /api/admin/llm/config/trader
 | 월간 예산 상한 | 설정 가능 (기본 $100) |
 | 비용 추적 | 프로바이더별/에이전트별/일별 토큰 사용량 DB 기록 |
 | 예산 초과 정책 | 상한 80% 도달 시 에스컬레이션 비활성화 + 텔레그램 알림 |
-| 폴백 순서 | o3 → GPT-5 → o4-mini → GPT-5 Mini → Gemini 2.5 Pro → Gemini 2.5 Flash → Claude Sonnet 4.5 → GPT-5 Nano |
+| 폴백 순서 | o3 → GPT-5 → o4-mini → GPT-5 Mini → Gemini 2.5 Pro → Gemini 2.5 Flash → Claude Sonnet 4.6 → GPT-5 Nano |
 | 에스컬레이션 비율 모니터링 | 에이전트별 에스컬레이션 빈도 추적 (>50% 시 1차 모델 업그레이드 검토) |
 | 모델별 정확도 추적 | decision_log outcome 기반 모델별 판단 정확도 기록 |
 | 프롬프트 캐시 적중률 | Claude prompt caching hit rate 추적 (목표: >60%) |
@@ -247,8 +248,8 @@ PUT /api/admin/llm/config/trader
 
 | 모델 | Input/MTok | Output/MTok | 특징 |
 |------|-----------|------------|------|
-| Claude Opus 4.5 | $5 | $25 | 최고 성능 플래그십 |
-| Claude Sonnet 4.5 | $3 | $15 | 균형 (성능/비용) |
+| Claude Opus 4.6 | $5 | $25 | 최고 성능 플래그십 |
+| Claude Sonnet 4.6 | $3 | $15 | 균형 (성능/비용) |
 | Claude Haiku 4.5 | $1 | $5 | 최속 + 저비용 |
 
 **OpenAI:**
@@ -262,6 +263,10 @@ PUT /api/admin/llm/config/trader
 | o4-mini | $1.10 | $4.40 | 200K | 추론 특화 경량 |
 | GPT-5 Mini | $0.25 | $2 | 400K | 범용 경량 |
 | GPT-5 Nano | $0.05 | $0.40 | 400K | 초저비용 범용 |
+| GPT-5 Pro | TBD | TBD | 400K | 프리미엄 플래그십 (가격 확인 후 업데이트) |
+
+> **주의**: o3, o4-mini 등 o-시리즈는 내부 reasoning tokens을 생성하며 output 가격으로 과금.
+> 실제 호출 비용은 표시 가격의 3~10배일 수 있음. 에이전트별 비용 추정치는 추정치임.
 
 **Google Gemini:**
 
@@ -272,6 +277,37 @@ PUT /api/admin/llm/config/trader
 | Gemini 2.5 Flash-Lite | $0.10 | $0.40 | 1M | 경량 저비용 |
 
 > Gemini 3 Pro/Flash는 아직 Preview 상태이므로 안정 버전인 2.5 계열을 기본 채택.
+
+> **참고**: Claude Sonnet 4.6은 금융 분석 벤치마크에서 Opus 4.6보다 높은 성능 (63.3% vs 60.1%).
+> Phase 3 구현 시 실제 종목 분석 비교 테스트에 반영. GPT-First 전략 자체는 유지.
+
+---
+
+## 외부 데이터 소스 전략
+
+> **상세 API 정보: [docs/EXTERNAL_SERVICES.md](./EXTERNAL_SERVICES.md)**
+
+### 에이전트별 데이터 소스 매핑
+
+| 에이전트 | 주요 데이터 소스 | 용도 |
+|---------|----------------|------|
+| Market Analyst | ECOS, FRED, LLM 웹 검색 | 매크로 지표, 시장 환경 분석 |
+| Stock Analyst | KIS API, DART, pandas-ta, pykrx | 시세, 재무제표, 기술 지표, 히스토리컬 데이터 |
+| Sentiment Analyzer | 네이버 검색 API, LLM 웹 검색, RSS | 뉴스 수집, 감성 점수 산출, 트렌드 추적 |
+| Risk Manager | KIS API (포지션), ECOS (금리/환율) | 포트폴리오 리스크, 매크로 리스크 체크 |
+| Trader | 위 에이전트 결과물 종합 | 최종 매매 결정 |
+| Report Generator | 위 에이전트 결과물 + DB 통계 | 리포트 생성 |
+
+### 데이터 소스 카테고리
+
+| 카테고리 | 서비스 | Phase | 비용 |
+|---------|--------|-------|------|
+| 시장 데이터 & 브로커 | KIS Open Trading API | 1 | 무료 |
+| 공시 & 재무제표 | DART (OPEN DART API) | 2 | 무료 |
+| 매크로 경제 지표 | ECOS (한국은행), FRED (미국 연준) | 2~3 | 무료 |
+| 뉴스 & 감성분석 | 네이버 검색 API, LLM 웹 검색, RSS | 2~3 | 무료 (LLM 비용 별도) |
+| 기술적 분석 | pandas-ta | 2 | 무료 (라이브러리) |
+| 보조 시장 데이터 | pykrx, FinanceDataReader | 2 | 무료 (라이브러리) |
 
 ---
 
@@ -389,9 +425,9 @@ stock-trading-agent/
 ├── .env.production           # 프로덕션 참조용 (git 무시, Secrets Manager가 실제 관리)
 ├── docker-compose.yml        # 개발 환경 (PostgreSQL + Redis)
 ├── docker-compose.prod.yml   # 프로덕션 로컬 테스트용
-├── config/
-│   ├── settings.py           # pydantic-settings 기반 설정 (환경별 자동 분기)
-│   └── logging.py            # 환경별 로깅 설정
+├── src/config.py                # pydantic-settings 기반 설정 (환경별 자동 분기)
+├── src/main.py                  # FastAPI 앱 + structlog 설정
+├── config/                      # Phase 3에서 default_model_assignments.yaml용으로 생성 예정
 ```
 
 ### 환경변수 관리 원칙
@@ -411,7 +447,21 @@ class Settings(BaseSettings):
     KIS_APP_KEY: str = ""
     KIS_APP_SECRET: str = ""
     KIS_ACCOUNT_NO: str = ""
+    KIS_ACCOUNT_PROD: str = "01"
     KIS_IS_PAPER: bool = True              # True=모의투자, False=실전
+    KIS_HTS_ID: str = ""
+
+    # Phase 2: 시장 데이터
+    MARKET_DATA_CACHE_TTL: int = 60
+    MARKET_OPEN_TIME: str = "09:00"
+    MARKET_CLOSE_TIME: str = "15:30"
+
+    # Phase 2: 외부 데이터 소스 (상세: docs/EXTERNAL_SERVICES.md)
+    DART_API_KEY: str = ""
+    ECOS_API_KEY: str = ""
+    FRED_API_KEY: str = ""
+    NAVER_CLIENT_ID: str = ""
+    NAVER_CLIENT_SECRET: str = ""
 
     # Phase 3: LLM (멀티 프로바이더 — GPT-First)
     ANTHROPIC_API_KEY: str = ""
@@ -420,13 +470,34 @@ class Settings(BaseSettings):
     LLM_MONTHLY_BUDGET_USD: Decimal = Decimal("100.00")
     LLM_DEFAULT_PROVIDER: Literal["openai", "anthropic", "google"] = "openai"
 
-    # Phase 5: 알림
+    # Phase 4: 매매 전략
+    MAX_POSITION_SIZE_KRW: int = 1_000_000
+    MAX_PORTFOLIO_POSITIONS: int = 5
+    STOP_LOSS_PERCENT: float = 3.0
+    TAKE_PROFIT_PERCENT: float = 5.0
+    DAILY_LOSS_LIMIT_KRW: int = 500_000
+
+    # Phase 5: 리스크 관리 + 알림
+    RISK_CHECK_ENABLED: bool = True
+    HUMAN_APPROVAL_REQUIRED: bool = True
+    HUMAN_APPROVAL_TIMEOUT_SEC: int = 300
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
 
+    # Phase 6: 스케줄링
+    SCHEDULER_ENABLED: bool = True
+    PRE_MARKET_ANALYSIS_TIME: str = "08:30"
+    TRADING_SCAN_INTERVAL_MIN: int = 30
+
+    # Phase 7: 모니터링
+    ALERT_TELEGRAM_ENABLED: bool = True
+    ALERT_EMAIL_TO: str = ""
+
     # Phase 8: AWS (프로덕션 전용)
     AWS_REGION: str = "ap-northeast-2"
+    AWS_ECS_CLUSTER: str = ""
     AWS_SECRET_NAME: str = ""
+    SENTRY_DSN: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -497,6 +568,7 @@ stock-trading-agent/
 │
 ├── docs/                          # 프로젝트 문서
 │   ├── DESIGN.md                    # 핵심 설계 문서 (이 파일)
+│   ├── EXTERNAL_SERVICES.md         # 외부 서비스/데이터 소스 레퍼런스
 │   ├── AWS_INFRASTRUCTURE_GUIDE.md  # AWS 인프라 운영 가이드 (초보자용)
 │   ├── TRADING_LOGIC.md             # 매매 로직 + 차트 분석 통합 레퍼런스
 │   ├── plans/phases/                # Phase별 상세 계획
@@ -536,7 +608,7 @@ stock-trading-agent/
 │   │   │   ├── __init__.py
 │   │   │   ├── openai.py          # OpenAI (주력) — o3, GPT-5, o4-mini, GPT-5 Mini/Nano
 │   │   │   ├── google.py          # Gemini (보조) — 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite
-│   │   │   └── anthropic.py       # Claude (백업) — Opus 4.5, Sonnet 4.5, Haiku 4.5
+│   │   │   └── anthropic.py       # Claude (백업) — Opus 4.6, Sonnet 4.6, Haiku 4.5
 │   │   └── cost_tracker.py        # LLM 비용 추적 및 예산 관리
 │   │
 │   ├── broker/                    # 브로커 추상화 레이어
@@ -559,7 +631,11 @@ stock-trading-agent/
 │   │   └── providers/             # 데이터 제공자
 │   │       ├── __init__.py
 │   │       ├── base.py            # DataProvider (ABC)
-│   │       └── kis_provider.py    # KIS 시세 데이터
+│   │       ├── kis_provider.py    # KIS 시세 데이터
+│   │       ├── dart_provider.py   # DART 공시/재무제표
+│   │       ├── ecos_provider.py   # ECOS 매크로 경제 지표
+│   │       ├── fred_provider.py   # FRED 미국 경제 지표
+│   │       └── naver_provider.py  # 네이버 뉴스/DataLab
 │   │
 │   ├── analysis/                  # 분석 엔진
 │   │   ├── __init__.py
@@ -658,8 +734,8 @@ KIS SDK 레포지토리(`/Users/oliver.p/Desktop/Personal/open-trading-api`)를 
 |------|-------------|-------|-----------|
 | 현재가 조회 | `/uapi/domestic-stock/v1/quotations/inquire-price` | FHKST01010100 | `get_price()` |
 | 일봉 차트 | `/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` | FHKST03010100 | `get_daily_ohlcv()` |
-| 주문 | `/uapi/trading/order-cash` | TTTC0802U(매수), TTTC0801U(매도) | `place_order()` |
-| 잔고 조회 | `/uapi/trading/inquire-balance` | TTZS | `get_positions()` |
+| 주문 | `/uapi/domestic-stock/v1/trading/order-cash` | TTTC0012U(매수)/VTTC0012U, TTTC0011U(매도)/VTTC0011U | `place_order()` |
+| 잔고 조회 | `/uapi/domestic-stock/v1/trading/inquire-balance` | TTTC8434R/VTTC8434R | `get_positions()` |
 | 체결 조회 | `/uapi/trading/inquire-ccnl` | — | `get_executions()` |
 | 호가 조회 | `/uapi/domestic-stock/v1/quotations/inquire-asking-price` | — | `get_orderbook()` |
 | 투자자별 매매동향 | `/uapi/domestic-stock/v1/quotations/inquire-investor` | — | `get_investor_trend()` |
@@ -737,8 +813,15 @@ python-dotenv, structlog
 - `src/broker/kis/models.py` — KIS 응답 파싱 모델
 - `src/data/providers/base.py` — `DataProvider` ABC
 - `src/data/providers/kis_provider.py` — KIS 시세 데이터 제공자
-- `src/data/collector.py` — 데이터 수집 스케줄러
+- `src/data/collector.py` — 일회성 데이터 수집 함수 (수동/API 호출용. 자동 스케줄링은 Phase 6에서 추가)
 - `src/data/cache.py` — Redis 캐시 래퍼
+- `src/db/models/market_data.py` — `StockMaster`, `DailyOHLCV` ORM 모델
+- `src/broker/mock/client.py` — InMemoryBroker (BrokerInterface 구현, 테스트용)
+- `src/api/routes/data.py` — 데이터 확인용 엔드포인트 (GET /api/data/stocks, /api/data/ohlcv/{symbol})
+- `alembic/versions/xxxx_phase1_market_data.py` — Phase 1 DB 테이블 마이그레이션
+- `tests/test_broker_kis.py` — KIS 클라이언트 단위 테스트
+- `tests/test_data_provider.py` — DataProvider 통합 테스트
+- `tests/test_data_api.py` — 데이터 API 엔드포인트 테스트
 
 **환경변수 추가 (.env.example) — Phase 1:**
 ```bash
@@ -754,7 +837,8 @@ KIS_HTS_ID=your_hts_id            # WebSocket 콜백용
 **DB 테이블:**
 - `stock_master` — 종목 마스터 (코드, 이름, 시장구분, 업종)
 - `daily_ohlcv` — 일봉 데이터 (종목, 날짜, OHLCV, 거래대금)
-- `api_tokens` — OAuth 토큰 저장 (암호화)
+
+> **OAuth 토큰**: DB 대신 Redis 캐시(TTL 23시간)로 관리. `src/data/cache.py`의 Redis 래퍼를 통해 시세 캐싱과 토큰 캐싱을 통합 관리한다.
 
 **핵심 클래스:**
 
@@ -766,7 +850,10 @@ class BrokerInterface(ABC):
     async def place_order(self, order: OrderRequest) -> OrderResult
     async def cancel_order(self, order_id: str) -> bool
     async def get_price(self, symbol: str) -> PriceInfo
-    async def get_daily_ohlcv(self, symbol: str, period: int) -> list[OHLCV]
+    async def get_daily_ohlcv(self, symbol: str, *, period_days: int = 100) -> list[OHLCV]
+    async def get_stock_master(self) -> list[StockInfo]
+    async def connect(self) -> None
+    async def disconnect(self) -> None
 
 class KISClient(BrokerInterface):
     """
@@ -779,6 +866,22 @@ class KISClient(BrokerInterface):
     # 지수 백오프 재시도
 ```
 
+**BrokerInterface vs DataProvider 역할 구분:**
+- `BrokerInterface` = KIS API 직접 호출 레이어 (인증, 주문, 시세 raw 조회). 순수한 API 래퍼.
+- `DataProvider` = BrokerInterface 위에 캐싱(Redis) + DB 저장 + 배치 수집을 래핑하는 상위 레이어. 애플리케이션 코드는 DataProvider를 통해 데이터에 접근.
+
+**KIS API 구현 특이사항:**
+- HTTP 클라이언트: `requests`(참조) → `aiohttp`(비동기). Phase 0에서 이미 의존성 포함
+- Rate Limiting: asyncio.Semaphore + asyncio.sleep() (실전 0.05s, 모의 0.5s)
+- 주문 수량/가격: KIS API는 str 타입 필수. KISClient 내부에서 Decimal→str 변환
+- TR ID 분기: 실전 T접두사 (TTTC0012U), 모의 V접두사 (VTTC0012U). F 접두사(조회)는 변환 없음. KIS_IS_PAPER로 자동 분기
+- POST body 키: **대문자 필수** (예: `"PDNO"`, `"ORD_QTY"`)
+- 응답 검증: body.rt_cd == "0"이면 성공. 실패 시 BrokerError 변환
+- 페이지네이션: tr_cont 기반 연속 조회. `CTX_AREA_FK`/`CTX_AREA_NK` 키를 다음 요청에 전달. 최대 깊이 제한(100) 설정. async while 루프 권장
+- 일봉 조회: 1회 최대 100건. 3년치(약 750거래일) 수집 시 최소 8회 페이지네이션 필요
+- 종목 마스터: `search_stock_info` API 또는 `stocks_info/` 바이너리 파싱으로 취득
+- WebSocket: Phase 1에서 미구현. Phase 4/6 장중 모니터링 시 도입
+
 **완료 기준:** KIS 모의투자 API 연결 성공 → 종목 마스터 수집 → 일봉 데이터 3년치 수집/저장 → Redis 캐시 동작
 
 ---
@@ -790,8 +893,12 @@ class KISClient(BrokerInterface):
 **생성할 파일:**
 - `src/analysis/technical/indicators.py` — 기술 지표 계산 (pandas-ta 활용, **상세 주석 필수**)
 - `src/analysis/technical/patterns.py` — 차트 패턴 감지 (**상세 주석 필수**)
-- `src/analysis/fundamental/analyzer.py` — 재무 데이터 분석
-- `src/analysis/sentiment/analyzer.py` — 뉴스 감성 분석
+- `src/analysis/fundamental/analyzer.py` — 재무 데이터 분석 (DART API 연동)
+- `src/analysis/sentiment/analyzer.py` — 뉴스 감성 분석 (네이버 검색 API + LLM)
+- `src/data/providers/dart_provider.py` — DART 공시/재무제표 데이터 제공자
+- `src/data/providers/ecos_provider.py` — ECOS 매크로 경제 지표 제공자
+- `src/data/providers/fred_provider.py` — FRED 미국 경제 지표 제공자
+- `src/data/providers/naver_provider.py` — 네이버 뉴스/DataLab 데이터 제공자
 - `docs/TRADING_LOGIC.md` — 매매 로직 + 차트 분석 통합 레퍼런스 문서
 
 **코드 주석 예시 (indicators.py):**
@@ -839,16 +946,27 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 | 거래량 | OBV, VWAP, 거래량 MA | 추세 확인, 유동성 판단 |
 
 **펀더멘털 분석:**
-- KIS API에서 재무제표 데이터 수집 (PER, PBR, ROE 등)
+- DART API로 사업보고서, 재무제표 수집 (매출, 영업이익, 순이익 등)
+- KIS API에서 재무비율 데이터 수집 (PER, PBR, ROE 등)
 - 섹터 대비 밸류에이션 비교
 - 실적 성장 트렌드 분석
 
-**감성 분석:**
-- 뉴스/공시 수집 (웹 스크래핑 기반)
-- LLM 기반 감성 점수 산출 (긍정/부정/중립 + 시장영향도)
+**감성 분석 (상세: [EXTERNAL_SERVICES.md](./EXTERNAL_SERVICES.md)):**
+- **네이버 검색 API**: 금융 뉴스 헤드라인 + 요약 텍스트 수집 (25,000회/일)
+- **LLM 감성분석**: Sentiment Analyzer 에이전트가 수집된 뉴스를 읽고 감성 점수 산출 (긍정/부정/중립 + 시장영향도)
+- **LLM 웹 검색**: OpenAI/Gemini/Claude 내장 웹 검색으로 심층 뉴스 분석
+- **RSS 피드 (백업)**: 한경/연합뉴스 등 주요 언론사 RSS로 안정적 수신
 - 종목별 일간 감성 트렌드
 
-**완료 기준:** 임의 종목의 기술 지표 계산 → 펀더멘털 점수 산출 → 뉴스 감성 분석 → 종합 분석 데이터 DB 저장 → `docs/TRADING_LOGIC.md` 작성
+**매크로 경제 지표:**
+- **ECOS API** (한국은행): GDP, 기준금리, 환율, CPI, 통화량
+- **FRED API** (미국 연준): Fed 금리, 고용, 인플레이션, VIX
+
+**보조 시장 데이터:**
+- **pykrx**: KRX 직접 OHLCV, 투자자별 매매동향 (히스토리컬 검증용)
+- **FinanceDataReader**: 글로벌 주식 + 환율 데이터 (보조)
+
+**완료 기준:** 임의 종목의 기술 지표 계산 → DART 재무제표 수집 → 펀더멘털 점수 산출 → 네이버 뉴스 수집 + 감성 분석 → ECOS/FRED 매크로 지표 수집 → 종합 분석 데이터 DB 저장 → `docs/TRADING_LOGIC.md` 작성
 
 ---
 
@@ -860,7 +978,7 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 - `src/llm/router.py` — LLM 라우터 (**DB 기반 설정** + 에스컬레이션 + 캐시)
 - `src/llm/providers/openai.py` — OpenAI 프로바이더 (주력: o3, GPT-5, o4-mini, GPT-5 Mini/Nano)
 - `src/llm/providers/google.py` — Gemini 프로바이더 (보조: 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite)
-- `src/llm/providers/anthropic.py` — Claude 프로바이더 (백업: Opus 4.5, Sonnet 4.5, Haiku 4.5)
+- `src/llm/providers/anthropic.py` — Claude 프로바이더 (백업: Opus 4.6, Sonnet 4.6, Haiku 4.5)
 - `src/llm/cost_tracker.py` — LLM 비용 추적
 - `config/default_model_assignments.yaml` — 에이전트별 모델 기본값 (DB seed 데이터)
 - `src/api/admin/llm_config.py` — Admin API 엔드포인트
@@ -1160,7 +1278,7 @@ R:R = 1:3.5
 - 실제 LLM 호출은 비용이 크므로, 과거 분석 결과 캐싱 활용
 - LLM 기반 전략의 경우 "시뮬레이션 모드" → 과거 데이터로 LLM에 분석 요청 후 결과 저장
 - 비교 기준: 벤치마크(KOSPI), Buy&Hold, 순수 기술적 전략
-- **멀티 LLM 비교**: 같은 데이터로 o3/GPT-5/GPT-5 Mini, Claude Opus 4.5/Sonnet 4.5, Gemini 2.5 Pro/Flash 분석 결과 비교 → 최적 에스컬레이션 임계값 및 모델 배분 근거
+- **멀티 LLM 비교**: 같은 데이터로 o3/GPT-5/GPT-5 Mini, Claude Opus 4.6/Sonnet 4.6, Gemini 2.5 Pro/Flash 분석 결과 비교 → 최적 에스컬레이션 임계값 및 모델 배분 근거
 
 **완료 기준:** 3년 백테스트 실행 → Sharpe Ratio, MDD 등 지표 산출 → 벤치마크 대비 성과 비교 리포트
 
@@ -1247,8 +1365,8 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [x] `src/db/session.py` async 세션 팩토리
 - [x] Alembic 초기화 (`alembic.ini`, `alembic/env.py`)
 - [x] `src/main.py` FastAPI 앱 + `/health` 엔드포인트
-- [ ] Docker Compose 기동 테스트
-- [ ] uvicorn 서버 시작 + 헬스체크 확인
+- [x] Docker Compose 기동 테스트
+- [x] uvicorn 서버 시작 + 헬스체크 확인
 
 ### Phase 1: 데이터 수집 레이어
 - [ ] `src/broker/base.py` BrokerInterface ABC 정의
@@ -1259,30 +1377,40 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [ ] `src/data/providers/kis_provider.py` KIS 시세 데이터 제공자
 - [ ] `src/data/cache.py` Redis 캐시 래퍼
 - [ ] `src/data/collector.py` 데이터 수집기
-- [ ] DB 모델: `stock_master` 테이블
-- [ ] DB 모델: `daily_ohlcv` 테이블
-- [ ] DB 모델: `api_tokens` 테이블
-- [ ] Alembic 마이그레이션 생성 및 적용
+- [x] DB 모델: `stock_master` 테이블
+- [x] DB 모델: `daily_ohlcv` 테이블
+
+- [x] Alembic 마이그레이션 생성 및 적용
 - [ ] KIS 모의투자 API 연결 테스트
 - [ ] 종목 마스터 수집 테스트
 - [ ] 일봉 데이터 수집/저장 테스트
 - [ ] Redis 캐시 동작 테스트
+- [ ] `src/broker/mock/client.py` InMemory 모의 브로커 (CI/로컬 테스트)
+- [ ] KIS auth 토큰 갱신 로직 단위 테스트 (mock HTTP)
+- [ ] KIS 응답 모델 파싱 단위 테스트 (fixture JSON)
+- [ ] Redis 캐시 래퍼 단위 테스트 (fakeredis)
+- [ ] Mock Broker 인터페이스 준수 테스트
 
 ### Phase 2: 분석 엔진
-- [ ] `src/analysis/technical/indicators.py` 기술 지표 (상세 주석 포함)
+- [ ] `src/data/providers/dart_provider.py` DART 공시/재무제표 데이터 제공자
+- [ ] `src/data/providers/ecos_provider.py` ECOS 매크로 경제 지표 제공자
+- [ ] `src/data/providers/fred_provider.py` FRED 미국 경제 지표 제공자
+- [ ] `src/data/providers/naver_provider.py` 네이버 뉴스/DataLab 데이터 제공자
+- [ ] `src/analysis/technical/indicators.py` 기술 지표 (pandas-ta, 상세 주석 포함)
 - [ ] `src/analysis/technical/patterns.py` 차트 패턴 감지 (상세 주석 포함)
-- [ ] `src/analysis/fundamental/analyzer.py` 펀더멘털 분석
-- [ ] `src/analysis/sentiment/analyzer.py` 뉴스 감성 분석
+- [ ] `src/analysis/fundamental/analyzer.py` 펀더멘털 분석 (DART 연동)
+- [ ] `src/analysis/sentiment/analyzer.py` 뉴스 감성 분석 (네이버 API + LLM)
 - [ ] `docs/TRADING_LOGIC.md` 매매 로직 통합 레퍼런스 작성
 - [ ] 기술 지표 단위 테스트
-- [ ] 펀더멘털 점수 산출 테스트
-- [ ] 감성 분석 통합 테스트
+- [ ] 펀더멘털 점수 산출 테스트 (DART 데이터 포함)
+- [ ] 감성 분석 통합 테스트 (네이버 뉴스 수집 + LLM 감성분석)
+- [ ] ECOS/FRED 매크로 지표 수집 테스트
 
 ### Phase 3: LLM 에이전트 시스템
 - [ ] `src/llm/base.py` LLMProvider ABC
 - [ ] `src/llm/providers/openai.py` OpenAI 프로바이더 (주력: o3, GPT-5, o4-mini, GPT-5 Mini/Nano)
 - [ ] `src/llm/providers/google.py` Gemini 프로바이더 (보조: 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite)
-- [ ] `src/llm/providers/anthropic.py` Claude 프로바이더 (백업: Opus 4.5, Sonnet 4.5, Haiku 4.5)
+- [ ] `src/llm/providers/anthropic.py` Claude 프로바이더 (백업: Opus 4.6, Sonnet 4.6, Haiku 4.5)
 - [ ] `src/llm/router.py` LLM 라우터 (DB 기반 설정 + 에스컬레이션 + 캐시)
 - [ ] `config/default_model_assignments.yaml` 에이전트별 모델 기본값 (DB seed)
 - [ ] `src/api/admin/llm_config.py` Admin API 엔드포인트
@@ -1374,3 +1502,6 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 | 2026-02-08 | 프로젝트 설계 및 구현 계획 수립 | 설계 완료 | 아키텍처, 디렉토리 구조, 9개 Phase 정의 |
 | 2026-02-08 | 설계 v1.1 업데이트 | 설계 갱신 | 멀티 LLM, 의사결정 기록, KIS SDK 참조, 환경 관리, AWS 가이드 추가 |
 | 2026-02-09 | 설계 v1.2 업데이트 | 설계 갱신 | LLM 비용 최적화 혼합 라우팅, Git 브랜치 전략, 모델명 최신화, 문서 구조 정리 |
+| 2026-02-09 | 설계 v1.3 — GPT-First 전략 | 설계 갱신 | 에이전트별 모델 설정, Admin API, DB 기반 설정 |
+| 2026-02-22 | Phase 0 완료 | Phase 0 ✅ | 18개 파일, 8 commits, v0.1.0-phase0 태그 |
+| 2026-02-22 | 설계 v1.4 리뷰 | 설계 갱신 | Claude 4.6 반영, Phase 1 설계 보강, 현재 상태 업데이트 |

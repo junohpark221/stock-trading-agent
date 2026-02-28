@@ -1,6 +1,6 @@
 # Phase 0: 프로젝트 기반 구축 — 구현 계획
 
-> **상태**: 코드 완료 — 수동 검증 대기 (docker compose up, /health, pytest, git tag)
+> **상태**: ✅ 완료 (2026-02-22)
 > **작성일**: 2026-02-09
 > **완료 기준**: `docker-compose up` → DB/Redis 기동 → `uvicorn` 서버 시작 → `/health` 엔드포인트 응답
 
@@ -167,7 +167,8 @@ pytest, pytest-asyncio, pytest-cov, httpx, ruff, mypy
 - [x] Step 4: Alembic + commit #4
 - [x] Step 5: 도메인 모델 + FastAPI 앱 + commit #5
 - [x] Step 6: 테스트 + commit #6
-- [ ] docker compose up 성공
-- [ ] /health 엔드포인트 응답 확인
-- [ ] pytest 통과
-- [ ] git tag v0.1.0-phase0
+- [x] docker compose up 성공
+- [x] /health 엔드포인트 응답 확인
+- [x] pytest 통과
+- [x] git tag v0.1.0-phase0
+- [x] develop → production 머지

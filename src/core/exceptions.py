@@ -6,7 +6,10 @@ Exception tree:
     ├── DatabaseError
     ├── BrokerError
     │   ├── AuthError
+    │   │   └── TokenExpiredError
     │   ├── APIError
+    │   │   ├── RateLimitError
+    │   │   └── KISResponseError
     │   ├── OrderError
     │   └── InsufficientFundsError
     ├── RiskLimitError
@@ -47,8 +50,26 @@ class AuthError(BrokerError):
     """Broker authentication failure (token expired, invalid credentials)."""
 
 
+class TokenExpiredError(AuthError):
+    """KIS OAuth token expired (msg_cd: EGW00123, EGW00121)."""
+
+
 class APIError(BrokerError):
     """Broker API call failure (network, rate limit, unexpected response)."""
+
+
+class RateLimitError(APIError):
+    """KIS API rate limit exceeded (msg_cd: EGW00201)."""
+
+
+class KISResponseError(APIError):
+    """KIS API 응답 오류 (rt_cd != "0")."""
+
+    def __init__(self, msg_cd: str, msg1: str, tr_id: str = ""):
+        self.msg_cd = msg_cd
+        self.msg1 = msg1
+        self.tr_id = tr_id
+        super().__init__(f"KIS API error [{msg_cd}]: {msg1} (tr_id={tr_id})")
 
 
 class OrderError(BrokerError):

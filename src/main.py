@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from src.config import get_settings
 from src.core.models import HealthStatus
+from src.data.cache import close_cache, init_cache
 from src.db.session import close_db, get_db_session, init_db
 
 _redis_client: Redis | None = None
@@ -79,11 +80,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     log.info("redis_initialized")
 
+    init_cache(_redis_client)
+    log.info("cache_initialized")
+
     log.info("app_started", env=settings.ENV)
 
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────
+    close_cache()
+
     if _redis_client is not None:
         await _redis_client.aclose()
         _redis_client = None

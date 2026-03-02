@@ -4,6 +4,7 @@ Exception tree:
     TradingAgentError (base)
     ├── ConfigurationError
     ├── DatabaseError
+    ├── CacheError
     ├── BrokerError
     │   ├── AuthError
     │   │   └── TokenExpiredError
@@ -37,6 +38,13 @@ class ConfigurationError(TradingAgentError):
 
 class DatabaseError(TradingAgentError):
     """Database connection or query error."""
+
+
+# --- Cache ---
+
+
+class CacheError(TradingAgentError):
+    """Redis 캐시 연산 실패 (연결, 직렬화, 타임아웃)."""
 
 
 # --- Broker ---

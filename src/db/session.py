@@ -54,6 +54,13 @@ def get_engine() -> AsyncEngine:
     return _engine
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """현재 세션 팩토리 반환. DataProvider 등 서비스 레이어 사용."""
+    if _session_factory is None:
+        raise RuntimeError("Session factory not initialized. Call init_db() first.")
+    return _session_factory
+
+
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI Depends용 세션 제공자. 요청마다 세션 생성/종료."""
     if _session_factory is None:

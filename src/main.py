@@ -107,7 +107,7 @@ def create_app() -> FastAPI:
 
     return FastAPI(
         title="Stock Trading Agent",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
         docs_url=None if is_prod else "/docs",
         redoc_url=None if is_prod else "/redoc",
@@ -116,6 +116,11 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+# ── Router registration ──────────────────────────────────────────────────
+from src.api.routes.data import router as data_router  # noqa: E402
+
+app.include_router(data_router)
 
 
 @app.get("/health", response_model=HealthStatus)

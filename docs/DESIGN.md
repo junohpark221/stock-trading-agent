@@ -3,8 +3,8 @@
 > **이 문서는 프로젝트의 핵심 코어 문서입니다.**
 > 프로젝트에 변경사항이 생기거나 수정/최신화해야 하는 정보가 있으면 반드시 이 문서를 업데이트합니다.
 >
-> **최종 수정일: 2026-02-28**
-> **버전: 1.6**
+> **최종 수정일: 2026-03-04**
+> **버전: 1.7**
 
 ---
 
@@ -12,7 +12,7 @@
 
 개인 프로젝트로 한국 주식시장(KOSPI/KOSDAQ) 자동매매 에이전트를 구축한다. **멀티 LLM**(Claude, OpenAI GPT, Google Gemini)이 핵심 의사결정자로서 시장 분석, 매매 판단, 리포트 생성을 주도하되, 중요 의사결정은 텔레그램을 통한 사용자 승인을 거친다. 포지션 트레이딩(주력) + 스윙 트레이딩(부) 혼합 전략을 사용하며, 향후 미국 시장으로 확장 가능한 구조를 설계한다.
 
-**현재 상태:** Phase 0 완료 (v0.1.0-phase0). FastAPI + DB/Redis 인프라 + /health 동작. Phase 1 진행 대기.
+**현재 상태:** Phase 1 Step 1-8 완료 (v0.2.0). 데이터 수집 레이어 + Data API 동작. Step 9(테스트) 대기.
 
 **참조 리소스:**
 - KIS Open Trading API SDK: `/Users/oliver.p/Desktop/Personal/open-trading-api`
@@ -29,7 +29,7 @@
 
 **Phase별 상세 계획:**
 - [Phase 0: 프로젝트 기반 구축](./plans/phases/phase0.md) ✅
-- [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) (구현 시 작성)
+- [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) (Step 1-8 완료, Step 9 대기)
 
 ---
 
@@ -698,6 +698,7 @@ stock-trading-agent/
 │       ├── __init__.py
 │       ├── routes/
 │       │   ├── __init__.py
+│       │   ├── data.py            # 데이터 확인용 (종목 목록, OHLCV, 통계) ← Phase 1
 │       │   ├── portfolio.py       # 포트폴리오 조회
 │       │   ├── trades.py          # 거래 내역
 │       │   ├── analysis.py        # 분석 결과
@@ -817,7 +818,7 @@ python-dotenv, structlog
 - `src/data/cache.py` — Redis 캐시 래퍼
 - `src/db/models/market_data.py` — `StockMaster`, `DailyOHLCV` ORM 모델
 - `src/broker/mock/client.py` — InMemoryBroker (BrokerInterface 구현, 테스트용)
-- `src/api/routes/data.py` — 데이터 확인용 엔드포인트 (GET /api/data/stocks, /api/data/ohlcv/{symbol})
+- `src/api/routes/data.py` — 데이터 확인용 엔드포인트 (GET /api/data/stocks, /api/data/ohlcv/{symbol}, /api/data/stats)
 - `alembic/versions/xxxx_phase1_market_data.py` — Phase 1 DB 테이블 마이그레이션
 - `tests/test_broker_kis.py` — KIS 클라이언트 단위 테스트
 - `tests/test_data_provider.py` — DataProvider 통합 테스트

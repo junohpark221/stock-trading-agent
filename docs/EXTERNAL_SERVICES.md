@@ -278,8 +278,8 @@ open-trading-api/
 |------|-----------|-------|----------|
 | 현재가 시세 | `/uapi/domestic-stock/v1/quotations/inquire-price` | FHKST01010100 | `inquire_price/` |
 | 일봉 OHLCV | `/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice` | FHKST03010100 | `inquire_daily_itemchartprice/` |
-| 매수 주문 | `/uapi/trading/order-cash` | TTTC0802U / VTTC0802U | `order_cash/` |
-| 매도 주문 | `/uapi/trading/order-cash` | TTTC0801U / VTTC0801U | `order_cash/` |
+| 매수 주문 | `/uapi/trading/order-cash` | TTTC0012U / VTTC0012U | `order_cash/` |
+| 매도 주문 | `/uapi/trading/order-cash` | TTTC0011U / VTTC0011U | `order_cash/` |
 | 잔고 조회 | `/uapi/trading/inquire-balance` | TTZS | `inquire_balance/` |
 | 호가 | `/uapi/domestic-stock/v1/quotations/inquire-asking-price` | — | `asking_price_krx/` |
 | 투자자별 매매 | `/uapi/domestic-stock/v1/quotations/inquire-investor` | — | `investor/` |

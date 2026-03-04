@@ -1,6 +1,6 @@
 [project]
 name = "stock-trading-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-powered stock trading agent with multi-LLM decision making"
 requires-python = ">=3.12"
 dependencies = [
@@ -40,6 +40,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/api/**" = ["B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

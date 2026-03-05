@@ -3,7 +3,7 @@
 > **이 문서는 프로젝트의 핵심 코어 문서입니다.**
 > 프로젝트에 변경사항이 생기거나 수정/최신화해야 하는 정보가 있으면 반드시 이 문서를 업데이트합니다.
 >
-> **최종 수정일: 2026-03-04**
+> **최종 수정일: 2026-03-05**
 > **버전: 1.7**
 
 ---
@@ -12,7 +12,7 @@
 
 개인 프로젝트로 한국 주식시장(KOSPI/KOSDAQ) 자동매매 에이전트를 구축한다. **멀티 LLM**(Claude, OpenAI GPT, Google Gemini)이 핵심 의사결정자로서 시장 분석, 매매 판단, 리포트 생성을 주도하되, 중요 의사결정은 텔레그램을 통한 사용자 승인을 거친다. 포지션 트레이딩(주력) + 스윙 트레이딩(부) 혼합 전략을 사용하며, 향후 미국 시장으로 확장 가능한 구조를 설계한다.
 
-**현재 상태:** Phase 1 Step 1-8 완료 (v0.2.0). 데이터 수집 레이어 + Data API 동작. Step 9(테스트) 대기.
+**현재 상태:** Phase 1 Step 1-9 완료 (v0.2.0). 데이터 수집 레이어 + Data API + 테스트 217개. develop 머지 대기.
 
 **참조 리소스:**
 - KIS Open Trading API SDK: `/Users/oliver.p/Desktop/Personal/open-trading-api`
@@ -29,7 +29,7 @@
 
 **Phase별 상세 계획:**
 - [Phase 0: 프로젝트 기반 구축](./plans/phases/phase0.md) ✅
-- [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) (Step 1-8 완료, Step 9 대기)
+- [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) (Step 1-9 완료)
 
 ---
 

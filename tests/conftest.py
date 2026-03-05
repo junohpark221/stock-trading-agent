@@ -1,4 +1,4 @@
-"""Shared test fixtures and environment setup."""
+"""Shared test fixtures, helpers, and environment setup."""
 
 import os
 
@@ -11,9 +11,60 @@ os.environ.setdefault(
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("ENV", "development")
 
+from unittest.mock import AsyncMock, MagicMock  # noqa: E402
+
 import pytest  # noqa: E402
 
-from src.config import get_settings  # noqa: E402
+from src.config import Settings, get_settings  # noqa: E402
+from src.data.cache import RedisCache  # noqa: E402
+
+
+# ── Shared Helpers ────────────────────────────────────────────────────
+
+
+class AsyncContextManagerMock:
+    """Mock for ``async with session.get/post(...)`` pattern."""
+
+    def __init__(self, resp: MagicMock) -> None:
+        self._resp = resp
+
+    async def __aenter__(self) -> MagicMock:
+        return self._resp
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+def make_settings(**overrides: object) -> Settings:
+    """Create a Settings with sensible defaults + overrides."""
+    defaults: dict[str, object] = {
+        "DATABASE_URL": "postgresql+asyncpg://localhost/test",
+        "REDIS_URL": "redis://localhost:6379/0",
+        "KIS_APP_KEY": "test_app_key",
+        "KIS_APP_SECRET": "test_app_secret",
+        "KIS_IS_PAPER": True,
+        "KIS_BASE_URL": "",
+        "KIS_TOKEN_REDIS_TTL": 82800,
+        "KIS_ACCOUNT_NO": "1234567801",
+        "KIS_RATE_LIMIT_INTERVAL": 0.0,
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)  # type: ignore[arg-type]
+
+
+def mock_aiohttp_response(
+    *, status: int = 200, json_data: dict | None = None, text: str = "", headers: dict | None = None
+) -> MagicMock:
+    """Create a mock aiohttp response with headers support."""
+    resp = MagicMock()
+    resp.status = status
+    resp.json = AsyncMock(return_value=json_data or {})
+    resp.text = AsyncMock(return_value=text)
+    resp.headers = headers or {}
+    return resp
+
+
+# ── Shared Fixtures ───────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse=True)
@@ -22,3 +73,17 @@ def _clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture
+def mock_redis():
+    """AsyncMock Redis client (SCAN 기본: 빈 결과)."""
+    r = AsyncMock()
+    r.scan = AsyncMock(return_value=(0, []))
+    return r
+
+
+@pytest.fixture
+def cache(mock_redis):
+    """RedisCache backed by mock_redis."""
+    return RedisCache(mock_redis)

@@ -15,36 +15,10 @@ from src.config import Settings
 from src.core.exceptions import AuthError, ConfigurationError
 from src.data.cache import RedisCache
 
+from conftest import AsyncContextManagerMock, make_settings, mock_aiohttp_response
+
 
 # ── Helpers ───────────────────────────────────────────────────────────
-
-
-class AsyncContextManagerMock:
-    """Mock for ``async with session.post(...) as resp:`` pattern."""
-
-    def __init__(self, resp: MagicMock) -> None:
-        self._resp = resp
-
-    async def __aenter__(self) -> MagicMock:
-        return self._resp
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
-
-
-def _make_settings(**overrides: object) -> Settings:
-    """Create a Settings with sensible defaults + overrides."""
-    defaults = {
-        "DATABASE_URL": "postgresql+asyncpg://localhost/test",
-        "REDIS_URL": "redis://localhost:6379/0",
-        "KIS_APP_KEY": "test_app_key",
-        "KIS_APP_SECRET": "test_app_secret",
-        "KIS_IS_PAPER": True,
-        "KIS_BASE_URL": "",
-        "KIS_TOKEN_REDIS_TTL": 82800,
-    }
-    defaults.update(overrides)
-    return Settings(**defaults)  # type: ignore[arg-type]
 
 
 def _make_auth(
@@ -54,19 +28,10 @@ def _make_auth(
 ) -> KISAuth:
     """Create a KISAuth with mocked dependencies."""
     return KISAuth(
-        settings=settings or _make_settings(),
+        settings=settings or make_settings(),
         cache=cache or MagicMock(spec=RedisCache),
         session=session or MagicMock(spec=aiohttp.ClientSession),
     )
-
-
-def _mock_response(*, status: int = 200, json_data: dict | None = None, text: str = "") -> MagicMock:
-    """Create a mock aiohttp response."""
-    resp = MagicMock()
-    resp.status = status
-    resp.json = AsyncMock(return_value=json_data or {})
-    resp.text = AsyncMock(return_value=text)
-    return resp
 
 
 # ── TestInit ──────────────────────────────────────────────────────────
@@ -76,32 +41,32 @@ class TestInit:
     """KISAuth.__init__() validation and configuration."""
 
     def test_missing_app_key_raises(self) -> None:
-        settings = _make_settings(KIS_APP_KEY="")
+        settings = make_settings(KIS_APP_KEY="")
         with pytest.raises(ConfigurationError, match="KIS_APP_KEY"):
             _make_auth(settings=settings)
 
     def test_missing_app_secret_raises(self) -> None:
-        settings = _make_settings(KIS_APP_SECRET="")
+        settings = make_settings(KIS_APP_SECRET="")
         with pytest.raises(ConfigurationError, match="KIS_APP_SECRET"):
             _make_auth(settings=settings)
 
     def test_paper_base_url_default(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=True, KIS_BASE_URL=""))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=True, KIS_BASE_URL=""))
         assert auth._base_url == _KIS_PAPER_BASE_URL
 
     def test_prod_base_url_default(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=False, KIS_BASE_URL=""))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=False, KIS_BASE_URL=""))
         assert auth._base_url == _KIS_PROD_BASE_URL
 
     def test_explicit_base_url_takes_priority(self) -> None:
         auth = _make_auth(
-            settings=_make_settings(KIS_BASE_URL="https://custom.example.com")
+            settings=make_settings(KIS_BASE_URL="https://custom.example.com")
         )
         assert auth._base_url == "https://custom.example.com"
 
     def test_trailing_slash_stripped(self) -> None:
         auth = _make_auth(
-            settings=_make_settings(KIS_BASE_URL="https://custom.example.com/")
+            settings=make_settings(KIS_BASE_URL="https://custom.example.com/")
         )
         assert auth._base_url == "https://custom.example.com"
 
@@ -129,7 +94,7 @@ class TestGetToken:
         cache.get = AsyncMock(return_value=None)
         cache.set = AsyncMock()
 
-        resp = _mock_response(json_data={"access_token": "new_token_xyz"})
+        resp = mock_aiohttp_response(json_data={"access_token": "new_token_xyz"})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.post = MagicMock(return_value=AsyncContextManagerMock(resp))
 
@@ -144,7 +109,7 @@ class TestGetToken:
         cache = MagicMock(spec=RedisCache)
         cache.get = AsyncMock(return_value=None)
 
-        resp = _mock_response(status=401, text="Unauthorized")
+        resp = mock_aiohttp_response(status=401, text="Unauthorized")
         session = MagicMock(spec=aiohttp.ClientSession)
         session.post = MagicMock(return_value=AsyncContextManagerMock(resp))
 
@@ -157,7 +122,7 @@ class TestGetToken:
         cache = MagicMock(spec=RedisCache)
         cache.get = AsyncMock(return_value=None)
 
-        resp = _mock_response(json_data={"token_type": "Bearer"})
+        resp = mock_aiohttp_response(json_data={"token_type": "Bearer"})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.post = MagicMock(return_value=AsyncContextManagerMock(resp))
 
@@ -190,7 +155,7 @@ class TestRefreshToken:
         cache.delete = AsyncMock(return_value=True)
         cache.set = AsyncMock()
 
-        resp = _mock_response(json_data={"access_token": "refreshed_token"})
+        resp = mock_aiohttp_response(json_data={"access_token": "refreshed_token"})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.post = MagicMock(return_value=AsyncContextManagerMock(resp))
 
@@ -259,38 +224,38 @@ class TestBuildHeaders:
     # ── TR ID Conversion (Paper) ──────────────────────────────────
 
     def test_paper_t_prefix_converts_to_v(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=True))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=True))
         headers = auth.build_headers("tok", "TTTC0012U")
         assert headers["tr_id"] == "VTTC0012U"
 
     def test_paper_j_prefix_converts_to_v(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=True))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=True))
         headers = auth.build_headers("tok", "JTCE1001U")
         assert headers["tr_id"] == "VTCE1001U"
 
     def test_paper_c_prefix_converts_to_v(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=True))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=True))
         headers = auth.build_headers("tok", "CTOS5011R")
         assert headers["tr_id"] == "VTOS5011R"
 
     def test_paper_f_prefix_no_conversion(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=True))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=True))
         headers = auth.build_headers("tok", "FHKST01010100")
         assert headers["tr_id"] == "FHKST01010100"
 
     # ── TR ID Conversion (Production) ─────────────────────────────
 
     def test_prod_t_prefix_no_conversion(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=False))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=False))
         headers = auth.build_headers("tok", "TTTC0012U")
         assert headers["tr_id"] == "TTTC0012U"
 
     def test_prod_j_prefix_no_conversion(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=False))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=False))
         headers = auth.build_headers("tok", "JTCE1001U")
         assert headers["tr_id"] == "JTCE1001U"
 
     def test_prod_f_prefix_no_conversion(self) -> None:
-        auth = _make_auth(settings=_make_settings(KIS_IS_PAPER=False))
+        auth = _make_auth(settings=make_settings(KIS_IS_PAPER=False))
         headers = auth.build_headers("tok", "FHKST01010100")
         assert headers["tr_id"] == "FHKST01010100"

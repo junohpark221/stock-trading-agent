@@ -1,6 +1,6 @@
 # Phase 1: 데이터 수집 레이어 — 구현 계획
 
-> **상태**: Step 1-8 구현 완료 (2026-03-04). Step 9 대기.
+> **상태**: Step 1-9 구현 완료 (2026-03-05). develop 머지 대기.
 > **작성일**: 2026-02-28
 > **완료 기준**: KIS 모의투자 API 연결 성공 → 종목 마스터 수집 → 일봉 데이터 3년치 수집/저장 → Redis 캐시 동작
 
@@ -444,7 +444,7 @@ curl "http://localhost:8000/api/data/ohlcv/005930?limit=10"
 - [x] Step 6: DataProvider ABC + KIS Provider + commit #6
 - [x] Step 7: Data Collector + Mock Broker + commit #7
 - [x] Step 8: API 라우트 + main.py + commit #8
-- [ ] Step 9: 테스트 + commit #9
+- [x] Step 9: 테스트 + commit #9
 - [ ] Alembic migration 적용
-- [ ] 전체 테스트 통과
+- [x] 전체 테스트 통과 (217개)
 - [ ] develop 머지 + git tag v0.2.0-phase1

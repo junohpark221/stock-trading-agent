@@ -3,8 +3,8 @@
 > **이 문서는 프로젝트의 핵심 코어 문서입니다.**
 > 프로젝트에 변경사항이 생기거나 수정/최신화해야 하는 정보가 있으면 반드시 이 문서를 업데이트합니다.
 >
-> **최종 수정일: 2026-03-05**
-> **버전: 1.7**
+> **최종 수정일: 2026-03-06**
+> **버전: 1.8**
 
 ---
 
@@ -12,7 +12,7 @@
 
 개인 프로젝트로 한국 주식시장(KOSPI/KOSDAQ) 자동매매 에이전트를 구축한다. **멀티 LLM**(Claude, OpenAI GPT, Google Gemini)이 핵심 의사결정자로서 시장 분석, 매매 판단, 리포트 생성을 주도하되, 중요 의사결정은 텔레그램을 통한 사용자 승인을 거친다. 포지션 트레이딩(주력) + 스윙 트레이딩(부) 혼합 전략을 사용하며, 향후 미국 시장으로 확장 가능한 구조를 설계한다.
 
-**현재 상태:** Phase 1 Step 1-9 완료 (v0.2.0). 데이터 수집 레이어 + Data API + 테스트 217개. develop 머지 대기.
+**현재 상태:** Phase 1 완료, develop 머지 완료 (v0.2.0). Phase 2 구현 대기.
 
 **참조 리소스:**
 - KIS Open Trading API SDK: `/Users/oliver.p/Desktop/Personal/open-trading-api`
@@ -29,7 +29,8 @@
 
 **Phase별 상세 계획:**
 - [Phase 0: 프로젝트 기반 구축](./plans/phases/phase0.md) ✅
-- [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) (Step 1-9 완료)
+- [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) ✅
+- [Phase 2: 분석 엔진](./plans/phases/phase2.md) (구현 대기)
 
 ---
 
@@ -572,7 +573,9 @@ stock-trading-agent/
 │   ├── AWS_INFRASTRUCTURE_GUIDE.md  # AWS 인프라 운영 가이드 (초보자용)
 │   ├── TRADING_LOGIC.md             # 매매 로직 + 차트 분석 통합 레퍼런스
 │   ├── plans/phases/                # Phase별 상세 계획
-│   │   └── phase0.md               # Phase 0 구현 계획
+│   │   ├── phase0.md               # Phase 0 구현 계획 ✅
+│   │   ├── phase1.md               # Phase 1 구현 계획 ✅
+│   │   └── phase2.md               # Phase 2 구현 계획 (대기)
 │   └── setup/                       # 초기 설정 문서
 │       └── subagents-and-skills.md  # Subagent & Skill 설정 정리
 │
@@ -593,11 +596,12 @@ stock-trading-agent/
 │   │   ├── base.py                # SQLAlchemy Base
 │   │   └── models/                # ORM 모델
 │   │       ├── __init__.py
-│   │       ├── market_data.py     # OHLCV, 종목 마스터
+│   │       ├── market_data.py     # OHLCV, 종목 마스터 ← Phase 1
+│   │       ├── analysis.py        # 재무제표, 경제지표, 뉴스, 공시 ← Phase 2
 │   │       ├── trade.py           # 주문, 체결 기록
 │   │       ├── portfolio.py       # 포트폴리오, 포지션
 │   │       ├── strategy.py        # 전략 설정, 시그널 기록
-│   │       ├── analysis.py        # LLM 분석 결과 저장
+│   │       ├── llm_analysis.py    # LLM 분석 결과 저장
 │   │       └── decision_log.py    # 의사결정 근거 기록 (Audit Trail)
 │   │
 │   ├── llm/                       # LLM 프로바이더 추상화 레이어
@@ -626,16 +630,19 @@ stock-trading-agent/
 │   │
 │   ├── data/                      # 데이터 수집 및 관리
 │   │   ├── __init__.py
-│   │   ├── collector.py           # 시세 데이터 수집기
+│   │   ├── collector.py           # 데이터 수집 오케스트레이션
 │   │   ├── cache.py               # Redis 캐시 래퍼
-│   │   └── providers/             # 데이터 제공자
+│   │   ├── providers/             # 데이터 제공자
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py            # DataProvider (ABC)
+│   │   │   ├── kis_provider.py    # KIS 시세 데이터
+│   │   │   ├── dart_provider.py   # DART 공시/재무제표
+│   │   │   ├── ecos_provider.py   # ECOS 매크로 경제 지표
+│   │   │   ├── fred_provider.py   # FRED 미국 경제 지표
+│   │   │   └── naver_provider.py  # 네이버 뉴스 (수집만, 감성분석 Phase 3)
+│   │   └── utils/                 # 데이터 유틸리티
 │   │       ├── __init__.py
-│   │       ├── base.py            # DataProvider (ABC)
-│   │       ├── kis_provider.py    # KIS 시세 데이터
-│   │       ├── dart_provider.py   # DART 공시/재무제표
-│   │       ├── ecos_provider.py   # ECOS 매크로 경제 지표
-│   │       ├── fred_provider.py   # FRED 미국 경제 지표
-│   │       └── naver_provider.py  # 네이버 뉴스/DataLab
+│   │       └── market_helpers.py  # pykrx 히스토리컬 OHLCV + 교차 검증
 │   │
 │   ├── analysis/                  # 분석 엔진
 │   │   ├── __init__.py
@@ -698,10 +705,10 @@ stock-trading-agent/
 │       ├── __init__.py
 │       ├── routes/
 │       │   ├── __init__.py
-│       │   ├── data.py            # 데이터 확인용 (종목 목록, OHLCV, 통계) ← Phase 1
+│       │   ├── data.py            # 데이터 확인용 (종목, OHLCV, 재무제표, 뉴스, 공시) ← Phase 1~2
+│       │   ├── analysis.py        # 분석 결과 (기술지표, 펀더멘털, 매크로) ← Phase 2
 │       │   ├── portfolio.py       # 포트폴리오 조회
 │       │   ├── trades.py          # 거래 내역
-│       │   ├── analysis.py        # 분석 결과
 │       │   ├── decisions.py       # 의사결정 근거 조회 API
 │       │   └── control.py         # 수동 제어 (시작/중지/승인)
 │       └── deps.py                # 공통 의존성
@@ -888,18 +895,21 @@ class KISClient(BrokerInterface):
 ---
 
 ### Phase 2: 분석 엔진
-> 기술적 분석 지표 + 펀더멘털 데이터 + 뉴스/감성 분석
+> 외부 데이터 수집(DART/ECOS/FRED/Naver) + 기술적 분석 + 펀더멘털 분석 + 뉴스 수집
+> 감성분석(LLM 기반 감성 점수)은 Phase 3으로 이동. Phase 2는 뉴스 **수집만** 수행.
 > **모든 분석 로직에 상세 주석 작성, `docs/TRADING_LOGIC.md`에 통합 정리**
 
 **생성할 파일:**
 - `src/analysis/technical/indicators.py` — 기술 지표 계산 (pandas-ta 활용, **상세 주석 필수**)
 - `src/analysis/technical/patterns.py` — 차트 패턴 감지 (**상세 주석 필수**)
 - `src/analysis/fundamental/analyzer.py` — 재무 데이터 분석 (DART API 연동)
-- `src/analysis/sentiment/analyzer.py` — 뉴스 감성 분석 (네이버 검색 API + LLM)
 - `src/data/providers/dart_provider.py` — DART 공시/재무제표 데이터 제공자
 - `src/data/providers/ecos_provider.py` — ECOS 매크로 경제 지표 제공자
 - `src/data/providers/fred_provider.py` — FRED 미국 경제 지표 제공자
-- `src/data/providers/naver_provider.py` — 네이버 뉴스/DataLab 데이터 제공자
+- `src/data/providers/naver_provider.py` — 네이버 뉴스 데이터 제공자 (수집만, 감성분석은 Phase 3)
+- `src/db/models/analysis.py` — Phase 2 DB 모델 (financial_statement, economic_indicator, news_article, disclosure)
+- `src/data/utils/market_helpers.py` — pykrx 유틸리티 함수
+- `src/api/routes/analysis.py` — 분석 결과 API 엔드포인트
 - `docs/TRADING_LOGIC.md` — 매매 로직 + 차트 분석 통합 레퍼런스 문서
 
 **코드 주석 예시 (indicators.py):**
@@ -952,12 +962,11 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 - 섹터 대비 밸류에이션 비교
 - 실적 성장 트렌드 분석
 
-**감성 분석 (상세: [EXTERNAL_SERVICES.md](./EXTERNAL_SERVICES.md)):**
-- **네이버 검색 API**: 금융 뉴스 헤드라인 + 요약 텍스트 수집 (25,000회/일)
-- **LLM 감성분석**: Sentiment Analyzer 에이전트가 수집된 뉴스를 읽고 감성 점수 산출 (긍정/부정/중립 + 시장영향도)
-- **LLM 웹 검색**: OpenAI/Gemini/Claude 내장 웹 검색으로 심층 뉴스 분석
-- **RSS 피드 (백업)**: 한경/연합뉴스 등 주요 언론사 RSS로 안정적 수신
-- 종목별 일간 감성 트렌드
+**뉴스 수집 (Phase 2) + 감성 분석 (Phase 3):**
+- **Phase 2 — 뉴스 수집만**: 네이버 검색 API로 뉴스 헤드라인/요약 수집 → `news_article` 테이블 저장 (sentiment 필드 null)
+- **Phase 3 — LLM 감성분석**: Sentiment Analyzer 에이전트가 수집된 뉴스를 읽고 감성 점수 산출 (긍정/부정/중립 + 시장영향도). `src/analysis/sentiment/` Phase 3에서 생성
+- **LLM 웹 검색**: OpenAI/Gemini/Claude 내장 웹 검색으로 심층 뉴스 분석 (Phase 3)
+- **RSS 피드 (백업)**: 한경/연합뉴스 등 주요 언론사 RSS로 안정적 수신 (향후)
 
 **매크로 경제 지표:**
 - **ECOS API** (한국은행): GDP, 기준금리, 환율, CPI, 통화량
@@ -967,14 +976,22 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 - **pykrx**: KRX 직접 OHLCV, 투자자별 매매동향 (히스토리컬 검증용)
 - **FinanceDataReader**: 글로벌 주식 + 환율 데이터 (보조)
 
-**완료 기준:** 임의 종목의 기술 지표 계산 → DART 재무제표 수집 → 펀더멘털 점수 산출 → 네이버 뉴스 수집 + 감성 분석 → ECOS/FRED 매크로 지표 수집 → 종합 분석 데이터 DB 저장 → `docs/TRADING_LOGIC.md` 작성
+**DB 테이블 (Phase 2 추가):**
+- `financial_statement` — DART 재무제표 (symbol, corp_code, fiscal_year, 재무 데이터, 투자 지표)
+- `economic_indicator` — ECOS/FRED 매크로 지표 (source, indicator_code, date, value)
+- `news_article` — 뉴스 기사 (source, symbol, title, link, sentiment 필드 Phase 3)
+- `disclosure` — DART 공시 (corp_code, symbol, report_name, receipt_no)
+
+**완료 기준:** 임의 종목의 기술 지표 계산 → DART 재무제표 수집 → 펀더멘털 점수 산출 → 네이버 뉴스 수집 (감성분석은 Phase 3) → ECOS/FRED 매크로 지표 수집 → Analysis API 동작 → 종합 분석 데이터 DB 저장 → `docs/TRADING_LOGIC.md` 작성
 
 ---
 
 ### Phase 3: LLM 에이전트 시스템
 > 멀티 LLM 기반 시장 분석, 종목 분석, 매매 판단 멀티 에이전트 + 의사결정 기록
+> **감성분석**: Phase 2에서 수집된 뉴스(`news_article`)에 LLM 기반 감성 점수를 산출하여 채움. `src/analysis/sentiment/` 이 Phase에서 생성.
 
 **생성할 파일:**
+- `src/analysis/sentiment/analyzer.py` — LLM 기반 뉴스 감성 분석 (Phase 2에서 이관)
 - `src/llm/base.py` — LLMProvider ABC
 - `src/llm/router.py` — LLM 라우터 (**DB 기반 설정** + 에스컬레이션 + 캐시)
 - `src/llm/providers/openai.py` — OpenAI 프로바이더 (주력: o3, GPT-5, o4-mini, GPT-5 Mini/Nano)
@@ -1396,18 +1413,22 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [ ] `src/data/providers/dart_provider.py` DART 공시/재무제표 데이터 제공자
 - [ ] `src/data/providers/ecos_provider.py` ECOS 매크로 경제 지표 제공자
 - [ ] `src/data/providers/fred_provider.py` FRED 미국 경제 지표 제공자
-- [ ] `src/data/providers/naver_provider.py` 네이버 뉴스/DataLab 데이터 제공자
+- [ ] `src/data/providers/naver_provider.py` 네이버 뉴스 데이터 제공자 (수집만, 감성분석은 Phase 3)
+- [ ] `src/db/models/analysis.py` Phase 2 DB 모델 4개 + 마이그레이션
 - [ ] `src/analysis/technical/indicators.py` 기술 지표 (pandas-ta, 상세 주석 포함)
 - [ ] `src/analysis/technical/patterns.py` 차트 패턴 감지 (상세 주석 포함)
 - [ ] `src/analysis/fundamental/analyzer.py` 펀더멘털 분석 (DART 연동)
-- [ ] `src/analysis/sentiment/analyzer.py` 뉴스 감성 분석 (네이버 API + LLM)
+- [ ] `src/data/utils/market_helpers.py` pykrx 유틸리티 함수
+- [ ] `src/api/routes/analysis.py` 분석 결과 API 엔드포인트
 - [ ] `docs/TRADING_LOGIC.md` 매매 로직 통합 레퍼런스 작성
-- [ ] 기술 지표 단위 테스트
+- [ ] 기술 지표 단위 테스트 + 차트 패턴 테스트
 - [ ] 펀더멘털 점수 산출 테스트 (DART 데이터 포함)
-- [ ] 감성 분석 통합 테스트 (네이버 뉴스 수집 + LLM 감성분석)
+- [ ] 뉴스 수집 테스트 (네이버 API)
 - [ ] ECOS/FRED 매크로 지표 수집 테스트
+- [ ] Analysis API + 통합 테스트
 
 ### Phase 3: LLM 에이전트 시스템
+- [ ] `src/analysis/sentiment/analyzer.py` LLM 기반 뉴스 감성 분석 (Phase 2에서 이관)
 - [ ] `src/llm/base.py` LLMProvider ABC
 - [ ] `src/llm/providers/openai.py` OpenAI 프로바이더 (주력: o3, GPT-5, o4-mini, GPT-5 Mini/Nano)
 - [ ] `src/llm/providers/google.py` Gemini 프로바이더 (보조: 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite)

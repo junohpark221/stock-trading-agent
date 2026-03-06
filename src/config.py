@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     MARKET_OPEN_TIME: str = "09:00"
     MARKET_CLOSE_TIME: str = "15:30"
 
+    # ── Phase 2: External Data Sources ──────────────────────────────
+    DART_API_KEY: str = ""
+    ECOS_API_KEY: str = ""
+    FRED_API_KEY: str = ""
+    NAVER_CLIENT_ID: str = ""
+    NAVER_CLIENT_SECRET: str = ""
+
+    # ── Phase 2: Cache TTLs ────────────────────────────────────────
+    DART_CACHE_TTL: int = 86400       # 24시간 (재무제표는 자주 안 바뀜)
+    ECOS_CACHE_TTL: int = 86400       # 24시간
+    FRED_CACHE_TTL: int = 86400       # 24시간
+    NEWS_CACHE_TTL: int = 3600        # 1시간
+
     # ── Phase 3: LLM Providers (GPT-First) ────────────────────────────
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""

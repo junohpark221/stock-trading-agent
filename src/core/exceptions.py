@@ -5,6 +5,8 @@ Exception tree:
     ├── ConfigurationError
     ├── DatabaseError
     ├── CacheError
+    ├── DataProviderError
+    │   └── ExternalAPIError
     ├── BrokerError
     │   ├── AuthError
     │   │   └── TokenExpiredError
@@ -45,6 +47,17 @@ class DatabaseError(TradingAgentError):
 
 class CacheError(TradingAgentError):
     """Redis 캐시 연산 실패 (연결, 직렬화, 타임아웃)."""
+
+
+# --- Data Provider ---
+
+
+class DataProviderError(TradingAgentError):
+    """외부 데이터 소스 공통 에러 (DART, ECOS, FRED, Naver)."""
+
+
+class ExternalAPIError(DataProviderError):
+    """외부 API 호출 실패 (네트워크, 인증, 응답 오류)."""
 
 
 # --- Broker ---

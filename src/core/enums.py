@@ -129,3 +129,30 @@ class DecisionOutcome(StrEnum):
     LOSS = "loss"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+
+
+class ReportType(StrEnum):
+    """DART 재무제표 보고서 종류."""
+
+    ANNUAL = "annual"
+    SEMI_ANNUAL = "semi_annual"
+    QUARTERLY = "quarterly"
+
+
+class SentimentLabel(StrEnum):
+    """뉴스 감성 분류 (Phase 3에서 사용, 미리 정의)."""
+
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    NEUTRAL = "neutral"
+
+
+class DataSourceType(StrEnum):
+    """외부 데이터 소스 식별자."""
+
+    KIS = "kis"
+    DART = "dart"
+    ECOS = "ecos"
+    FRED = "fred"
+    NAVER = "naver"
+    PYKRX = "pykrx"

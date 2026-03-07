@@ -25,7 +25,7 @@
 | **DART (OPEN DART API)** | 사업보고서, 재무제표, 주요 공시, XBRL | 무료 | API Key |
 
 - 포털: https://opendart.fss.or.kr/
-- Python: `opendartreader` 또는 직접 HTTP
+- Python: aiohttp 직접 호출 (Phase 2에서 `opendartreader` 대신 async 일관성을 위해 직접 구현)
 - 일일 한도: 10,000회/일
 - 환경변수: `DART_API_KEY`
 
@@ -66,7 +66,7 @@
 
 - 포털: https://fred.stlouisfed.org/docs/api/fred/
 - 기본 URL: `https://api.stlouisfed.org/fred/series/observations`
-- Python: `fredapi` 라이브러리
+- Python: aiohttp 직접 호출 (Phase 2에서 `fredapi` 대신 async 일관성을 위해 직접 구현)
 - 일일 한도: 120회/분
 - 환경변수: `FRED_API_KEY`
 
@@ -319,10 +319,10 @@ Phase 2 구현 시 추가할 패키지:
 pandas-ta      # 기술적 분석 지표 (150+)
 pykrx          # KRX 히스토리컬 데이터 (보조)
 finance-datareader  # 글로벌 시장 데이터 (보조)
-fredapi        # FRED API 클라이언트
+# fredapi      # FRED API 클라이언트 → Phase 2에서 aiohttp 직접 호출로 대체
 ```
 
 선택적:
 ```
-opendartreader  # DART API Python 래퍼 (직접 HTTP 대신 사용 가능)
+# opendartreader  # DART API Python 래퍼 → Phase 2에서 aiohttp 직접 호출로 대체
 ```

@@ -1,6 +1,6 @@
 # Phase 2: 분석 엔진 — 구현 계획
 
-> **상태**: 구현 대기
+> **상태**: Step 1-3 완료, Step 4-10 대기
 > **작성일**: 2026-03-06
 > **완료 기준**: 외부 데이터 4개 수집 + 기술적 분석 + 펀더멘털 분석 + Analysis API + 테스트 전체 통과
 
@@ -52,7 +52,7 @@ Phase 1(데이터 수집 레이어)이 완료되어 KIS 브로커 연동, 종목
 
 ## Step 별 구현 계획
 
-### Step 1: 기반 업데이트 (Config + Enums + Exceptions + Dependencies)
+### Step 1: 기반 업데이트 (Config + Enums + Exceptions + Dependencies) ✅
 
 **수정 파일:**
 - `src/config.py` — Phase 2 외부 API 키 + cache TTL 추가
@@ -129,7 +129,7 @@ pykrx>=1.0.0
 
 ---
 
-### Step 2: DB ORM 모델 + 마이그레이션 + Pydantic 모델
+### Step 2: DB ORM 모델 + 마이그레이션 + Pydantic 모델 ✅
 
 **새 파일:**
 - `src/db/models/analysis.py` — Phase 2 ORM 모델 4개
@@ -355,7 +355,7 @@ class PatternSignal(BaseModel):
 
 ---
 
-### Step 3: DART 데이터 프로바이더
+### Step 3: DART 데이터 프로바이더 ✅
 
 **새 파일:**
 - `src/data/providers/dart_provider.py`

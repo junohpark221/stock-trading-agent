@@ -13,9 +13,16 @@ venv/
 .vscode/
 .idea/
 
-# Environment variables
+# Environment variables — .env.example은 추적 (템플릿)
 .env
-.env.production
+.env.*
+!.env.example
+
+# Secrets / Credentials
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Docker data volumes
 postgres_data/
@@ -32,6 +39,7 @@ build/
 
 # Test / Coverage
 .coverage
+coverage.xml
 htmlcov/
 .pytest_cache/
 
@@ -40,6 +48,14 @@ htmlcov/
 
 # Linting
 .ruff_cache/
+
+# Logs
+*.log
+logs/
+
+# Local DB / SQLite
+*.db
+*.sqlite3
 
 # Claude Code
 .claude/settings.local.json

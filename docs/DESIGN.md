@@ -521,8 +521,7 @@ class Settings(BaseSettings):
 
 | 패턴 | 용도 | 예시 |
 |------|------|------|
-| `feature/<이름>` | 새 기능 개발 | `feature/telegram-bot` |
-| `phase/<번호>-<이름>` | Phase별 구현 작업 | `phase/2-analysis-engine` |
+| `feature/<이름>` | 새 기능 개발 및 Phase 구현 | `feature/phase2-analysis-engine`, `feature/telegram-bot` |
 | `fix/<설명>` | 버그 수정 | `fix/kis-token-refresh` |
 | `hotfix/<설명>` | 프로덕션 긴급 수정 | `hotfix/risk-check-bypass` |
 
@@ -530,18 +529,29 @@ class Settings(BaseSettings):
 
 ```
 feature/xxx ──┐
-phase/x-xxx ──┼──→ develop ──(수동 머지)──→ production
-fix/xxx ──────┘        ▲                        │
-                       │                        │
-                       └── hotfix/xxx ──────────┘
-                           (back-merge)
+fix/xxx ──────┼──→ develop ──(수동 머지)──→ production
+              │        ▲                        │
+              │        │                        │
+              │        └── hotfix/xxx ──────────┘
+              │                (back-merge)
 ```
 
 ### 머지 규칙
 
-1. **작업 브랜치 → develop**: 작업 완료 후 머지
+1. **작업 브랜치 → develop**: 작업 완료 후 머지. **머지 완료된 작업 브랜치는 삭제한다.**
 2. **develop → production**: Docker 환경에서 충분히 테스트 후 **수동 머지**
 3. **hotfix → production**: 긴급 시 production 직접 분기 → 수정 → production 머지 → develop back-merge
+
+### 태그 (Tags)
+
+| 패턴 | 용도 | 예시 |
+|------|------|------|
+| `v<major>.<minor>.0-phase<N>` | Phase 완료 마일스톤 | `v0.1.0-phase0`, `v0.2.0-phase1` |
+| `v<major>.<minor>.<patch>` | 프로덕션 릴리스 | `v1.0.0` |
+
+- Phase 완료 시 develop에 태그 생성
+- production 머지 후 프로덕션 릴리스 태그 생성
+- Semantic Versioning 준수
 
 ### 커밋 컨벤션
 

@@ -58,4 +58,4 @@ logs/
 *.sqlite3
 
 # Claude Code
-.claude/settings.local.json
+.claude/

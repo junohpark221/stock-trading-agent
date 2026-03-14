@@ -1,7 +1,8 @@
 # Phase 2: 분석 엔진 — 구현 계획
 
-> **상태**: Step 1-3 완료, Step 4-10 대기
+> **상태**: ✅ 완료 (Step 1-10 전체 + 실제 데이터 수집 검증)
 > **작성일**: 2026-03-06
+> **완료일**: 2026-03-14
 > **완료 기준**: 외부 데이터 4개 수집 + 기술적 분석 + 펀더멘털 분석 + Analysis API + 테스트 전체 통과
 
 ---
@@ -782,3 +783,38 @@ docs/TRADING_LOGIC.md          — 기술지표 + 펀더멘털 섹션 작성
 5. **API 검증**: httpx AsyncClient로 analysis 엔드포인트 응답 스키마 검증
 6. **통합 파이프라인**: OHLCV → 기술지표 → 패턴스캔 전체 흐름 mock 테스트
 7. **문서 확인**: TRADING_LOGIC.md에 기술지표/펀더멘털 섹션 작성 완료 확인
+8. **실제 데이터 수집 검증 (2026-03-14)**: 4개 프로바이더 실제 API 호출 → DB 적재 → 엔드포인트 재검증 완료
+
+---
+
+## 실제 데이터 수집 검증 결과 (2026-03-14)
+
+### 버그 수정 3건
+
+| 파일 | 문제 | 수정 |
+|------|------|------|
+| `dart_provider.py` | `_resolve_corp_code()`가 `/company.json` (존재하지 않는 파라미터 `stock_code`) 사용 | `corpCode.xml` ZIP 다운로드 + XML 파싱으로 변경 |
+| `dart_provider.py` | aiohttp `base_url` + 절대경로(`/path`) → 호스트 루트로 리졸브되어 잘못된 URL 호출 | `_api_get()`에서 leading slash strip + `json.JSONDecodeError` 핸들링 추가 |
+| `ecos_provider.py` | `_format_ecos_date()` 분기(Q) 주기에 `YYYYMM` 포맷 사용 | `YYYYQ#` 포맷으로 수정 (예: `2025Q1`) |
+
+### 수집 결과
+
+| 프로바이더 | 수집 건수 | 상태 |
+|-----------|----------|------|
+| DART | 재무제표 3건 (연간/반기/분기), 공시 100건 | OK |
+| ECOS | 375건 (기준금리, 환율, CPI, GDP, M2) | OK |
+| FRED | 303건 (FEDFUNDS, CPI, UNRATE, GS10, VIX) | OK |
+| Naver | 100건 (삼성전자 뉴스) | OK |
+
+### 엔드포인트 재검증
+
+| 엔드포인트 | 상태 | 비고 |
+|-----------|------|------|
+| `GET /api/analysis/fundamental/005930` | OK | overall_score=50.9 |
+| `GET /api/analysis/macro` | OK | ECOS+FRED 혼합 |
+| `GET /api/analysis/macro?source=ecos` | OK | 기준금리 2.5% 등 |
+| `GET /api/analysis/macro?source=fred` | OK | VIX 27.29 등 |
+| `GET /api/data/financials/005930` | OK | 2024년 3건 |
+| `GET /api/data/news/005930` | OK | 최신 뉴스 100건 |
+| `GET /api/data/disclosures/005930` | OK | 2024년 공시 100건 |
+| `GET /api/analysis/technical/{symbol}` | 404 | OHLCV 데이터 없음 (KIS 미연결, 정상) |

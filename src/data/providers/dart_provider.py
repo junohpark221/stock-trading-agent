@@ -12,6 +12,10 @@ Cache keys:
 
 from __future__ import annotations
 
+import io
+import json
+import xml.etree.ElementTree as ET
+import zipfile
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
@@ -108,14 +112,24 @@ class DartProvider(DataProvider):
             raise ExternalAPIError("DART session not initialized")
 
         params["crtfc_key"] = self._settings.DART_API_KEY
+        # Strip leading slash to ensure path is relative to base_url
+        api_path = path.lstrip("/")
 
         try:
-            async with self._session.get(path, params=params) as resp:
+            async with self._session.get(api_path, params=params) as resp:
                 if resp.status != 200:
                     raise ExternalAPIError(
                         f"DART API HTTP {resp.status} on {path}"
                     )
-                data = await resp.json(content_type=None)
+                body = await resp.text()
+                if not body.strip():
+                    raise ExternalAPIError(f"DART API empty response on {path}")
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError as exc:
+                    raise ExternalAPIError(
+                        f"DART API invalid JSON on {path}: {body[:200]}"
+                    ) from exc
         except aiohttp.ClientError as exc:
             raise ExternalAPIError(f"DART API request failed: {exc}") from exc
 
@@ -132,7 +146,7 @@ class DartProvider(DataProvider):
     async def _resolve_corp_code(self, symbol: str) -> str | None:
         """Resolve stock symbol to DART corp_code.
 
-        Flow: Redis cache -> DART company.json API -> cache result.
+        Flow: Redis cache -> DART corpCode.xml ZIP download -> parse XML -> cache result.
         Returns None if the symbol is not found.
         """
         # 1. Try cache
@@ -143,15 +157,44 @@ class DartProvider(DataProvider):
         except CacheError:
             logger.warning("dart_corp_code_cache_read_failed", symbol=symbol)
 
-        # 2. API call
+        # 2. Download corpCode.xml ZIP and parse
+        if self._session is None or self._session.closed:
+            logger.warning("dart_corp_code_session_not_ready", symbol=symbol)
+            return None
+
         try:
-            data = await self._api_get("/company.json", {"stock_code": symbol})
-        except ExternalAPIError:
+            async with self._session.get(
+                "corpCode.xml",
+                params={"crtfc_key": self._settings.DART_API_KEY},
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "dart_corp_code_api_failed",
+                        symbol=symbol,
+                        status=resp.status,
+                    )
+                    return None
+                raw = await resp.read()
+        except aiohttp.ClientError:
             logger.warning("dart_corp_code_api_failed", symbol=symbol)
             return None
 
-        corp_code = data.get("corp_code")
-        if not corp_code or data.get("status") == "013":
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(raw))
+            xml_data = zf.read(zf.namelist()[0])
+            root = ET.fromstring(xml_data)
+        except (zipfile.BadZipFile, ET.ParseError, IndexError):
+            logger.warning("dart_corp_code_parse_failed", symbol=symbol)
+            return None
+
+        corp_code: str | None = None
+        for item in root.iter("list"):
+            stock_code = (item.findtext("stock_code") or "").strip()
+            if stock_code == symbol:
+                corp_code = (item.findtext("corp_code") or "").strip() or None
+                break
+
+        if not corp_code:
             return None
 
         # 3. Cache the result (best-effort)

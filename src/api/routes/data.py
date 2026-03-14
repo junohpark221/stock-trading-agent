@@ -4,6 +4,9 @@ Endpoints:
     GET /api/data/stocks   — 종목 마스터 목록 (페이지네이션 + 마켓 필터)
     GET /api/data/ohlcv/{symbol} — 일별 OHLCV (날짜 범위 + 페이지네이션)
     GET /api/data/stats    — 수집 통계 (종목 수, OHLCV 행 수, 날짜 범위)
+    GET /api/data/financials/{symbol} — 재무제표 목록 (페이지네이션 + 필터)
+    GET /api/data/news/{symbol} — 뉴스 기사 목록 (날짜 범위 + 페이지네이션)
+    GET /api/data/disclosures/{symbol} — 공시 목록 (날짜 범위 + 페이지네이션)
 """
 
 from datetime import date
@@ -17,7 +20,14 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.enums import MarketType
-from src.core.models import OHLCV, StockInfo
+from src.core.models import (
+    OHLCV,
+    DisclosureInfo,
+    FinancialStatementInfo,
+    NewsArticleInfo,
+    StockInfo,
+)
+from src.db.models.analysis import Disclosure, FinancialStatement, NewsArticle
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.db.session import get_db_session
 
@@ -54,6 +64,30 @@ class DataStatsResponse(BaseModel):
     ohlcv_date_max: date | None
     kospi_count: int
     kosdaq_count: int
+
+
+class FinancialsListResponse(BaseModel):
+    symbol: str
+    items: list[FinancialStatementInfo]
+    total: int
+    limit: int
+    offset: int
+
+
+class NewsListResponse(BaseModel):
+    symbol: str
+    items: list[NewsArticleInfo]
+    total: int
+    limit: int
+    offset: int
+
+
+class DisclosuresListResponse(BaseModel):
+    symbol: str
+    items: list[DisclosureInfo]
+    total: int
+    limit: int
+    offset: int
 
 
 # ── GET /api/data/stocks ─────────────────────────────────────────────────
@@ -235,4 +269,162 @@ async def get_data_stats(
 
     except Exception:
         logger.exception("get_data_stats_failed")
+        raise HTTPException(status_code=500, detail="Internal server error") from None
+
+
+# ── GET /api/data/financials/{symbol} ────────────────────────────────────
+
+
+@router.get("/financials/{symbol}", response_model=FinancialsListResponse)
+async def get_financials(
+    symbol: str,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    fiscal_year: int | None = Query(None),
+    report_type: str | None = Query(None, pattern="^(annual|semi_annual|quarterly)$"),
+    session: AsyncSession = Depends(get_db_session),
+) -> JSONResponse:
+    """종목별 재무제표 목록 조회. 회계연도/보고서 유형 필터 + 페이지네이션."""
+    try:
+        stmt = select(FinancialStatement).where(FinancialStatement.symbol == symbol)
+        count_stmt = (
+            select(func.count())
+            .select_from(FinancialStatement)
+            .where(FinancialStatement.symbol == symbol)
+        )
+
+        if fiscal_year is not None:
+            stmt = stmt.where(FinancialStatement.fiscal_year == fiscal_year)
+            count_stmt = count_stmt.where(FinancialStatement.fiscal_year == fiscal_year)
+        if report_type is not None:
+            stmt = stmt.where(FinancialStatement.report_type == report_type)
+            count_stmt = count_stmt.where(FinancialStatement.report_type == report_type)
+
+        total = (await session.execute(count_stmt)).scalar_one()
+
+        stmt = (
+            stmt.order_by(
+                FinancialStatement.fiscal_year.desc(),
+                FinancialStatement.fiscal_quarter.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+        items = [FinancialStatementInfo.model_validate(row) for row in rows]
+
+        body = FinancialsListResponse(
+            symbol=symbol, items=items, total=total, limit=limit, offset=offset
+        )
+        return JSONResponse(content=body.model_dump(mode="json"))
+
+    except Exception:
+        logger.exception("get_financials_failed", symbol=symbol)
+        raise HTTPException(status_code=500, detail="Internal server error") from None
+
+
+# ── GET /api/data/news/{symbol} ──────────────────────────────────────────
+
+
+@router.get("/news/{symbol}", response_model=NewsListResponse)
+async def get_news(
+    symbol: str,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    session: AsyncSession = Depends(get_db_session),
+) -> JSONResponse:
+    """종목별 뉴스 기사 목록 조회. 날짜 범위 필터 + 페이지네이션."""
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=400, detail="start_date must be <= end_date"
+        )
+
+    try:
+        stmt = select(NewsArticle).where(NewsArticle.symbol == symbol)
+        count_stmt = (
+            select(func.count())
+            .select_from(NewsArticle)
+            .where(NewsArticle.symbol == symbol)
+        )
+
+        if start_date:
+            stmt = stmt.where(NewsArticle.published_at >= start_date)
+            count_stmt = count_stmt.where(NewsArticle.published_at >= start_date)
+        if end_date:
+            stmt = stmt.where(NewsArticle.published_at <= end_date)
+            count_stmt = count_stmt.where(NewsArticle.published_at <= end_date)
+
+        total = (await session.execute(count_stmt)).scalar_one()
+
+        stmt = stmt.order_by(NewsArticle.published_at.desc()).limit(limit).offset(offset)
+        rows = (await session.execute(stmt)).scalars().all()
+
+        items = [NewsArticleInfo.model_validate(row) for row in rows]
+
+        body = NewsListResponse(
+            symbol=symbol, items=items, total=total, limit=limit, offset=offset
+        )
+        return JSONResponse(content=body.model_dump(mode="json"))
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("get_news_failed", symbol=symbol)
+        raise HTTPException(status_code=500, detail="Internal server error") from None
+
+
+# ── GET /api/data/disclosures/{symbol} ───────────────────────────────────
+
+
+@router.get("/disclosures/{symbol}", response_model=DisclosuresListResponse)
+async def get_disclosures(
+    symbol: str,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    session: AsyncSession = Depends(get_db_session),
+) -> JSONResponse:
+    """종목별 공시 목록 조회. 날짜 범위 필터 + 페이지네이션."""
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(
+            status_code=400, detail="start_date must be <= end_date"
+        )
+
+    try:
+        stmt = select(Disclosure).where(Disclosure.symbol == symbol)
+        count_stmt = (
+            select(func.count())
+            .select_from(Disclosure)
+            .where(Disclosure.symbol == symbol)
+        )
+
+        if start_date:
+            stmt = stmt.where(Disclosure.receipt_date >= start_date)
+            count_stmt = count_stmt.where(Disclosure.receipt_date >= start_date)
+        if end_date:
+            stmt = stmt.where(Disclosure.receipt_date <= end_date)
+            count_stmt = count_stmt.where(Disclosure.receipt_date <= end_date)
+
+        total = (await session.execute(count_stmt)).scalar_one()
+
+        stmt = (
+            stmt.order_by(Disclosure.receipt_date.desc()).limit(limit).offset(offset)
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+        items = [DisclosureInfo.model_validate(row) for row in rows]
+
+        body = DisclosuresListResponse(
+            symbol=symbol, items=items, total=total, limit=limit, offset=offset
+        )
+        return JSONResponse(content=body.model_dump(mode="json"))
+
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("get_disclosures_failed", symbol=symbol)
         raise HTTPException(status_code=500, detail="Internal server error") from None

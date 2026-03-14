@@ -119,8 +119,10 @@ app = create_app()
 
 # ── Router registration ──────────────────────────────────────────────────
 from src.api.routes.data import router as data_router  # noqa: E402
+from src.api.routes.analysis import router as analysis_router  # noqa: E402
 
 app.include_router(data_router)
+app.include_router(analysis_router)
 
 
 @app.get("/health", response_model=HealthStatus)

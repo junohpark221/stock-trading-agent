@@ -77,10 +77,18 @@ def _parse_ecos_time(time_str: str, period: str) -> date:
 
 
 def _format_ecos_date(d: date, period: str) -> str:
-    """Format a date for ECOS API path based on period type."""
+    """Format a date for ECOS API path based on period type.
+
+    - ``D``: ``"20260301"``
+    - ``M``: ``"202603"``
+    - ``Q``: ``"2025Q1"``
+    """
     if period == "D":
         return d.strftime("%Y%m%d")
-    # M and Q both use YYYYMM
+    if period == "Q":
+        quarter = (d.month - 1) // 3 + 1
+        return f"{d.year}Q{quarter}"
+    # M uses YYYYMM
     return d.strftime("%Y%m")
 
 

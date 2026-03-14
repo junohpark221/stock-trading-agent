@@ -1,0 +1,23 @@
+agents:
+  trader:
+    routing_mode: fixed
+    primary_model: "openai/o3-deep-research"
+  risk_manager:
+    routing_mode: fixed
+    primary_model: "openai/o4-mini-deep-research"
+  stock_analyst:
+    routing_mode: escalation
+    primary_model: "google/gemini-3-flash"
+    escalation_model: "openai/o3-deep-research"
+    confidence_threshold: 0.60
+  market_analyst:
+    routing_mode: escalation
+    primary_model: "google/gemini-3.1-flash-lite"
+    escalation_model: "openai/gpt-5-mini"
+    confidence_threshold: 0.60
+  sentiment_analyzer:
+    routing_mode: fixed
+    primary_model: "openai/gpt-5-mini"
+  report_generator:
+    routing_mode: fixed
+    primary_model: "openai/gpt-5-nano"

@@ -6,19 +6,25 @@ Every model has ``from_attributes=True`` for ORM compatibility.
 
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.enums import (
     AgentType,
     DataSourceType,
+    DecisionAction,
+    LLMProviderType,
     MarketType,
+    MessageRole,
     OrderSide,
     OrderStatus,
     OrderType,
     PositionStatus,
     ReportType,
+    RoutingMode,
     SentimentLabel,
+    SentimentMethod,
     SignalAction,
 )
 
@@ -288,3 +294,201 @@ class PatternSignal(BaseModel):
     signal_type: str
     confidence: Decimal
     description: str
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: LLM Agent models
+# ---------------------------------------------------------------------------
+
+
+class ToolParameter(BaseModel):
+    """LLM tool function 파라미터 정의."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    type: str
+    description: str
+    required: bool = True
+    enum: list[str] | None = None
+
+
+class Tool(BaseModel):
+    """LLM function calling 도구 정의."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    description: str
+    parameters: list[ToolParameter] = []
+
+
+class ToolCall(BaseModel):
+    """LLM이 요청한 tool 호출."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    arguments: dict[str, object] = {}
+
+
+class LLMMessage(BaseModel):
+    """LLMProvider.chat() 입력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    role: MessageRole
+    content: str
+    name: str | None = None
+    tool_call_id: str | None = None
+
+
+class LLMResponse(BaseModel):
+    """LLMProvider.chat() 반환."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    content: str
+    model: str
+    provider: LLMProviderType
+    tokens_in: int
+    tokens_out: int
+    cost_usd: Decimal
+    tool_calls: list[ToolCall] = []
+    finish_reason: str = "stop"
+    latency_ms: int = 0
+
+
+class AgentModelConfig(BaseModel):
+    """에이전트별 모델 할당 (Admin API 응답/요청)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    agent_type: AgentType
+    routing_mode: RoutingMode
+    primary_model: str
+    escalation_model: str | None = None
+    confidence_threshold: Decimal | None = None
+    is_active: bool = True
+    updated_by: str = "system"
+
+
+class SentimentResult(BaseModel):
+    """키워드/LLM 하이브리드 감성분석 결과."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    overall_score: Decimal
+    overall_label: SentimentLabel
+    method: SentimentMethod
+    positive_count: int = 0
+    negative_count: int = 0
+    neutral_count: int = 0
+    total_articles: int = 0
+    key_topics: list[str] = []
+    needs_llm_analysis: bool = False
+    reasoning: str = ""
+
+
+class MarketCondition(BaseModel):
+    """Market Analyst 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    condition: str
+    confidence: Decimal
+    kospi_trend: str
+    kosdaq_trend: str
+    market_risk_level: str
+    key_factors: list[str] = []
+    sector_outlook: dict[str, str] = {}
+    macro_summary: str = ""
+    recommended_exposure: Decimal = Decimal("0.5")
+    reasoning: str = ""
+
+
+class StockAnalysis(BaseModel):
+    """Stock Analyst 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    name: str = ""
+    action: DecisionAction
+    confidence: Decimal
+    technical_score: Decimal = Decimal(0)
+    technical_summary: str = ""
+    fundamental_score: Decimal = Decimal(0)
+    fundamental_summary: str = ""
+    sentiment: SentimentResult | None = None
+    target_price: Decimal | None = None
+    stop_loss_price: Decimal | None = None
+    current_price: Decimal | None = None
+    key_factors: list[str] = []
+    risks: list[str] = []
+    reasoning: str = ""
+
+
+class RiskAssessment(BaseModel):
+    """Risk Manager 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    approved: bool
+    risk_level: str
+    confidence: Decimal
+    recommended_quantity: int = 0
+    recommended_position_size_krw: Decimal = Decimal(0)
+    max_loss_krw: Decimal = Decimal(0)
+    portfolio_concentration_ok: bool = True
+    sector_exposure_ok: bool = True
+    daily_loss_limit_ok: bool = True
+    position_size_ok: bool = True
+    volatility_ok: bool = True
+    risk_factors: list[str] = []
+    conditions: list[str] = []
+    reasoning: str = ""
+
+
+class TradeDecision(BaseModel):
+    """Trader 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    action: DecisionAction
+    confidence: Decimal
+    order_type: OrderType = OrderType.LIMIT
+    quantity: int = 0
+    price: Decimal | None = None
+    stop_loss_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
+    risk_reward_ratio: Decimal | None = None
+    expected_return_pct: Decimal | None = None
+    max_loss_pct: Decimal | None = None
+    reasoning: str = ""
+    requires_approval: bool = True
+
+
+class PipelineResult(BaseModel):
+    """PipelineOrchestrator 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    session_id: UUID
+    started_at: datetime
+    completed_at: datetime | None = None
+    market_condition: MarketCondition | None = None
+    stock_analyses: list[StockAnalysis] = []
+    risk_assessments: list[RiskAssessment] = []
+    trade_decisions: list[TradeDecision] = []
+    symbols_requested: list[str] = []
+    symbols_analyzed: list[str] = []
+    symbols_skipped: list[str] = []
+    total_llm_cost_usd: Decimal = Decimal(0)
+    total_llm_calls: int = 0
+    errors: list[str] = []
+    success: bool = True

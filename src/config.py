@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     LLM_MONTHLY_BUDGET_USD: Decimal = Decimal("100.00")
     LLM_DEFAULT_PROVIDER: Literal["openai", "anthropic", "google"] = "openai"
+    LLM_ESCALATION_CONFIDENCE_THRESHOLD: Decimal = Decimal("0.60")
+    LLM_RESPONSE_CACHE_TTL: int = 1800    # 30분
+    LLM_CONFIG_CACHE_TTL: int = 300       # 5분
+    LLM_BUDGET_WARNING_PCT: int = 80      # 월간 예산 경고 (%)
+    LLM_MAX_RETRIES: int = 3              # API 호출 최대 재시도
+    LLM_REQUEST_TIMEOUT: int = 120        # API 요청 타임아웃 (초)
 
     # ── Phase 4: Trading Strategy ─────────────────────────────────────
     MAX_POSITION_SIZE_KRW: int = 1_000_000

@@ -147,6 +147,22 @@ class SentimentLabel(StrEnum):
     NEUTRAL = "neutral"
 
 
+class SentimentMethod(StrEnum):
+    """감성분석 방법 (하이브리드: 키워드 1차 + LLM 심층)."""
+
+    KEYWORD = "keyword"
+    LLM = "llm"
+
+
+class MessageRole(StrEnum):
+    """LLM 메시지 역할."""
+
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
 class DataSourceType(StrEnum):
     """외부 데이터 소스 식별자."""
 

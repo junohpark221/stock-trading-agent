@@ -4,7 +4,7 @@
 > 프로젝트에 변경사항이 생기거나 수정/최신화해야 하는 정보가 있으면 반드시 이 문서를 업데이트합니다.
 >
 > **최종 수정일: 2026-03-14**
-> **버전: 2.0**
+> **버전: 2.1**
 
 ---
 
@@ -31,6 +31,7 @@
 - [Phase 0: 프로젝트 기반 구축](./plans/phases/phase0.md) ✅
 - [Phase 1: 데이터 수집 레이어](./plans/phases/phase1.md) ✅
 - [Phase 2: 분석 엔진](./plans/phases/phase2.md) ✅
+- [Phase 3: LLM 에이전트 시스템](./plans/phases/phase3.md)
 
 ---
 
@@ -75,11 +76,11 @@
 ┌────────┐ ┌────────┐ ┌──────┐
 │ OpenAI │ │Gemini  │ │Claude│
 │ (주력)  │ │ (보조)  │ │(백업) │
-│ o3     │ │2.5 Flash│ │Opus  │
-│ GPT-5  │ │Flash-  │ │Sonnet│
-│ o4-mini│ │Lite    │ │Haiku │
-│ 5 Mini │ │2.5 Pro │ │      │
-│ 5 Nano │ │        │ │      │
+│ o3-DR  │ │3.1 Pro │ │Opus  │
+│GPT-5.4 │ │3 Flash │ │4.6   │
+│o4-mini │ │3.1 FL  │ │Sonnet│
+│ 5 Mini │ │        │ │4.5   │
+│ 5 Nano │ │        │ │Haiku │
 └────────┘ └────────┘ └──────┘
 ```
 
@@ -117,26 +118,26 @@ class LLMProvider(ABC):
         """구조화된 출력 (JSON schema 강제)"""
 
 class OpenAIProvider(LLMProvider):
-    """OpenAI (주력) — o3, GPT-5, o4-mini, GPT-5 Mini, GPT-5 Nano"""
+    """OpenAI (주력) — o3-deep-research, GPT-5.4, o4-mini-deep-research, GPT-5 Mini, GPT-5 Nano"""
 
 class GeminiProvider(LLMProvider):
-    """Gemini (보조/1차 분석) — 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite"""
+    """Gemini (보조/1차 분석) — 3.1 Pro, 3 Flash, 3.1 Flash-Lite"""
 
 class AnthropicProvider(LLMProvider):
-    """Claude (백업) — Opus 4.6, Sonnet 4.6, Haiku 4.5 (prompt caching 활용)"""
+    """Claude (백업) — Opus 4.6, Sonnet 4.5, Haiku 4.5 (prompt caching 활용)"""
 ```
 
 ### 에이전트별 LLM 모델 배분 전략 (혼합 라우팅)
 
 | 에이전트 | 라우팅 모드 | 1차 모델 | 에스컬레이션 모델 | 에스컬레이션 조건 | 예상 비용/호출 | 변경 이유 |
 |---------|-----------|---------|-----------------|----------------|-------------|---------|
-| Trader (매매 결정) | **고정 배분** | o3 | — | 항상 추론 특화 모델 사용 | ~$0.06 | 추론 특화, Opus 대비 60% 절감 |
-| Risk Manager (리스크 평가) | **고정 배분** | o4-mini | — | 안전 관련, 추론 특화 경량 | ~$0.03 | 추론 특화 경량, 리스크 평가에 적합 |
-| Stock Analyst (종목 분석) | **에스컬레이션** | Gemini 2.5 Flash | o3 | confidence < 0.6 또는 복합 분석 | ~$0.005→$0.06 | Flash로 1차 분석, 복합 분석 시 o3 |
-| Market Analyst (시장 분석) | **에스컬레이션** | Gemini 2.5 Flash-Lite | GPT-5 Mini | 시장 급변 또는 판단 모호 시 | ~$0.003→$0.01 | 시장 급변 시 GPT-5 Mini로 재분석 |
-| Sentiment Analyzer (감성 분석) | **에스컬레이션** | Gemini 2.5 Flash-Lite | GPT-5 Nano | 감성 판단 모호(중립 ±0.1) 시 | ~$0.003→$0.002 | 초저비용 GPT로 에스컬레이션 |
-| Report Generator (리포트) | **고정 배분(저비용)** | GPT-5 Nano | — | 정형 리포트, 항상 저비용 | ~$0.002 | GPT-4o mini 대체, 더 저렴 |
+| Trader (매매 결정) | **고정 배분** | o3-deep-research | — | 항상 추론 특화 모델 사용 | ~$0.06 | 추론 특화, 최고 정확도 |
+| Risk Manager (리스크 평가) | **고정 배분** | o4-mini-deep-research | — | 안전 관련, 추론 특화 경량 | ~$0.03 | 추론 특화 경량, 리스크 평가에 적합 |
+| Stock Analyst (종목 분석) | **에스컬레이션** | Gemini 3 Flash | o3-deep-research | confidence < 0.6 또는 복합 분석 | ~$0.01→$0.06 | Flash로 1차 분석, 복합 분석 시 o3 |
+| Market Analyst (시장 분석) | **에스컬레이션** | Gemini 3.1 Flash-Lite | GPT-5 Mini | 시장 급변 또는 판단 모호 시 | ~$0.005→$0.01 | 시장 급변 시 GPT-5 Mini로 재분석 |
+| Report Generator (리포트) | **고정 배분(저비용)** | GPT-5 Nano | — | 정형 리포트, 항상 저비용 | ~$0.002 | 초저비용, 정형 출력 |
 
+> **감성분석**: 별도 에이전트 대신 **하이브리드 방식** 채택 — 키워드 기반 1차 분류(비용 $0) + Stock Analyst가 중요 뉴스만 LLM 심층 분석.
 > **총 비용 비교**: 트레이딩 사이클당 ~$0.30-$0.45(이전) → ~$0.10-$0.15(현재), 약 65-70% 절감.
 > 위 배분은 **기본값**이며, Admin API(`/api/admin/llm/config`)로 런타임 변경 가능.
 
@@ -235,7 +236,7 @@ PUT /api/admin/llm/config/trader
 | 월간 예산 상한 | 설정 가능 (기본 $100) |
 | 비용 추적 | 프로바이더별/에이전트별/일별 토큰 사용량 DB 기록 |
 | 예산 초과 정책 | 상한 80% 도달 시 에스컬레이션 비활성화 + 텔레그램 알림 |
-| 폴백 순서 | o3 → GPT-5 → o4-mini → GPT-5 Mini → Gemini 2.5 Pro → Gemini 2.5 Flash → Claude Sonnet 4.6 → GPT-5 Nano |
+| 폴백 순서 | o3-DR → GPT-5.4 → o4-mini-DR → GPT-5 Mini → Gemini 3.1 Pro → Gemini 3 Flash → Claude Sonnet 4.5 → GPT-5 Nano |
 | 에스컬레이션 비율 모니터링 | 에이전트별 에스컬레이션 빈도 추적 (>50% 시 1차 모델 업그레이드 검토) |
 | 모델별 정확도 추적 | decision_log outcome 기반 모델별 판단 정확도 기록 |
 | 프롬프트 캐시 적중률 | Claude prompt caching hit rate 추적 (목표: >60%) |
@@ -243,44 +244,41 @@ PUT /api/admin/llm/config/trader
 
 ### LLM 모델 가격표 (참조)
 
-> 모델 가격은 수시로 변동됩니다. **최종 확인일: 2026-02-09**
+> 모델 가격은 수시로 변동됩니다. **최종 확인일: 2026-03-14**
 
 **Anthropic Claude:**
 
-| 모델 | Input/MTok | Output/MTok | 특징 |
-|------|-----------|------------|------|
-| Claude Opus 4.6 | $5 | $25 | 최고 성능 플래그십 |
-| Claude Sonnet 4.6 | $3 | $15 | 균형 (성능/비용) |
-| Claude Haiku 4.5 | $1 | $5 | 최속 + 저비용 |
+| 모델 | Input/MTok | Output/MTok | Batch | Context | 특징 |
+|------|-----------|------------|-------|---------|------|
+| Claude Opus 4.6 | $5 | $25 | $2.50/$12.50 | 1M | 최고 성능 플래그십 |
+| Claude Sonnet 4.5 | $3 | $15 | $1.50/$7.50 | 1M (>200K 2x/1.5x) | 균형 (성능/비용) |
+| Claude Haiku 4.5 | $1 | $5 | $0.50/$2.50 | 200K | 최속 + 저비용 |
+
+> Prompt Caching: 1.25x write(5min), 2x write(1hr), 0.1x read. Sonnet 4.5는 금융 분석에서 Opus 4.6과 동급 성능.
 
 **OpenAI:**
 
-> GPT-4.1 시리즈 및 GPT-4o mini는 지원 종료 예정으로 제외. GPT-5 시리즈로 대체.
-
 | 모델 | Input/MTok | Output/MTok | Context | 특징 |
 |------|-----------|------------|---------|------|
-| o3 | $2 | $8 | 200K | 추론 특화 플래그십 |
-| GPT-5 | $1.25 | $10 | 400K | 범용 플래그십 |
-| o4-mini | $1.10 | $4.40 | 200K | 추론 특화 경량 |
+| o3 Deep Research | $2 | $8 | 200K | 추론 특화 플래그십 |
+| GPT-5.4 | $1.25 | $10 | 1.05M | 범용 플래그십 (>272K 시 2x/1.5x) |
+| GPT-5.4 Pro | $5 | $25 | 1.05M | 프리미엄 플래그십 |
+| o4-mini Deep Research | ~$1 | ~$4 | 200K | 추론 특화 경량 |
 | GPT-5 Mini | $0.25 | $2 | 400K | 범용 경량 |
 | GPT-5 Nano | $0.05 | $0.40 | 400K | 초저비용 범용 |
-| GPT-5 Pro | TBD | TBD | 400K | 프리미엄 플래그십 (가격 확인 후 업데이트) |
 
-> **주의**: o3, o4-mini 등 o-시리즈는 내부 reasoning tokens을 생성하며 output 가격으로 과금.
-> 실제 호출 비용은 표시 가격의 3~10배일 수 있음. 에이전트별 비용 추정치는 추정치임.
+> **주의**: o-시리즈는 내부 reasoning tokens을 생성하며 output 가격으로 과금.
+> 실제 호출 비용은 표시 가격의 3~10배일 수 있음. Batch API 50% 할인 가능.
 
 **Google Gemini:**
 
 | 모델 | Input/MTok | Output/MTok | Context | 특징 |
 |------|-----------|------------|---------|------|
-| Gemini 2.5 Pro | $1.25 | $10 | 2M | 고성능 멀티모달 |
-| Gemini 2.5 Flash | $0.15 | $0.60 | 1M | 빠른 추론 **(가격 수정: $0.30/$2.50 → $0.15/$0.60)** |
-| Gemini 2.5 Flash-Lite | $0.10 | $0.40 | 1M | 경량 저비용 |
+| Gemini 3.1 Pro | $2 | $12~18 | 1M | 고성능 멀티모달 (>200K 시 2x) |
+| Gemini 3 Flash | $0.50 | $3 | 1M | 빠른 추론, 에이전트 워크플로우 |
+| Gemini 3.1 Flash-Lite | $0.25 | $1.50 | 1M | 경량 저비용, 대량 처리 |
 
-> Gemini 3 Pro/Flash는 아직 Preview 상태이므로 안정 버전인 2.5 계열을 기본 채택.
-
-> **참고**: Claude Sonnet 4.6은 금융 분석 벤치마크에서 Opus 4.6보다 높은 성능 (63.3% vs 60.1%).
-> Phase 3 구현 시 실제 종목 분석 비교 테스트에 반영. GPT-First 전략 자체는 유지.
+> Gemini 3.x 시리즈 GA 기준. Batch API 50% 할인 가능. 모든 모델 function calling + structured output 지원.
 
 ---
 
@@ -293,8 +291,7 @@ PUT /api/admin/llm/config/trader
 | 에이전트 | 주요 데이터 소스 | 용도 |
 |---------|----------------|------|
 | Market Analyst | ECOS, FRED, LLM 웹 검색 | 매크로 지표, 시장 환경 분석 |
-| Stock Analyst | KIS API, DART, pandas-ta, pykrx | 시세, 재무제표, 기술 지표, 히스토리컬 데이터 |
-| Sentiment Analyzer | 네이버 검색 API, LLM 웹 검색, RSS | 뉴스 수집, 감성 점수 산출, 트렌드 추적 |
+| Stock Analyst | KIS API, DART, pandas-ta, pykrx, 뉴스 감성 | 시세, 재무제표, 기술 지표, 히스토리컬 데이터, 하이브리드 감성분석 |
 | Risk Manager | KIS API (포지션), ECOS (금리/환율) | 포트폴리오 리스크, 매크로 리스크 체크 |
 | Trader | 위 에이전트 결과물 종합 | 최종 매매 결정 |
 | Report Generator | 위 에이전트 결과물 + DB 통계 | 리포트 생성 |
@@ -306,7 +303,7 @@ PUT /api/admin/llm/config/trader
 | 시장 데이터 & 브로커 | KIS Open Trading API | 1 | 무료 |
 | 공시 & 재무제표 | DART (OPEN DART API) | 2 | 무료 |
 | 매크로 경제 지표 | ECOS (한국은행), FRED (미국 연준) | 2~3 | 무료 |
-| 뉴스 & 감성분석 | 네이버 검색 API, LLM 웹 검색, RSS | 2~3 | 무료 (LLM 비용 별도) |
+| 뉴스 & 감성분석 | 네이버 검색 API, 키워드 분류 + LLM 심층 | 2~3 | 무료 (LLM 비용 별도) |
 | 기술적 분석 | pandas-ta | 2 | 무료 (라이브러리) |
 | 보조 시장 데이터 | pykrx, FinanceDataReader | 2 | 무료 (라이브러리) |
 
@@ -585,7 +582,8 @@ stock-trading-agent/
 │   ├── plans/phases/                # Phase별 상세 계획
 │   │   ├── phase0.md               # Phase 0 구현 계획 ✅
 │   │   ├── phase1.md               # Phase 1 구현 계획 ✅
-│   │   └── phase2.md               # Phase 2 구현 계획 (대기)
+│   │   ├── phase2.md               # Phase 2 구현 계획 ✅
+│   │   └── phase3.md               # Phase 3 구현 계획
 │   └── setup/                       # 초기 설정 문서
 │       └── subagents-and-skills.md  # Subagent & Skill 설정 정리
 │
@@ -608,21 +606,21 @@ stock-trading-agent/
 │   │       ├── __init__.py
 │   │       ├── market_data.py     # OHLCV, 종목 마스터 ← Phase 1
 │   │       ├── analysis.py        # 재무제표, 경제지표, 뉴스, 공시 ← Phase 2
+│   │       ├── llm.py             # DecisionLog, AgentModelConfigDB, LLMUsage ← Phase 3
 │   │       ├── trade.py           # 주문, 체결 기록
 │   │       ├── portfolio.py       # 포트폴리오, 포지션
-│   │       ├── strategy.py        # 전략 설정, 시그널 기록
-│   │       ├── llm_analysis.py    # LLM 분석 결과 저장
-│   │       └── decision_log.py    # 의사결정 근거 기록 (Audit Trail)
+│   │       └── strategy.py        # 전략 설정, 시그널 기록
 │   │
 │   ├── llm/                       # LLM 프로바이더 추상화 레이어
 │   │   ├── __init__.py
 │   │   ├── base.py                # LLMProvider (ABC)
-│   │   ├── router.py              # LLM 라우터 (DB 기반 모델 설정 + 폴백 + 비용 추적)
+│   │   ├── router.py              # LLM 라우터 (DB 기반 모델 설정 + 에스컬레이션 + 비용 추적)
 │   │   ├── providers/
 │   │   │   ├── __init__.py
-│   │   │   ├── openai.py          # OpenAI (주력) — o3, GPT-5, o4-mini, GPT-5 Mini/Nano
-│   │   │   ├── google.py          # Gemini (보조) — 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite
-│   │   │   └── anthropic.py       # Claude (백업) — Opus 4.6, Sonnet 4.6, Haiku 4.5
+│   │   │   ├── mock.py            # MockLLMProvider (테스트용, deterministic 응답)
+│   │   │   ├── openai.py          # OpenAI (주력) — o3-DR, GPT-5.4, o4-mini-DR, GPT-5 Mini/Nano
+│   │   │   ├── google.py          # Gemini (보조) — 3.1 Pro, 3 Flash, 3.1 Flash-Lite
+│   │   │   └── anthropic.py       # Claude (백업) — Opus 4.6, Sonnet 4.5, Haiku 4.5
 │   │   └── cost_tracker.py        # LLM 비용 추적 및 예산 관리
 │   │
 │   ├── broker/                    # 브로커 추상화 레이어
@@ -663,18 +661,20 @@ stock-trading-agent/
 │   │   ├── fundamental/           # 펀더멘털 분석
 │   │   │   ├── __init__.py
 │   │   │   └── analyzer.py        # 재무제표, 밸류에이션
-│   │   └── sentiment/             # 감성 분석
+│   │   └── sentiment/             # 감성 분석 (하이브리드)
 │   │       ├── __init__.py
-│   │       └── analyzer.py        # 뉴스/공시 감성 분석
+│   │       ├── analyzer.py        # KeywordSentimentAnalyzer (1차 분류)
+│   │       └── keywords.py        # 한국어 긍정/부정/중요 키워드 사전
 │   │
 │   ├── agent/                     # LLM 에이전트 시스템
 │   │   ├── __init__.py
-│   │   ├── orchestrator.py        # 멀티 에이전트 오케스트레이터
+│   │   ├── orchestrator.py        # PipelineOrchestrator (4단계 순차 실행)
 │   │   ├── decision_recorder.py   # 의사결정 근거 기록 유틸리티
 │   │   ├── agents/                # 개별 에이전트
 │   │   │   ├── __init__.py
+│   │   │   ├── base.py            # BaseAgent ABC
 │   │   │   ├── market_analyst.py  # 시장 분석 에이전트
-│   │   │   ├── stock_analyst.py   # 종목 분석 에이전트
+│   │   │   ├── stock_analyst.py   # 종목 분석 에이전트 (하이브리드 감성분석 통합)
 │   │   │   ├── risk_manager.py    # 리스크 관리 에이전트
 │   │   │   └── trader.py          # 매매 결정 에이전트
 │   │   ├── tools/                 # 에이전트가 사용하는 도구
@@ -683,12 +683,12 @@ stock-trading-agent/
 │   │   │   ├── fundamental.py     # 재무 데이터 조회 도구
 │   │   │   ├── market_data.py     # 시세/호가 조회 도구
 │   │   │   └── news.py            # 뉴스/공시 조회 도구
-│   │   ├── prompts/               # 프롬프트 템플릿
-│   │   │   ├── __init__.py
-│   │   │   ├── market_analysis.py
-│   │   │   ├── stock_analysis.py
-│   │   │   └── trade_decision.py
-│   │   └── memory.py              # 에이전트 메모리 (과거 분석/결정 저장)
+│   │   └── prompts/               # 프롬프트 템플릿
+│   │       ├── __init__.py
+│   │       ├── market_analysis.py
+│   │       ├── stock_analysis.py
+│   │       ├── risk_assessment.py
+│   │       └── trade_decision.py
 │   │
 │   ├── strategy/                  # 전략 엔진
 │   │   ├── __init__.py
@@ -717,10 +717,14 @@ stock-trading-agent/
 │       │   ├── __init__.py
 │       │   ├── data.py            # 데이터 확인용 (종목, OHLCV, 재무제표, 뉴스, 공시) ← Phase 1~2
 │       │   ├── analysis.py        # 분석 결과 (기술지표, 펀더멘털, 매크로) ← Phase 2
+│       │   ├── pipeline.py        # Pipeline API (POST run, GET result) ← Phase 3
+│       │   ├── decisions.py       # 의사결정 근거 조회 API ← Phase 3
 │       │   ├── portfolio.py       # 포트폴리오 조회
 │       │   ├── trades.py          # 거래 내역
-│       │   ├── decisions.py       # 의사결정 근거 조회 API
 │       │   └── control.py         # 수동 제어 (시작/중지/승인)
+│       ├── admin/
+│       │   ├── __init__.py
+│       │   └── llm_config.py      # LLM 모델 설정 Admin API ← Phase 3
 │       └── deps.py                # 공통 의존성
 │
 └── tests/
@@ -974,8 +978,8 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 
 **뉴스 수집 (Phase 2) + 감성 분석 (Phase 3):**
 - **Phase 2 — 뉴스 수집만**: 네이버 검색 API로 뉴스 헤드라인/요약 수집 → `news_article` 테이블 저장 (sentiment 필드 null)
-- **Phase 3 — LLM 감성분석**: Sentiment Analyzer 에이전트가 수집된 뉴스를 읽고 감성 점수 산출 (긍정/부정/중립 + 시장영향도). `src/analysis/sentiment/` Phase 3에서 생성
-- **LLM 웹 검색**: OpenAI/Gemini/Claude 내장 웹 검색으로 심층 뉴스 분석 (Phase 3)
+- **Phase 3 — 하이브리드 감성분석**: 키워드 기반 1차 분류(비용 $0) + Stock Analyst가 중요 뉴스만 LLM 심층 분석. `src/analysis/sentiment/` Phase 3에서 생성
+- **LLM 웹 검색**: Phase 4 이후로 이동 (OpenAI/Gemini/Claude 내장 웹 검색)
 - **RSS 피드 (백업)**: 한경/연합뉴스 등 주요 언론사 RSS로 안정적 수신 (향후)
 
 **매크로 경제 지표:**
@@ -998,28 +1002,33 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 
 ### Phase 3: LLM 에이전트 시스템
 > 멀티 LLM 기반 시장 분석, 종목 분석, 매매 판단 멀티 에이전트 + 의사결정 기록
-> **감성분석**: Phase 2에서 수집된 뉴스(`news_article`)에 LLM 기반 감성 점수를 산출하여 채움. `src/analysis/sentiment/` 이 Phase에서 생성.
+> **감성분석**: 키워드 기반 1차 분류(비용 $0) + Stock Analyst가 중요 뉴스만 LLM 심층 분석 (하이브리드 방식)
+> **상세 계획**: [Phase 3 구현 계획](./plans/phases/phase3.md)
 
 **생성할 파일:**
-- `src/analysis/sentiment/analyzer.py` — LLM 기반 뉴스 감성 분석 (Phase 2에서 이관)
+- `src/analysis/sentiment/analyzer.py` — 키워드 기반 1차 감성분석 + LLM 심층분석 트리거
+- `src/analysis/sentiment/keywords.py` — 한국어 긍정/부정/중요 키워드 사전
 - `src/llm/base.py` — LLMProvider ABC
 - `src/llm/router.py` — LLM 라우터 (**DB 기반 설정** + 에스컬레이션 + 캐시)
-- `src/llm/providers/openai.py` — OpenAI 프로바이더 (주력: o3, GPT-5, o4-mini, GPT-5 Mini/Nano)
-- `src/llm/providers/google.py` — Gemini 프로바이더 (보조: 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite)
-- `src/llm/providers/anthropic.py` — Claude 프로바이더 (백업: Opus 4.6, Sonnet 4.6, Haiku 4.5)
+- `src/llm/providers/mock.py` — MockLLMProvider (테스트용, deterministic)
+- `src/llm/providers/openai.py` — OpenAI 프로바이더 (주력: o3-DR, GPT-5.4, o4-mini-DR, GPT-5 Mini/Nano)
+- `src/llm/providers/google.py` — Gemini 프로바이더 (보조: 3.1 Pro, 3 Flash, 3.1 Flash-Lite)
+- `src/llm/providers/anthropic.py` — Claude 프로바이더 (백업: Opus 4.6, Sonnet 4.5, Haiku 4.5)
 - `src/llm/cost_tracker.py` — LLM 비용 추적
 - `config/default_model_assignments.yaml` — 에이전트별 모델 기본값 (DB seed 데이터)
 - `src/api/admin/llm_config.py` — Admin API 엔드포인트
-- `src/db/models/agent_model_config.py` — ORM 모델
-- `src/agent/orchestrator.py` — 에이전트 실행 조율
+- `src/db/models/llm.py` — DecisionLog, AgentModelConfigDB, LLMUsage ORM 모델
+- `src/agent/orchestrator.py` — PipelineOrchestrator (4단계 순차 실행)
 - `src/agent/decision_recorder.py` — 의사결정 근거 기록 유틸리티
+- `src/agent/agents/base.py` — BaseAgent ABC
 - `src/agent/agents/market_analyst.py` — 시장 전체 분석
-- `src/agent/agents/stock_analyst.py` — 개별 종목 심층 분석
+- `src/agent/agents/stock_analyst.py` — 개별 종목 심층 분석 (하이브리드 감성분석 통합)
 - `src/agent/agents/risk_manager.py` — 리스크 평가
 - `src/agent/agents/trader.py` — 최종 매매 결정
 - `src/agent/tools/*.py` — 에이전트가 호출하는 도구 함수들
 - `src/agent/prompts/*.py` — 프롬프트 템플릿
-- `src/agent/memory.py` — 에이전트 메모리 관리
+- `src/api/routes/pipeline.py` — Pipeline API (POST /api/pipeline/run)
+- `src/api/routes/decisions.py` — Decision Log 조회 API
 
 **환경변수 추가 (.env.example) — Phase 3:**
 ```bash
@@ -1041,38 +1050,35 @@ LLM_DEFAULT_PROVIDER=openai     # openai | anthropic | google (기본 프로바�
    │ → **decision_log 기록: 시장 판단 근거 + LLM 원문 응답 저장**
    │
    ▼
-2. Stock Analyst (종목 분석) — 관심 종목 각각에 대해
+2. Stock Analyst (종목 분석) — 관심 종목 각각에 대해 (병렬 가능)
    │ "이 종목의 기술적/펀더멘털/뉴스 상황은?"
-   │ → 도구: 기술지표 조회, 재무 데이터, 뉴스 감성
+   │ → 도구: 기술지표 조회, 재무 데이터, 뉴스 감성 (하이브리드)
    │ → 출력: 종목 분석 리포트 (매수/매도/관망 + 근거)
    │ → **decision_log 기록: 분석 데이터 스냅샷 + 판단 근거 저장**
    │
    ▼
-3. Risk Manager (리스크 평가)
+3. Risk Manager (리스크 평가) — buy/sell 시그널만
    │ "이 매매가 포트폴리오에 미치는 영향은?"
    │ → 도구: 현재 포지션, 섹터 노출도, 상관관계
    │ → 출력: 리스크 평가서 (승인/조건부승인/거부 + 추천 포지션 크기)
    │ → **decision_log 기록: 리스크 체크 항목별 통과/실패 사유 저장**
    │
    ▼
-4. Trader (매매 결정)
+4. Trader (매매 결정) — approved만
    │ "종합 분석을 기반으로 어떻게 실행할까?"
    │ → 위 3개 에이전트의 리포트 종합
    │ → 출력: 매매 주문서 (종목, 방향, 수량, 가격, 손절/익절)
    │ → **decision_log 기록: 최종 주문 결정 근거 + R:R 계산 저장**
 ```
 
-**에이전트 메모리:**
-- 과거 분석/판단 기록을 DB에 저장
-- 매매 결과 피드백 → 향후 분석에 반영
-- 종목별 컨텍스트 유지 (보유 이유, 목표가, 리스크 요인)
+**에이전트 메모리:** Phase 4로 이동 (포지션 관리와 통합)
 
-**DB 테이블:**
-- `decision_log` — 의사결정 근거 기록 (위 스키마 참조)
-- `agent_analyses` — 에이전트 분석 결과 (종목, 에이전트, 분석내용 JSON, 타임스탬프)
-- `agent_decisions` — 매매 결정 (시그널, 근거, 승인상태)
-- `agent_memory` — 에이전트 메모리 (종목별 컨텍스트)
-- `llm_usage` — LLM 사용량/비용 추적
+**DB 테이블 (3개):**
+- `decision_log` — 모든 에이전트 분석/결정의 단일 감사 추적 (session_id로 묶음, parent_id로 체인). 기존 설계의 agent_analyses/agent_decisions를 통합.
+- `agent_model_config` — 에이전트별 모델 할당 (routing_mode, primary/escalation_model, confidence_threshold)
+- `llm_usage` — 일별 프로바이더/모델/에이전트별 토큰+비용+에스컬레이션 집계
+
+> **변경**: 기존 6개 테이블(decision_log, agent_analyses, agent_decisions, agent_memory, agent_model_config, llm_usage)에서 3개로 통합. agent_memory는 Phase 4로 이동. LLM Web Search도 Phase 4 이후로 이동.
 
 **완료 기준:** 지정 종목에 대해 4단계 에이전트 파이프라인 실행 → 매매 추천 리포트 생성 → decision_log에 전체 의사결정 체인 기록 → DB 저장
 
@@ -1439,33 +1445,16 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [x] Analysis API + 통합 테스트
 
 ### Phase 3: LLM 에이전트 시스템
-- [ ] `src/analysis/sentiment/analyzer.py` LLM 기반 뉴스 감성 분석 (Phase 2에서 이관)
-- [ ] `src/llm/base.py` LLMProvider ABC
-- [ ] `src/llm/providers/openai.py` OpenAI 프로바이더 (주력: o3, GPT-5, o4-mini, GPT-5 Mini/Nano)
-- [ ] `src/llm/providers/google.py` Gemini 프로바이더 (보조: 2.5 Pro, 2.5 Flash, 2.5 Flash-Lite)
-- [ ] `src/llm/providers/anthropic.py` Claude 프로바이더 (백업: Opus 4.6, Sonnet 4.6, Haiku 4.5)
-- [ ] `src/llm/router.py` LLM 라우터 (DB 기반 설정 + 에스컬레이션 + 캐시)
-- [ ] `config/default_model_assignments.yaml` 에이전트별 모델 기본값 (DB seed)
-- [ ] `src/api/admin/llm_config.py` Admin API 엔드포인트
-- [ ] `src/db/models/agent_model_config.py` ORM 모델
-- [ ] `src/llm/cost_tracker.py` LLM 비용 추적 (에스컬레이션 비율 + prompt cache hit rate 추적)
-- [ ] `src/agent/decision_recorder.py` 의사결정 근거 기록 유틸리티
-- [ ] `src/agent/tools/technical.py` 기술 지표 조회 도구
-- [ ] `src/agent/tools/fundamental.py` 재무 데이터 조회 도구
-- [ ] `src/agent/tools/market_data.py` 시세/호가 조회 도구
-- [ ] `src/agent/tools/news.py` 뉴스/공시 조회 도구
-- [ ] `src/agent/prompts/market_analysis.py` 시장 분석 프롬프트
-- [ ] `src/agent/prompts/stock_analysis.py` 종목 분석 프롬프트
-- [ ] `src/agent/prompts/trade_decision.py` 매매 결정 프롬프트
-- [ ] `src/agent/agents/market_analyst.py` 시장 분석 에이전트
-- [ ] `src/agent/agents/stock_analyst.py` 종목 분석 에이전트
-- [ ] `src/agent/agents/risk_manager.py` 리스크 관리 에이전트
-- [ ] `src/agent/agents/trader.py` 매매 결정 에이전트
-- [ ] `src/agent/orchestrator.py` 오케스트레이터
-- [ ] `src/agent/memory.py` 에이전트 메모리
-- [ ] DB 모델: `decision_log`, `agent_analyses`, `agent_decisions`, `agent_memory`, `llm_usage`
-- [ ] 4단계 파이프라인 통합 테스트 (삼성전자 등 테스트 종목)
-- [ ] 멀티 LLM 비교 테스트 (동일 종목, Claude vs GPT vs Gemini)
+- [ ] Step 1: 기반 업데이트 (Config + Pydantic 모델 + 의존성)
+- [ ] Step 2: DB ORM + 마이그레이션 (3개 테이블: decision_log, agent_model_config, llm_usage)
+- [ ] Step 3: LLMProvider ABC + MockLLMProvider
+- [ ] Step 4: OpenAI + Google + Anthropic 프로바이더
+- [ ] Step 5: LLM Router + Cost Tracker + Admin API
+- [ ] Step 6: 키워드 기반 감성분석 (하이브리드 1차)
+- [ ] Step 7: Decision Recorder + 에이전트 도구 함수
+- [ ] Step 8: 4개 에이전트 + 프롬프트
+- [ ] Step 9: PipelineOrchestrator
+- [ ] Step 10: Pipeline API + 통합 테스트 + 문서
 
 ### Phase 4: 전략 엔진 + 리스크 관리
 - [ ] `src/strategy/base.py` Strategy ABC
@@ -1538,3 +1527,4 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 | 2026-02-09 | 설계 v1.3 — GPT-First 전략 | 설계 갱신 | 에이전트별 모델 설정, Admin API, DB 기반 설정 |
 | 2026-02-22 | Phase 0 완료 | Phase 0 ✅ | 18개 파일, 8 commits, v0.1.0-phase0 태그 |
 | 2026-02-22 | 설계 v1.4 리뷰 | 설계 갱신 | Claude 4.6 반영, Phase 1 설계 보강, 현재 상태 업데이트 |
+| 2026-03-14 | 설계 v2.1 — Phase 3 계획 수립 | 설계 갱신 | 모델 라인업 최신화(GPT-5.4, Gemini 3.x, Claude Sonnet 4.5), DB 6→3개 통합, 감성분석 하이브리드, Phase 3 10-Step 계획 |

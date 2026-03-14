@@ -57,5 +57,8 @@ logs/
 *.db
 *.sqlite3
 
+# Documentation (local only)
+docs/
+
 # Claude Code
 .claude/

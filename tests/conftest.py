@@ -1,5 +1,6 @@
 """Shared test fixtures, helpers, and environment setup."""
 
+import json
 import os
 
 # 모듈 레벨 환경변수 설정 — conftest.py는 테스트 파일보다 먼저 로드되므로,
@@ -53,13 +54,19 @@ def make_settings(**overrides: object) -> Settings:
 
 
 def mock_aiohttp_response(
-    *, status: int = 200, json_data: dict | None = None, text: str = "", headers: dict | None = None
+    *,
+    status: int = 200,
+    json_data: dict | None = None,
+    text: str = "",
+    read_data: bytes = b"",
+    headers: dict | None = None,
 ) -> MagicMock:
     """Create a mock aiohttp response with headers support."""
     resp = MagicMock()
     resp.status = status
     resp.json = AsyncMock(return_value=json_data or {})
-    resp.text = AsyncMock(return_value=text)
+    resp.text = AsyncMock(return_value=text or (json.dumps(json_data) if json_data else ""))
+    resp.read = AsyncMock(return_value=read_data)
     resp.headers = headers or {}
     return resp
 

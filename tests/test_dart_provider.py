@@ -5,6 +5,8 @@ All DART API, DB, and Redis calls are mocked.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -85,6 +87,21 @@ def _make_financial_row(**kwargs):
     row.eps = kwargs.get("eps", Decimal("5000.00"))
     row.bps = kwargs.get("bps", Decimal("40000.00"))
     return row
+
+
+def _make_corp_code_zip(corp_code: str = "00126380", stock_code: str = "005930") -> bytes:
+    """Create a minimal corpCode.xml ZIP like DART API returns."""
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<result><list>"
+        f"<corp_code>{corp_code}</corp_code>"
+        f"<stock_code>{stock_code}</stock_code>"
+        "</list></result>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("CORPCODE.xml", xml)
+    return buf.getvalue()
 
 
 def _setup_provider_with_aiohttp(provider, json_data, status=200):
@@ -174,11 +191,10 @@ class TestResolveCorpCode:
         cache.set = AsyncMock()
 
         p = _make_provider(cache=cache)
-        _setup_provider_with_aiohttp(p, {
-            "status": "000",
-            "corp_code": "00126380",
-            "corp_name": "삼성전자",
-        })
+        mock_session = _setup_provider_with_aiohttp(p, {})
+        # Override resp.read to return valid corpCode ZIP
+        resp = mock_session.get.return_value._resp
+        resp.read = AsyncMock(return_value=_make_corp_code_zip())
 
         result = await p._resolve_corp_code("005930")
         assert result == "00126380"

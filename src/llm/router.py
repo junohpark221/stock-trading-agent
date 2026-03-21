@@ -328,14 +328,12 @@ class LLMRouter:
 
         # Primary call
         provider = await self._get_or_create_provider(config.primary_model)
-        parsed = await provider.structured_output(
+        parsed, tokens_in, tokens_out, cost_usd = await provider.structured_output(
             messages, schema, temperature=temperature
         )
 
         # Build a synthetic LLMResponse for tracking
         content = parsed.model_dump_json()
-        tokens_in = LLMProvider._estimate_tokens(str(messages))
-        tokens_out = LLMProvider._estimate_tokens(content)
         provider_name, _ = self._parse_model_string(config.primary_model)
 
         response = LLMResponse(
@@ -344,7 +342,7 @@ class LLMRouter:
             provider=LLMProviderType(provider_name),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            cost_usd=Decimal("0"),
+            cost_usd=cost_usd,
         )
 
         await self._cost_tracker.record_usage(
@@ -353,7 +351,7 @@ class LLMRouter:
             agent_type=agent_type,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            cost_usd=response.cost_usd,
+            cost_usd=cost_usd,
         )
 
         # Escalation check
@@ -369,13 +367,13 @@ class LLMRouter:
                     esc_provider = await self._get_or_create_provider(
                         config.escalation_model
                     )
-                    esc_parsed = await esc_provider.structured_output(
-                        messages, schema, temperature=temperature
+                    esc_parsed, esc_tokens_in, esc_tokens_out, esc_cost_usd = (
+                        await esc_provider.structured_output(
+                            messages, schema, temperature=temperature
+                        )
                     )
 
                     esc_content = esc_parsed.model_dump_json()
-                    esc_tokens_in = LLMProvider._estimate_tokens(str(messages))
-                    esc_tokens_out = LLMProvider._estimate_tokens(esc_content)
                     esc_provider_name, _ = self._parse_model_string(
                         config.escalation_model
                     )
@@ -386,7 +384,7 @@ class LLMRouter:
                         provider=LLMProviderType(esc_provider_name),
                         tokens_in=esc_tokens_in,
                         tokens_out=esc_tokens_out,
-                        cost_usd=Decimal("0"),
+                        cost_usd=esc_cost_usd,
                     )
 
                     await self._cost_tracker.record_usage(
@@ -395,7 +393,7 @@ class LLMRouter:
                         agent_type=agent_type,
                         tokens_in=esc_tokens_in,
                         tokens_out=esc_tokens_out,
-                        cost_usd=esc_response.cost_usd,
+                        cost_usd=esc_cost_usd,
                         is_escalation=True,
                     )
 

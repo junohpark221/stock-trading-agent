@@ -190,7 +190,7 @@ class TestMarketCondition:
         data = mc.model_dump()
         restored = MarketCondition.model_validate(data)
         assert restored.recommended_exposure == Decimal("0.5")
-        assert restored.sector_outlook == {}
+        assert restored.sector_outlook == []
 
 
 class TestStockAnalysis:

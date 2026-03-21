@@ -11,6 +11,7 @@ Follows the ``DataProvider`` lifecycle pattern with LLM-specific methods.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from src.core.enums import LLMProviderType
@@ -77,8 +78,11 @@ class LLMProvider(ABC):
         schema: type[BaseModel],
         *,
         temperature: float = 0.3,
-    ) -> BaseModel:
+    ) -> tuple[BaseModel, int, int, Decimal]:
         """Send messages and parse the response into a Pydantic model.
+
+        Returns:
+            (parsed_model, tokens_in, tokens_out, cost_usd)
 
         Args:
             messages: Conversation history.

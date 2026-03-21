@@ -170,15 +170,21 @@ class TestStructuredOutput:
     async def test_registered_response(self, provider: MockLLMProvider) -> None:
         instance = _SimpleSchema(name="test", value=42)
         provider.set_structured_response(_SimpleSchema, instance)
-        result = await provider.structured_output(_make_messages("analyze"), _SimpleSchema)
-        assert result.name == "test"
-        assert result.value == 42
+        parsed, tokens_in, tokens_out, cost = await provider.structured_output(
+            _make_messages("analyze"), _SimpleSchema
+        )
+        assert parsed.name == "test"
+        assert parsed.value == 42
+        assert tokens_in > 0
+        assert tokens_out > 0
 
     @pytest.mark.asyncio
     async def test_model_construct_fallback(self, provider: MockLLMProvider) -> None:
-        result = await provider.structured_output(_make_messages("analyze"), _SimpleSchema)
-        assert isinstance(result, _SimpleSchema)
-        assert result.name == "default"
+        parsed, tokens_in, tokens_out, cost = await provider.structured_output(
+            _make_messages("analyze"), _SimpleSchema
+        )
+        assert isinstance(parsed, _SimpleSchema)
+        assert parsed.name == "default"
 
     @pytest.mark.asyncio
     async def test_required_schema_raises(self, provider: MockLLMProvider) -> None:

@@ -39,7 +39,7 @@ SYSTEM_PROMPT = """\
 - recommended_exposure: 0.0 ~ 1.0 (권장 투자 비중, 1.0 = 풀투자)
 - key_factors: 핵심 판단 근거 리스트 (3~5개)
 - kospi_trend, kosdaq_trend: "상승" | "하락" | "횡보"
-- sector_outlook: 유망/주의 섹터 딕셔너리
+- sector_outlook: 유망/주의 섹터 리스트 (각 항목: sector, outlook)
 - macro_summary: 매크로 환경 한줄 요약
 - reasoning: 종합 판단 근거 (2~3문장)
 
@@ -58,14 +58,14 @@ def build_user_prompt(data: dict[str, Any]) -> str:
     macro_data = data.get("macro_data")
     if macro_data:
         sections.append("### 매크로 경제 지표")
-        sections.append(f"```json\n{json.dumps(macro_data, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(macro_data, ensure_ascii=False, indent=2, default=str)}\n```\n")
     else:
         sections.append("### 매크로 경제 지표\n데이터 없음 — confidence를 낮춰 주세요.\n")
 
     market_summary = data.get("market_summary")
     if market_summary:
         sections.append("### 시장 데이터 요약")
-        sections.append(f"```json\n{json.dumps(market_summary, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(market_summary, ensure_ascii=False, indent=2, default=str)}\n```\n")
     else:
         sections.append("### 시장 데이터 요약\n데이터 없음 — confidence를 낮춰 주세요.\n")
 

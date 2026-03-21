@@ -34,12 +34,9 @@ logger = structlog.get_logger(__name__)
 
 # Per-million-token pricing: (input, output)
 _PRICING: dict[str, tuple[Decimal, Decimal]] = {
-    "o3-deep-research": (Decimal("2.00"), Decimal("8.00")),
-    "o4-mini-deep-research": (Decimal("1.00"), Decimal("4.00")),
-    "gpt-5.4": (Decimal("1.25"), Decimal("10.00")),
-    "gpt-5.4-pro": (Decimal("5.00"), Decimal("25.00")),
-    "gpt-5-mini": (Decimal("0.25"), Decimal("2.00")),
-    "gpt-5-nano": (Decimal("0.05"), Decimal("0.40")),
+    "gpt-5.2-2025-12-11": (Decimal("2.00"), Decimal("8.00")),
+    "gpt-4o": (Decimal("2.50"), Decimal("10.00")),
+    "gpt-4.1-mini": (Decimal("0.40"), Decimal("1.60")),
 }
 
 
@@ -141,7 +138,7 @@ class OpenAIProvider(LLMProvider):
         schema: type[BaseModel],
         *,
         temperature: float = 0.3,
-    ) -> BaseModel:
+    ) -> tuple[BaseModel, int, int, Decimal]:
         start = time.monotonic()
         kwargs: dict[str, Any] = {
             "model": self._model_id,
@@ -151,7 +148,7 @@ class OpenAIProvider(LLMProvider):
                 "type": "json_schema",
                 "json_schema": {
                     "name": schema.__name__,
-                    "schema": schema.model_json_schema(),
+                    "schema": _strict_schema(schema.model_json_schema()),
                     "strict": True,
                 },
             },
@@ -162,8 +159,16 @@ class OpenAIProvider(LLMProvider):
         )
 
         content = completion.choices[0].message.content or ""
+        tokens_in = completion.usage.prompt_tokens if completion.usage else 0
+        tokens_out = completion.usage.completion_tokens if completion.usage else 0
+        if not tokens_in:
+            tokens_in = self._estimate_tokens(str(messages))
+        if not tokens_out:
+            tokens_out = self._estimate_tokens(content)
+        cost = _calculate_cost(self._model_id, tokens_in, tokens_out)
+
         try:
-            return schema.model_validate_json(content)
+            return schema.model_validate_json(content), tokens_in, tokens_out, cost
         except Exception as exc:
             raise ProviderError(f"Failed to parse structured output: {exc}") from exc
 
@@ -200,6 +205,52 @@ class OpenAIProvider(LLMProvider):
 
 
 # ── Conversion helpers (module-level) ─────────────────────────────────
+
+
+def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Make a JSON schema compatible with OpenAI strict mode.
+
+    OpenAI ``strict: true`` requires every object to have
+    ``additionalProperties: false`` and all properties listed in ``required``.
+    Also inlines ``$defs`` references.
+    """
+    defs = schema.pop("$defs", None) or {}
+
+    def _fix(node: Any) -> Any:
+        if isinstance(node, dict):
+            # Resolve $ref
+            if "$ref" in node:
+                ref_name = node["$ref"].rsplit("/", 1)[-1]
+                if ref_name in defs:
+                    return _fix(defs[ref_name])
+                return node
+
+            # Handle anyOf (Pydantic Optional) → pick non-null variant
+            if "anyOf" in node:
+                variants = [v for v in node["anyOf"] if v.get("type") != "null"]
+                null_present = any(v.get("type") == "null" for v in node["anyOf"])
+                if len(variants) == 1:
+                    resolved = _fix(variants[0])
+                    if null_present and isinstance(resolved, dict):
+                        # Wrap as anyOf with null to preserve nullable
+                        return {"anyOf": [resolved, {"type": "null"}]}
+                    return resolved
+
+            result = {}
+            for k, v in node.items():
+                result[k] = _fix(v)
+
+            # Ensure all objects have additionalProperties: false + full required
+            if result.get("type") == "object" and "properties" in result:
+                result["additionalProperties"] = False
+                result["required"] = list(result["properties"].keys())
+
+            return result
+        if isinstance(node, list):
+            return [_fix(item) for item in node]
+        return node
+
+    return _fix(schema)  # type: ignore[return-value]
 
 
 def _convert_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:

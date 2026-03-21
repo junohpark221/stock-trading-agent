@@ -68,31 +68,31 @@ def build_user_prompt(data: dict[str, Any]) -> str:
     price_data = data.get("current_price")
     if price_data:
         sections.append("### 현재가")
-        sections.append(f"```json\n{json.dumps(price_data, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(price_data, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     # 기술적 지표
     technical = data.get("technical_indicators")
     if technical:
         sections.append("### 기술적 지표")
-        sections.append(f"```json\n{json.dumps(technical, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(technical, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     # 차트 패턴
     patterns = data.get("chart_patterns")
     if patterns:
         sections.append("### 차트 패턴")
-        sections.append(f"```json\n{json.dumps(patterns, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(patterns, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     # 펀더멘털
     fundamental = data.get("fundamental_score")
     if fundamental:
         sections.append("### 펀더멘털 분석")
-        sections.append(f"```json\n{json.dumps(fundamental, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(fundamental, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     # 키워드 감성분석 결과
     sentiment = data.get("sentiment")
     if sentiment:
         sections.append("### 키워드 감성 분석 결과 (참고용)")
-        sections.append(f"```json\n{json.dumps(sentiment, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(sentiment, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     # LLM 심층 분석용 뉴스 (needs_llm_analysis=True일 때만)
     news_articles = data.get("news_articles")
@@ -125,7 +125,7 @@ def build_user_prompt(data: dict[str, Any]) -> str:
             "recommended_exposure": mc.get("recommended_exposure"),
             "key_factors": mc.get("key_factors"),
         }
-        sections.append(f"```json\n{json.dumps(mc_summary, ensure_ascii=False, indent=2)}\n```\n")
+        sections.append(f"```json\n{json.dumps(mc_summary, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     sections.append(
         f"위 데이터를 종합 분석하여 종목 {symbol}에 대한 StockAnalysis JSON을 출력하세요.\n"

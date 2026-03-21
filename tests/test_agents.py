@@ -32,6 +32,7 @@ from src.core.models import (
     LLMResponse,
     MarketCondition,
     RiskAssessment,
+    SectorOutlook,
     SentimentResult,
     StockAnalysis,
     TradeDecision,
@@ -49,7 +50,10 @@ def _sample_market_condition() -> MarketCondition:
         kosdaq_trend="횡보",
         market_risk_level="medium",
         key_factors=["금리 동결", "외국인 순매수"],
-        sector_outlook={"반도체": "긍정", "바이오": "중립"},
+        sector_outlook=[
+            SectorOutlook(sector="반도체", outlook="긍정"),
+            SectorOutlook(sector="바이오", outlook="중립"),
+        ],
         macro_summary="안정적 성장 국면",
         recommended_exposure=Decimal("0.7"),
         reasoning="매크로 안정, 외국인 유입 지속",
@@ -117,7 +121,7 @@ def _sample_trade_decision() -> TradeDecision:
 def _sample_llm_response() -> LLMResponse:
     return LLMResponse(
         content="{}",
-        model="gpt-5.4",
+        model="gpt-4o",
         provider=LLMProviderType.OPENAI,
         tokens_in=500,
         tokens_out=200,
@@ -132,7 +136,7 @@ def _sample_routing_result(config_agent: str = "market_analyst") -> RoutingResul
         config_used=AgentModelConfig(
             agent_type=config_agent,
             routing_mode="fixed",
-            primary_model="openai/gpt-5.4",
+            primary_model="openai/gpt-4o",
         ),
     )
 
@@ -543,7 +547,7 @@ class TestTrader:
         record_kwargs = mock_recorder.record.call_args.kwargs
         assert record_kwargs["stage"] == "trade_decision"
         assert record_kwargs["symbol"] == "005930"
-        assert record_kwargs["llm_model"] == "gpt-5.4"
+        assert record_kwargs["llm_model"] == "gpt-4o"
 
 
 # ── 6. 프롬프트 모듈 테스트 ────────────────────────────────

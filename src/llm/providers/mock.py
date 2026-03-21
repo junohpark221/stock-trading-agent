@@ -201,22 +201,24 @@ class MockLLMProvider(LLMProvider):
         schema: type[BaseModel],
         *,
         temperature: float = 0.3,
-    ) -> BaseModel:
+    ) -> tuple[BaseModel, int, int, Decimal]:
         """Return registered instance, model_construct fallback, or raise."""
         # Track via chat() for consistent history
-        await self.chat(messages, temperature=temperature)
+        chat_resp = await self.chat(messages, temperature=temperature)
+        tokens_in = chat_resp.tokens_in
+        tokens_out = chat_resp.tokens_out
 
         # 1. Registered instance
         key = schema.__name__
         if key in self._structured_responses:
-            return self._structured_responses[key]
+            return self._structured_responses[key], tokens_in, tokens_out, Decimal("0")
 
         # 2. model_construct fallback (works when all fields have defaults)
         try:
             instance = schema.model_construct()
             # Validate it can serialize (catches missing required fields)
             schema.model_validate(instance.model_dump())
-            return instance
+            return instance, tokens_in, tokens_out, Decimal("0")
         except Exception:  # noqa: BLE001
             pass
 

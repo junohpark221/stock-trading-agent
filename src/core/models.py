@@ -392,6 +392,13 @@ class SentimentResult(BaseModel):
     reasoning: str = ""
 
 
+class SectorOutlook(BaseModel):
+    """섹터별 전망 (OpenAI strict mode 호환)."""
+
+    sector: str
+    outlook: str
+
+
 class MarketCondition(BaseModel):
     """Market Analyst 출력."""
 
@@ -403,7 +410,7 @@ class MarketCondition(BaseModel):
     kosdaq_trend: str
     market_risk_level: str
     key_factors: list[str] = []
-    sector_outlook: dict[str, str] = {}
+    sector_outlook: list[SectorOutlook] = []
     macro_summary: str = ""
     recommended_exposure: Decimal = Decimal("0.5")
     reasoning: str = ""

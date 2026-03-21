@@ -29,9 +29,9 @@ logger = structlog.get_logger(__name__)
 
 # Per-million-token pricing: (input, output)
 _PRICING: dict[str, tuple[Decimal, Decimal]] = {
-    "gemini-3.1-pro": (Decimal("2.00"), Decimal("15.00")),
-    "gemini-3-flash": (Decimal("0.50"), Decimal("3.00")),
-    "gemini-3.1-flash-lite": (Decimal("0.25"), Decimal("1.50")),
+    "gemini-3.1-pro-preview": (Decimal("2.00"), Decimal("15.00")),
+    "gemini-3-flash-preview": (Decimal("0.50"), Decimal("3.00")),
+    "gemini-3.1-flash-lite-preview": (Decimal("0.25"), Decimal("1.50")),
 }
 
 
@@ -150,14 +150,18 @@ class GoogleProvider(LLMProvider):
         schema: type[BaseModel],
         *,
         temperature: float = 0.3,
-    ) -> BaseModel:
+    ) -> tuple[BaseModel, int, int, Decimal]:
         start = time.monotonic()
         system_instruction, contents = _convert_messages(messages)
+
+        # Gemini API doesn't support additionalProperties in JSON schemas.
+        # Generate schema from Pydantic, strip unsupported fields, then pass as dict.
+        json_schema = _strip_additional_properties(schema.model_json_schema())
 
         config_kwargs: dict[str, Any] = {
             "temperature": temperature,
             "response_mime_type": "application/json",
-            "response_schema": schema,
+            "response_schema": json_schema,
         }
         if system_instruction:
             config_kwargs["system_instruction"] = system_instruction
@@ -171,9 +175,19 @@ class GoogleProvider(LLMProvider):
             ),
         )
 
+        tokens_in = tokens_out = 0
+        if response.usage_metadata:
+            tokens_in = response.usage_metadata.prompt_token_count or 0
+            tokens_out = response.usage_metadata.candidates_token_count or 0
+        if not tokens_in:
+            tokens_in = self._estimate_tokens(str(messages))
+        if not tokens_out:
+            tokens_out = self._estimate_tokens(response.text or "")
+        cost = _calculate_cost(self._model_id, tokens_in, tokens_out)
+
         try:
             text = response.text or ""
-            return schema.model_validate_json(text)
+            return schema.model_validate_json(text), tokens_in, tokens_out, cost
         except Exception as exc:
             raise ProviderError(f"Failed to parse structured output: {exc}") from exc
 
@@ -208,6 +222,48 @@ class GoogleProvider(LLMProvider):
 
 
 # ── Conversion helpers (module-level) ─────────────────────────────────
+
+
+def _strip_additional_properties(schema: dict[str, Any]) -> dict[str, Any]:
+    """Recursively remove ``additionalProperties`` from a JSON schema.
+
+    Gemini API rejects schemas containing this keyword.  Also inline
+    any ``$defs`` references so the schema is fully self-contained.
+    """
+    defs = schema.pop("$defs", None) or {}
+
+    def _resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            # Resolve $ref pointers
+            if "$ref" in node:
+                ref_path = node["$ref"]  # e.g. "#/$defs/SentimentResult"
+                ref_name = ref_path.rsplit("/", 1)[-1]
+                if ref_name in defs:
+                    return _resolve(defs[ref_name])
+                return node
+
+            node.pop("additionalProperties", None)
+            # title is also unsupported in some Gemini schema contexts
+            node.pop("title", None)
+
+            # Handle anyOf (Pydantic Optional fields) → pick first non-null
+            if "anyOf" in node:
+                variants = [v for v in node["anyOf"] if v.get("type") != "null"]
+                if len(variants) == 1:
+                    resolved = _resolve(variants[0])
+                    # Preserve description if present
+                    desc = node.get("description")
+                    if desc and isinstance(resolved, dict):
+                        resolved.setdefault("description", desc)
+                    return resolved
+
+            return {k: _resolve(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_resolve(item) for item in node]
+        return node
+
+    return _resolve(schema)  # type: ignore[return-value]
+
 
 _ROLE_MAP = {
     MessageRole.USER: "user",

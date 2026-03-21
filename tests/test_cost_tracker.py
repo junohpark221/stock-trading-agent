@@ -83,7 +83,7 @@ class TestRecordUsage:
         """is_escalation=True sets escalation_count=1 in the insert."""
         await tracker.record_usage(
             provider="openai",
-            model="o3-deep-research",
+            model="gpt-5.2-2025-12-11",
             agent_type="stock_analyst",
             tokens_in=500,
             tokens_out=200,

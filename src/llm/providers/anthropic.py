@@ -155,7 +155,7 @@ class AnthropicProvider(LLMProvider):
         schema: type[BaseModel],
         *,
         temperature: float = 0.3,
-    ) -> BaseModel:
+    ) -> tuple[BaseModel, int, int, Decimal]:
         """Use tool_use trick to force structured JSON output."""
         start = time.monotonic()
         system_text, converted_messages = _convert_messages(messages)
@@ -182,11 +182,19 @@ class AnthropicProvider(LLMProvider):
             lambda: self._client.messages.create(**kwargs),  # type: ignore[union-attr]
         )
 
+        tokens_in = response.usage.input_tokens if response.usage else 0
+        tokens_out = response.usage.output_tokens if response.usage else 0
+        if not tokens_in:
+            tokens_in = self._estimate_tokens(str(messages))
+        if not tokens_out:
+            tokens_out = self._estimate_tokens(str(response.content))
+        cost = _calculate_cost(self._model_id, tokens_in, tokens_out)
+
         # Find the tool_use block
         for block in response.content:
             if block.type == "tool_use" and block.name == tool_name:
                 try:
-                    return schema.model_validate(block.input)
+                    return schema.model_validate(block.input), tokens_in, tokens_out, cost
                 except Exception as exc:
                     raise ProviderError(f"Failed to validate structured output: {exc}") from exc
 

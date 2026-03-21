@@ -52,31 +52,31 @@ class _TestSchema(BaseModel):
 
 class TestOpenAIIdentity:
     def test_provider_name(self) -> None:
-        p = OpenAIProvider(model_id="gpt-5.4", settings=_make_settings())
+        p = OpenAIProvider(model_id="gpt-4o", settings=_make_settings())
         assert p.provider_name == LLMProviderType.OPENAI
 
     def test_model_id(self) -> None:
-        p = OpenAIProvider(model_id="gpt-5.4", settings=_make_settings())
-        assert p.model_id == "gpt-5.4"
+        p = OpenAIProvider(model_id="gpt-4o", settings=_make_settings())
+        assert p.model_id == "gpt-4o"
 
 
 class TestOpenAILifecycle:
     @pytest.mark.asyncio
     async def test_initialize_creates_client(self) -> None:
-        p = OpenAIProvider(model_id="gpt-5.4", settings=_make_settings())
+        p = OpenAIProvider(model_id="gpt-4o", settings=_make_settings())
         with patch("src.llm.providers.openai.AsyncOpenAI"):
             await p.initialize()
             assert await p.health_check() is True
 
     @pytest.mark.asyncio
     async def test_initialize_missing_key_raises(self) -> None:
-        p = OpenAIProvider(model_id="gpt-5.4", settings=_make_settings(OPENAI_API_KEY=""))
+        p = OpenAIProvider(model_id="gpt-4o", settings=_make_settings(OPENAI_API_KEY=""))
         with pytest.raises(ProviderError, match="OPENAI_API_KEY"):
             await p.initialize()
 
     @pytest.mark.asyncio
     async def test_shutdown(self) -> None:
-        p = OpenAIProvider(model_id="gpt-5.4", settings=_make_settings())
+        p = OpenAIProvider(model_id="gpt-4o", settings=_make_settings())
         with patch("src.llm.providers.openai.AsyncOpenAI") as mock_cls:
             mock_cls.return_value.close = AsyncMock()
             await p.initialize()
@@ -85,7 +85,7 @@ class TestOpenAILifecycle:
 
     @pytest.mark.asyncio
     async def test_health_check_before_init(self) -> None:
-        p = OpenAIProvider(model_id="gpt-5.4", settings=_make_settings())
+        p = OpenAIProvider(model_id="gpt-4o", settings=_make_settings())
         assert await p.health_check() is False
 
 
@@ -110,7 +110,7 @@ class TestOpenAIChat:
     @pytest.fixture
     def provider_and_client(self):
         settings = _make_settings()
-        p = OpenAIProvider(model_id="gpt-5.4", settings=settings)
+        p = OpenAIProvider(model_id="gpt-4o", settings=settings)
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(
             return_value=_mock_openai_completion()
@@ -143,8 +143,8 @@ class TestOpenAIChat:
     async def test_chat_cost_calculation(self, provider_and_client) -> None:
         p, _ = provider_and_client
         result = await p.chat(_make_messages("Hello"))
-        # gpt-5.4: input=$1.25/MTok, output=$10.00/MTok
-        expected = Decimal("1.25") * 100 / 1_000_000 + Decimal("10.00") * 50 / 1_000_000
+        # gpt-4o: input=$2.50/MTok, output=$10.00/MTok
+        expected = Decimal("2.50") * 100 / 1_000_000 + Decimal("10.00") * 50 / 1_000_000
         assert result.cost_usd == expected
 
     @pytest.mark.asyncio
@@ -197,22 +197,27 @@ class TestOpenAIStructuredOutput:
     @pytest.mark.asyncio
     async def test_structured_output_parses(self) -> None:
         settings = _make_settings()
-        p = OpenAIProvider(model_id="gpt-5.4", settings=settings)
+        p = OpenAIProvider(model_id="gpt-4o", settings=settings)
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(
             return_value=_mock_openai_completion(content='{"name": "test", "value": 42}')
         )
         p._client = mock_client
         p._initialized = True
-        result = await p.structured_output(_make_messages("analyze"), _TestSchema)
-        assert isinstance(result, _TestSchema)
-        assert result.name == "test"
-        assert result.value == 42
+        parsed, tokens_in, tokens_out, cost = await p.structured_output(
+            _make_messages("analyze"), _TestSchema
+        )
+        assert isinstance(parsed, _TestSchema)
+        assert parsed.name == "test"
+        assert parsed.value == 42
+        assert tokens_in == 100
+        assert tokens_out == 50
+        assert cost > Decimal("0")
 
     @pytest.mark.asyncio
     async def test_structured_output_invalid_raises(self) -> None:
         settings = _make_settings()
-        p = OpenAIProvider(model_id="gpt-5.4", settings=settings)
+        p = OpenAIProvider(model_id="gpt-4o", settings=settings)
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(
             return_value=_mock_openai_completion(content="not json")
@@ -229,7 +234,7 @@ class TestOpenAIErrors:
         from openai import AuthenticationError
 
         settings = _make_settings()
-        p = OpenAIProvider(model_id="gpt-5.4", settings=settings)
+        p = OpenAIProvider(model_id="gpt-4o", settings=settings)
         mock_client = MagicMock()
 
         mock_resp = MagicMock()
@@ -253,7 +258,7 @@ class TestOpenAIErrors:
         from openai import RateLimitError
 
         settings = _make_settings(LLM_MAX_RETRIES=1)
-        p = OpenAIProvider(model_id="gpt-5.4", settings=settings)
+        p = OpenAIProvider(model_id="gpt-4o", settings=settings)
         mock_client = MagicMock()
 
         mock_resp = MagicMock()
@@ -277,7 +282,7 @@ class TestOpenAIErrors:
     @pytest.mark.asyncio
     async def test_sdk_error_wrapped(self) -> None:
         settings = _make_settings()
-        p = OpenAIProvider(model_id="gpt-5.4", settings=settings)
+        p = OpenAIProvider(model_id="gpt-4o", settings=settings)
         mock_client = MagicMock()
         mock_client.chat.completions.create = AsyncMock(
             side_effect=ValueError("unexpected")
@@ -295,31 +300,31 @@ class TestOpenAIErrors:
 
 class TestGoogleIdentity:
     def test_provider_name(self) -> None:
-        p = GoogleProvider(model_id="gemini-3-flash", settings=_make_settings())
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=_make_settings())
         assert p.provider_name == LLMProviderType.GOOGLE
 
     def test_model_id(self) -> None:
-        p = GoogleProvider(model_id="gemini-3-flash", settings=_make_settings())
-        assert p.model_id == "gemini-3-flash"
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=_make_settings())
+        assert p.model_id == "gemini-3-flash-preview"
 
 
 class TestGoogleLifecycle:
     @pytest.mark.asyncio
     async def test_initialize_creates_client(self) -> None:
-        p = GoogleProvider(model_id="gemini-3-flash", settings=_make_settings())
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=_make_settings())
         with patch("src.llm.providers.google.genai.Client"):
             await p.initialize()
             assert await p.health_check() is True
 
     @pytest.mark.asyncio
     async def test_initialize_missing_key_raises(self) -> None:
-        p = GoogleProvider(model_id="gemini-3-flash", settings=_make_settings(GOOGLE_API_KEY=""))
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=_make_settings(GOOGLE_API_KEY=""))
         with pytest.raises(ProviderError, match="GOOGLE_API_KEY"):
             await p.initialize()
 
     @pytest.mark.asyncio
     async def test_shutdown(self) -> None:
-        p = GoogleProvider(model_id="gemini-3-flash", settings=_make_settings())
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=_make_settings())
         with patch("src.llm.providers.google.genai.Client"):
             await p.initialize()
             await p.shutdown()
@@ -327,7 +332,7 @@ class TestGoogleLifecycle:
 
     @pytest.mark.asyncio
     async def test_health_check_before_init(self) -> None:
-        p = GoogleProvider(model_id="gemini-3-flash", settings=_make_settings())
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=_make_settings())
         assert await p.health_check() is False
 
 
@@ -370,7 +375,7 @@ class TestGoogleChat:
     @pytest.fixture
     def provider_and_client(self):
         settings = _make_settings()
-        p = GoogleProvider(model_id="gemini-3-flash", settings=settings)
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=settings)
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(
             return_value=_mock_google_response()
@@ -402,7 +407,7 @@ class TestGoogleChat:
     async def test_chat_cost_calculation(self, provider_and_client) -> None:
         p, _ = provider_and_client
         result = await p.chat(_make_messages("Hello"))
-        # gemini-3-flash: input=$0.50/MTok, output=$3.00/MTok
+        # gemini-3-flash-preview: input=$0.50/MTok, output=$3.00/MTok
         expected = Decimal("0.50") * 100 / 1_000_000 + Decimal("3.00") * 50 / 1_000_000
         assert result.cost_usd == expected
 
@@ -466,22 +471,27 @@ class TestGoogleStructuredOutput:
     @pytest.mark.asyncio
     async def test_structured_output_parses(self) -> None:
         settings = _make_settings()
-        p = GoogleProvider(model_id="gemini-3-flash", settings=settings)
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=settings)
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(
             return_value=_mock_google_response(text='{"name": "test", "value": 42}')
         )
         p._client = mock_client
         p._initialized = True
-        result = await p.structured_output(_make_messages("analyze"), _TestSchema)
-        assert isinstance(result, _TestSchema)
-        assert result.name == "test"
-        assert result.value == 42
+        parsed, tokens_in, tokens_out, cost = await p.structured_output(
+            _make_messages("analyze"), _TestSchema
+        )
+        assert isinstance(parsed, _TestSchema)
+        assert parsed.name == "test"
+        assert parsed.value == 42
+        assert tokens_in == 100
+        assert tokens_out == 50
+        assert cost > Decimal("0")
 
     @pytest.mark.asyncio
     async def test_structured_output_invalid_raises(self) -> None:
         settings = _make_settings()
-        p = GoogleProvider(model_id="gemini-3-flash", settings=settings)
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=settings)
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(
             return_value=_mock_google_response(text="not json")
@@ -498,7 +508,7 @@ class TestGoogleErrors:
         from google.genai import errors as genai_errors
 
         settings = _make_settings()
-        p = GoogleProvider(model_id="gemini-3-flash", settings=settings)
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=settings)
         mock_client = MagicMock()
 
         err = genai_errors.ClientError(401, {"error": "unauthorized"})
@@ -515,7 +525,7 @@ class TestGoogleErrors:
         from google.genai import errors as genai_errors
 
         settings = _make_settings(LLM_MAX_RETRIES=1)
-        p = GoogleProvider(model_id="gemini-3-flash", settings=settings)
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=settings)
         mock_client = MagicMock()
 
         err = genai_errors.ClientError(429, {"error": "rate limited"})
@@ -533,7 +543,7 @@ class TestGoogleErrors:
         from google.genai import errors as genai_errors
 
         settings = _make_settings(LLM_MAX_RETRIES=1)
-        p = GoogleProvider(model_id="gemini-3-flash", settings=settings)
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=settings)
         mock_client = MagicMock()
 
         err = genai_errors.ServerError(500, {"error": "internal error"})
@@ -549,7 +559,7 @@ class TestGoogleErrors:
     @pytest.mark.asyncio
     async def test_sdk_error_wrapped(self) -> None:
         settings = _make_settings()
-        p = GoogleProvider(model_id="gemini-3-flash", settings=settings)
+        p = GoogleProvider(model_id="gemini-3-flash-preview", settings=settings)
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(
             side_effect=ValueError("unexpected")
@@ -792,10 +802,15 @@ class TestAnthropicStructuredOutput:
         p._client = mock_client
         p._initialized = True
 
-        result = await p.structured_output(_make_messages("analyze"), _TestSchema)
-        assert isinstance(result, _TestSchema)
-        assert result.name == "test"
-        assert result.value == 42
+        parsed, tokens_in, tokens_out, cost = await p.structured_output(
+            _make_messages("analyze"), _TestSchema
+        )
+        assert isinstance(parsed, _TestSchema)
+        assert parsed.name == "test"
+        assert parsed.value == 42
+        assert tokens_in == 100
+        assert tokens_out == 50
+        assert cost > Decimal("0")
 
         # Verify tool_choice was set
         call_kwargs = mock_client.messages.create.call_args.kwargs

@@ -100,7 +100,7 @@ def _mock_decision_log_row(**kwargs) -> MagicMock:
     row.agent_type = kwargs.get("agent_type", "market_analyst")
     row.symbol = kwargs.get("symbol", None)
     row.llm_provider = kwargs.get("llm_provider", "openai")
-    row.llm_model = kwargs.get("llm_model", "gpt-5.4")
+    row.llm_model = kwargs.get("llm_model", "gpt-4o")
     row.llm_tokens_in = kwargs.get("llm_tokens_in", 500)
     row.llm_tokens_out = kwargs.get("llm_tokens_out", 200)
     row.llm_cost_usd = kwargs.get("llm_cost_usd", Decimal("0.005"))

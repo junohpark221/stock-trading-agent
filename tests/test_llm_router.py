@@ -96,7 +96,7 @@ def mock_cache():
 def mock_response():
     return LLMResponse(
         content="Test response",
-        model="gpt-5-mini",
+        model="gpt-4.1-mini",
         provider=LLMProviderType.OPENAI,
         tokens_in=100,
         tokens_out=50,
@@ -107,10 +107,12 @@ def mock_response():
 @pytest.fixture
 def mock_provider(mock_response):
     provider = AsyncMock()
-    provider.model_id = "gpt-5-mini"
+    provider.model_id = "gpt-4.1-mini"
     provider.provider_name = LLMProviderType.OPENAI
     provider.chat = AsyncMock(return_value=mock_response)
-    provider.structured_output = AsyncMock(return_value=MockAnalysis())
+    provider.structured_output = AsyncMock(
+        return_value=(MockAnalysis(), 100, 50, Decimal("0.001"))
+    )
     provider.initialize = AsyncMock()
     provider.shutdown = AsyncMock()
     return provider
@@ -136,14 +138,14 @@ def router(mock_session_factory, mock_settings, mock_cost_tracker, mock_cache):
 
 class TestParseModelString:
     def test_valid_openai(self):
-        name, model = LLMRouter._parse_model_string("openai/gpt-5.4")
+        name, model = LLMRouter._parse_model_string("openai/gpt-4o")
         assert name == "openai"
-        assert model == "gpt-5.4"
+        assert model == "gpt-4o"
 
     def test_valid_google(self):
-        name, model = LLMRouter._parse_model_string("google/gemini-3-flash")
+        name, model = LLMRouter._parse_model_string("google/gemini-3-flash-preview")
         assert name == "google"
-        assert model == "gemini-3-flash"
+        assert model == "gemini-3-flash-preview"
 
     def test_valid_anthropic(self):
         name, model = LLMRouter._parse_model_string("anthropic/claude-opus-4-6")
@@ -152,7 +154,7 @@ class TestParseModelString:
 
     def test_no_slash_raises(self):
         with pytest.raises(ProviderError, match="Invalid model string"):
-            LLMRouter._parse_model_string("gpt-5-mini")
+            LLMRouter._parse_model_string("gpt-4.1-mini")
 
     def test_unknown_provider_raises(self):
         with pytest.raises(ProviderError, match="Unknown provider"):
@@ -167,8 +169,8 @@ class TestGetOrCreateProvider:
     async def test_creates_and_caches(self, router, mock_provider):
         """First call creates, second reuses cached."""
         with patch.object(router, "_create_provider", return_value=mock_provider):
-            p1 = await router._get_or_create_provider("openai/gpt-5-mini")
-            p2 = await router._get_or_create_provider("openai/gpt-5-mini")
+            p1 = await router._get_or_create_provider("openai/gpt-4.1-mini")
+            p2 = await router._get_or_create_provider("openai/gpt-4.1-mini")
             assert p1 is p2
             mock_provider.initialize.assert_called_once()
 
@@ -188,8 +190,8 @@ class TestGetOrCreateProvider:
             return mock_p1 if call_count == 1 else mock_p2
 
         with patch.object(router, "_create_provider", side_effect=create_side_effect):
-            p1 = await router._get_or_create_provider("openai/gpt-5-mini")
-            p2 = await router._get_or_create_provider("openai/gpt-5-nano")
+            p1 = await router._get_or_create_provider("openai/gpt-4.1-mini")
+            p2 = await router._get_or_create_provider("openai/gpt-4o")
             assert p1 is not p2
 
 
@@ -205,7 +207,7 @@ class TestGetAgentConfig:
         db_row = MagicMock()
         db_row.agent_type = "trader"
         db_row.routing_mode = "fixed"
-        db_row.primary_model = "openai/o3-deep-research"
+        db_row.primary_model = "openai/gpt-5.2-2025-12-11"
         db_row.escalation_model = None
         db_row.confidence_threshold = None
         db_row.is_active = True
@@ -217,7 +219,7 @@ class TestGetAgentConfig:
 
         config = await router._get_agent_config("trader")
         assert config.agent_type == "trader"
-        assert config.primary_model == "openai/o3-deep-research"
+        assert config.primary_model == "openai/gpt-5.2-2025-12-11"
         mock_cache.set_json.assert_called_once()
 
     @pytest.mark.asyncio
@@ -226,7 +228,7 @@ class TestGetAgentConfig:
         mock_cache.get_json.return_value = {
             "agent_type": "trader",
             "routing_mode": "fixed",
-            "primary_model": "openai/o3-deep-research",
+            "primary_model": "openai/gpt-5.2-2025-12-11",
             "escalation_model": None,
             "confidence_threshold": None,
             "is_active": True,
@@ -247,7 +249,7 @@ class TestGetAgentConfig:
 
         config = await router._get_agent_config("trader")
         assert config.agent_type == "trader"
-        assert config.primary_model == "openai/o3-deep-research"
+        assert config.primary_model == "openai/gpt-5.2-2025-12-11"
 
     @pytest.mark.asyncio
     async def test_no_config_anywhere_raises(self, router, mock_session, mock_cache):
@@ -271,7 +273,7 @@ class TestGetAgentConfig:
         db_row = MagicMock()
         db_row.agent_type = "trader"
         db_row.routing_mode = "fixed"
-        db_row.primary_model = "openai/o3-deep-research"
+        db_row.primary_model = "openai/gpt-5.2-2025-12-11"
         db_row.escalation_model = None
         db_row.confidence_threshold = None
         db_row.is_active = True
@@ -296,7 +298,7 @@ class TestRouteFixed:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="trader",
                 routing_mode=RoutingMode.FIXED,
-                primary_model="openai/gpt-5-mini",
+                primary_model="openai/gpt-4.1-mini",
             )),
             patch.object(router, "_get_or_create_provider", return_value=mock_provider),
         ):
@@ -312,7 +314,7 @@ class TestRouteFixed:
         with patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
             agent_type="trader",
             routing_mode=RoutingMode.FIXED,
-            primary_model="openai/gpt-5-mini",
+            primary_model="openai/gpt-4.1-mini",
             is_active=False,
         )):
             with pytest.raises(ProviderError, match="inactive"):
@@ -326,7 +328,7 @@ class TestRouteFixed:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="trader",
                 routing_mode=RoutingMode.FIXED,
-                primary_model="openai/gpt-5-mini",
+                primary_model="openai/gpt-4.1-mini",
             )),
             patch.object(router, "_get_or_create_provider", return_value=mock_provider),
         ):
@@ -353,7 +355,7 @@ class TestRouteEscalation:
         """Confidence >= threshold → no escalation."""
         high_conf_response = LLMResponse(
             content='{"confidence": 0.8}',
-            model="gemini-3-flash",
+            model="gemini-3-flash-preview",
             provider=LLMProviderType.GOOGLE,
             tokens_in=100,
             tokens_out=50,
@@ -365,8 +367,8 @@ class TestRouteEscalation:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="stock_analyst",
                 routing_mode=RoutingMode.ESCALATION,
-                primary_model="google/gemini-3-flash",
-                escalation_model="openai/o3-deep-research",
+                primary_model="google/gemini-3-flash-preview",
+                escalation_model="openai/gpt-5.2-2025-12-11",
                 confidence_threshold=Decimal("0.60"),
             )),
             patch.object(router, "_get_or_create_provider", return_value=mock_provider),
@@ -385,7 +387,7 @@ class TestRouteEscalation:
         """Confidence < threshold → escalation to premium model."""
         primary_response = LLMResponse(
             content="low confidence",
-            model="gemini-3-flash",
+            model="gemini-3-flash-preview",
             provider=LLMProviderType.GOOGLE,
             tokens_in=100,
             tokens_out=50,
@@ -393,7 +395,7 @@ class TestRouteEscalation:
         )
         esc_response = LLMResponse(
             content="high confidence from premium",
-            model="o3-deep-research",
+            model="gpt-5.2-2025-12-11",
             provider=LLMProviderType.OPENAI,
             tokens_in=200,
             tokens_out=100,
@@ -401,11 +403,11 @@ class TestRouteEscalation:
         )
 
         primary_provider = AsyncMock()
-        primary_provider.model_id = "gemini-3-flash"
+        primary_provider.model_id = "gemini-3-flash-preview"
         primary_provider.chat.return_value = primary_response
 
         esc_provider = AsyncMock()
-        esc_provider.model_id = "o3-deep-research"
+        esc_provider.model_id = "gpt-5.2-2025-12-11"
         esc_provider.chat.return_value = esc_response
 
         call_count = 0
@@ -419,8 +421,8 @@ class TestRouteEscalation:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="stock_analyst",
                 routing_mode=RoutingMode.ESCALATION,
-                primary_model="google/gemini-3-flash",
-                escalation_model="openai/o3-deep-research",
+                primary_model="google/gemini-3-flash-preview",
+                escalation_model="openai/gpt-5.2-2025-12-11",
                 confidence_threshold=Decimal("0.60"),
             )),
             patch.object(router, "_get_or_create_provider", side_effect=get_provider),
@@ -428,7 +430,7 @@ class TestRouteEscalation:
             result = await router.route(
                 agent_type="stock_analyst",
                 messages=messages,
-                extract_confidence=lambda r: 0.9 if r.model == "o3-deep-research" else 0.4,
+                extract_confidence=lambda r: 0.9 if r.model == "gpt-5.2-2025-12-11" else 0.4,
             )
             assert result.escalated is True
             assert result.response == esc_response
@@ -453,8 +455,8 @@ class TestRouteEscalation:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="stock_analyst",
                 routing_mode=RoutingMode.ESCALATION,
-                primary_model="google/gemini-3-flash",
-                escalation_model="openai/o3-deep-research",
+                primary_model="google/gemini-3-flash-preview",
+                escalation_model="openai/gpt-5.2-2025-12-11",
                 confidence_threshold=Decimal("0.60"),
             )),
             patch.object(router, "_get_or_create_provider", return_value=mock_provider),
@@ -476,7 +478,7 @@ class TestRouteEscalation:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="stock_analyst",
                 routing_mode=RoutingMode.ESCALATION,
-                primary_model="google/gemini-3-flash",
+                primary_model="google/gemini-3-flash-preview",
                 escalation_model=None,
                 confidence_threshold=Decimal("0.60"),
             )),
@@ -501,7 +503,7 @@ class TestRouteStructured:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="stock_analyst",
                 routing_mode=RoutingMode.FIXED,
-                primary_model="openai/gpt-5-mini",
+                primary_model="openai/gpt-4.1-mini",
             )),
             patch.object(router, "_get_or_create_provider", return_value=mock_provider),
         ):
@@ -518,15 +520,15 @@ class TestRouteStructured:
     async def test_escalation_on_low_confidence(self, router, messages, mock_cost_tracker):
         """Structured output escalation when confidence field < threshold."""
         primary_provider = AsyncMock()
-        primary_provider.model_id = "gemini-3-flash"
+        primary_provider.model_id = "gemini-3-flash-preview"
         primary_provider.structured_output = AsyncMock(
-            return_value=LowConfidenceAnalysis()
+            return_value=(LowConfidenceAnalysis(), 100, 50, Decimal("0.001"))
         )
 
         esc_provider = AsyncMock()
-        esc_provider.model_id = "o3-deep-research"
+        esc_provider.model_id = "gpt-5.2-2025-12-11"
         esc_provider.structured_output = AsyncMock(
-            return_value=MockAnalysis(confidence=Decimal("0.90"))
+            return_value=(MockAnalysis(confidence=Decimal("0.90")), 200, 80, Decimal("0.002"))
         )
 
         call_count = 0
@@ -540,8 +542,8 @@ class TestRouteStructured:
             patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
                 agent_type="stock_analyst",
                 routing_mode=RoutingMode.ESCALATION,
-                primary_model="google/gemini-3-flash",
-                escalation_model="openai/o3-deep-research",
+                primary_model="google/gemini-3-flash-preview",
+                escalation_model="openai/gpt-5.2-2025-12-11",
                 confidence_threshold=Decimal("0.60"),
             )),
             patch.object(router, "_get_or_create_provider", side_effect=get_provider),
@@ -560,7 +562,7 @@ class TestRouteStructured:
         with patch.object(router, "_get_agent_config", return_value=AgentModelConfig(
             agent_type="trader",
             routing_mode=RoutingMode.FIXED,
-            primary_model="openai/gpt-5-mini",
+            primary_model="openai/gpt-4.1-mini",
             is_active=False,
         )):
             with pytest.raises(ProviderError, match="inactive"):
@@ -580,7 +582,7 @@ class TestShutdown:
         """Shutdown calls shutdown() on all cached providers."""
         p1 = AsyncMock()
         p2 = AsyncMock()
-        router._providers = {"openai/gpt-5-mini": p1, "google/gemini-3-flash": p2}
+        router._providers = {"openai/gpt-4.1-mini": p1, "google/gemini-3-flash-preview": p2}
 
         await router.shutdown()
         p1.shutdown.assert_called_once()
@@ -592,7 +594,7 @@ class TestShutdown:
         """Provider shutdown failure is logged but does not propagate."""
         p1 = AsyncMock()
         p1.shutdown.side_effect = Exception("Shutdown failed")
-        router._providers = {"openai/gpt-5-mini": p1}
+        router._providers = {"openai/gpt-4.1-mini": p1}
 
         # Should not raise
         await router.shutdown()
@@ -634,7 +636,7 @@ class TestRoutingResult:
     def test_serialization(self):
         response = LLMResponse(
             content="test",
-            model="gpt-5-mini",
+            model="gpt-4.1-mini",
             provider=LLMProviderType.OPENAI,
             tokens_in=100,
             tokens_out=50,
@@ -646,7 +648,7 @@ class TestRoutingResult:
             config_used=AgentModelConfig(
                 agent_type="trader",
                 routing_mode=RoutingMode.FIXED,
-                primary_model="openai/gpt-5-mini",
+                primary_model="openai/gpt-4.1-mini",
             ),
         )
         data = result.model_dump()

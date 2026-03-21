@@ -120,10 +120,14 @@ app = create_app()
 # ── Router registration ──────────────────────────────────────────────────
 from src.api.routes.data import router as data_router  # noqa: E402
 from src.api.routes.analysis import router as analysis_router  # noqa: E402
+from src.api.routes.pipeline import router as pipeline_router  # noqa: E402
+from src.api.routes.decisions import router as decisions_router  # noqa: E402
 from src.api.admin.llm_config import router as admin_llm_router  # noqa: E402
 
 app.include_router(data_router)
 app.include_router(analysis_router)
+app.include_router(pipeline_router)
+app.include_router(decisions_router)
 app.include_router(admin_llm_router)
 
 

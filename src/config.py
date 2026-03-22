@@ -76,8 +76,17 @@ class Settings(BaseSettings):
     TAKE_PROFIT_PERCENT: float = 5.0
     DAILY_LOSS_LIMIT_KRW: int = 500_000
 
-    # ── Phase 5: Risk Management + Notifications ──────────────────────
+    # ── Phase 4: Risk Management + Position Sizing ────────────────────
     RISK_CHECK_ENABLED: bool = True
+    RISK_PER_TRADE_PCT: float = 2.0          # 1건당 리스크 비율 (총 자산 대비 %)
+    MAX_POSITION_PCT: float = 10.0           # 단일 종목 최대 비중 (%)
+    SECTOR_CONCENTRATION_PCT: float = 30.0   # 섹터 최대 집중도 (%)
+    MAX_DRAWDOWN_PCT: float = 10.0           # 최대 허용 낙폭 (%)
+    DAILY_LOSS_LIMIT_PCT: float = 3.0        # 일일 최대 손실률 (%)
+    CORRELATION_THRESHOLD: float = 0.7       # 상관계수 임계치 (0~1)
+    MAX_DAILY_TRADES: int = 5                # 일일 최대 거래 횟수
+
+    # ── Phase 5: Notifications ────────────────────────────────────────
     HUMAN_APPROVAL_REQUIRED: bool = True
     HUMAN_APPROVAL_TIMEOUT_SEC: int = 300
     TELEGRAM_BOT_TOKEN: str = ""

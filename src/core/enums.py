@@ -172,3 +172,28 @@ class DataSourceType(StrEnum):
     FRED = "fred"
     NAVER = "naver"
     PYKRX = "pykrx"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Strategy Engine + Risk Management
+# ---------------------------------------------------------------------------
+
+
+class StrategyType(StrEnum):
+    """매매 전략 유형."""
+
+    POSITION = "position"  # 주~월 단위 (중장기)
+    SWING = "swing"        # 일~주 단위 (단기~중기)
+
+
+class ExitReason(StrEnum):
+    """포지션 청산 사유."""
+
+    STOP_LOSS = "stop_loss"
+    TAKE_PROFIT = "take_profit"
+    TRAILING_STOP = "trailing_stop"
+    TIME_BASED = "time_based"
+    FUNDAMENTAL = "fundamental"
+    LLM_SIGNAL = "llm_signal"
+    DRAWDOWN = "drawdown"
+    MANUAL = "manual"

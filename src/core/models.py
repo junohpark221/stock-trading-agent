@@ -14,6 +14,7 @@ from src.core.enums import (
     AgentType,
     DataSourceType,
     DecisionAction,
+    ExitReason,
     LLMProviderType,
     MarketType,
     MessageRole,
@@ -95,6 +96,8 @@ class Signal(BaseModel):
     confidence: Decimal
     target_price: Decimal | None = None
     stop_loss_price: Decimal | None = None
+    quantity: int = 0
+    position_value_krw: Decimal = Decimal(0)
     reasoning: str
     source_agent: AgentType
     timestamp: datetime
@@ -499,3 +502,75 @@ class PipelineResult(BaseModel):
     total_llm_calls: int = 0
     errors: list[str] = []
     success: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Strategy Engine + Risk Management
+# ---------------------------------------------------------------------------
+
+
+class ExitSignal(BaseModel):
+    """청산 신호 — ExitMonitor → Strategy 반환."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    reason: ExitReason
+    urgency: str  # "immediate" | "end_of_day" | "next_session"
+    current_price: Decimal
+    trigger_price: Decimal | None = None
+    unrealized_pnl_pct: Decimal
+    recommended_action: DecisionAction
+    reasoning: str
+
+
+class PortfolioState(BaseModel):
+    """포트폴리오 현재 상태 스냅샷."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    total_value: Decimal
+    cash: Decimal
+    invested: Decimal
+    unrealized_pnl: Decimal
+    daily_pnl: Decimal
+    daily_pnl_pct: Decimal
+    drawdown_pct: Decimal              # 고점 대비 낙폭
+    peak_value: Decimal                # 역대 최고 자산
+    positions: list[Position]
+    sector_allocations: dict[str, Decimal]  # sector → 비중(%)
+    daily_trade_count: int
+    timestamp: datetime
+
+
+class RiskCheckResult(BaseModel):
+    """알고리즘 리스크 체크 결과 — AlgoRiskManager 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    passed: bool
+    symbol: str
+    violations: list[str]              # "MAX_POSITION_PCT", "DAILY_LOSS_LIMIT" 등
+    warnings: list[str]
+    adjusted_quantity: int             # 리스크 제약 반영 수량
+    adjusted_amount_krw: Decimal       # 조정된 금액
+    max_allowed_quantity: int
+    reasoning: str
+
+
+class PositionSizing(BaseModel):
+    """포지션 사이징 계산 결과 — PositionSizer 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    entry_price: Decimal
+    stop_loss_price: Decimal
+    take_profit_price: Decimal | None = None
+    risk_per_share: Decimal            # entry - stop_loss
+    quantity: int
+    position_value_krw: Decimal
+    risk_amount_krw: Decimal           # 최대 손실액
+    risk_pct_of_portfolio: Decimal
+    position_pct_of_portfolio: Decimal
+    risk_reward_ratio: Decimal | None = None

@@ -7,8 +7,10 @@ can detect them via ``Base.metadata``.
 from src.db.models.analysis import Disclosure, EconomicIndicator, FinancialStatement, NewsArticle
 from src.db.models.llm import AgentModelConfigDB, DecisionLog, LLMUsage
 from src.db.models.market_data import DailyOHLCV, StockMaster
+from src.db.models.strategy import AgentMemory, PortfolioSnapshot, PositionRecord
 
 __all__ = [
+    "AgentMemory",
     "AgentModelConfigDB",
     "DailyOHLCV",
     "DecisionLog",
@@ -17,5 +19,7 @@ __all__ = [
     "FinancialStatement",
     "LLMUsage",
     "NewsArticle",
+    "PortfolioSnapshot",
+    "PositionRecord",
     "StockMaster",
 ]

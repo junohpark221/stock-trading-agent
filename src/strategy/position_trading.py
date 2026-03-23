@@ -27,12 +27,10 @@ from sqlalchemy import func, select
 from src.analysis.technical.indicators import calculate_sma
 from src.core.enums import (
     AgentType,
-    DecisionAction,
-    ExitReason,
     SignalAction,
     StrategyType,
 )
-from src.core.models import ExitSignal, OHLCV, PipelineResult, Signal
+from src.core.models import OHLCV, ExitSignal, PipelineResult, Signal
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.strategy.base import Strategy
 from src.strategy.exit_calculator import ExitPriceCalculator
@@ -378,84 +376,40 @@ class PositionTradingStrategy(Strategy):
             (current_price - position.entry_price) / position.entry_price
         ) * Decimal("100")
 
+        checker = self._exit_checker
+
         # ── 1. 손절 체크 (우선순위 최고) ──
         # 현재가가 손절가 이하이면 즉시 청산하여 추가 손실 방지
-        if current_price <= position.stop_loss_price:
-            return ExitSignal(
-                symbol=position.symbol,
-                reason=ExitReason.STOP_LOSS,
-                urgency="immediate",
-                current_price=current_price,
-                trigger_price=position.stop_loss_price,
-                unrealized_pnl_pct=unrealized_pnl_pct,
-                recommended_action=DecisionAction.STOP_LOSS,
-                reasoning=(
-                    f"손절가 도달: 현재가 {current_price:,} ≤ "
-                    f"손절가 {position.stop_loss_price:,} "
-                    f"(손실률 {unrealized_pnl_pct:.1f}%)"
-                ),
-            )
+        signal = checker.check_stop_loss(position, current_price, unrealized_pnl_pct)
+        if signal is not None:
+            return signal
 
         # ── 2. 트레일링 스톱 ──
         # 수익률이 TRAILING_ACTIVATE_PCT(5%) 이상일 때만 활성화
         # 진입 후 최고가 대비 일정 비율 하락하면 수익 보호를 위해 청산
         if unrealized_pnl_pct >= self.TRAILING_ACTIVATE_PCT:
             trailing_stop = await self._calculate_trailing_stop(position)
-            if trailing_stop is not None and current_price <= trailing_stop:
-                return ExitSignal(
-                    symbol=position.symbol,
-                    reason=ExitReason.TRAILING_STOP,
-                    urgency="immediate",
-                    current_price=current_price,
-                    trigger_price=trailing_stop,
-                    unrealized_pnl_pct=unrealized_pnl_pct,
-                    recommended_action=DecisionAction.SELL,
-                    reasoning=(
-                        f"트레일링 스톱 발동: 현재가 {current_price:,} ≤ "
-                        f"트레일링가 {trailing_stop:,} "
-                        f"(수익률 {unrealized_pnl_pct:.1f}%)"
-                    ),
+            if trailing_stop is not None:
+                signal = checker.check_trailing_stop(
+                    position, current_price, unrealized_pnl_pct, trailing_stop
                 )
+                if signal is not None:
+                    return signal
 
         # ── 3. 익절 체크 ──
         # 현재가가 익절가 이상이면 장 마감 시 청산 (급하지 않음)
-        if (
-            position.take_profit_price is not None
-            and current_price >= position.take_profit_price
-        ):
-            return ExitSignal(
-                symbol=position.symbol,
-                reason=ExitReason.TAKE_PROFIT,
-                urgency="end_of_day",
-                current_price=current_price,
-                trigger_price=position.take_profit_price,
-                unrealized_pnl_pct=unrealized_pnl_pct,
-                recommended_action=DecisionAction.TAKE_PROFIT,
-                reasoning=(
-                    f"익절가 도달: 현재가 {current_price:,} ≥ "
-                    f"익절가 {position.take_profit_price:,} "
-                    f"(수익률 {unrealized_pnl_pct:.1f}%)"
-                ),
-            )
+        signal = checker.check_take_profit(position, current_price, unrealized_pnl_pct)
+        if signal is not None:
+            return signal
 
         # ── 4. 시간 기반 청산 ──
         # 최대 보유 기간(60 거래일) 초과 시 다음 세션에 정리
-        days_held = (date.today() - position.entry_date).days
-        max_days = position.max_holding_days or self.MAX_HOLDING_DAYS
-        if days_held >= max_days:
-            return ExitSignal(
-                symbol=position.symbol,
-                reason=ExitReason.TIME_BASED,
-                urgency="next_session",
-                current_price=current_price,
-                trigger_price=None,
-                unrealized_pnl_pct=unrealized_pnl_pct,
-                recommended_action=DecisionAction.SELL,
-                reasoning=(
-                    f"최대 보유 기간 초과: {days_held}일 ≥ {max_days}일 "
-                    f"(수익률 {unrealized_pnl_pct:.1f}%)"
-                ),
-            )
+        signal = checker.check_time_based(
+            position, current_price, unrealized_pnl_pct, date.today(),
+            time_urgency="next_session",
+        )
+        if signal is not None:
+            return signal
 
         # 5. 모든 청산 조건 미해당 → 포지션 유지
         return None

@@ -8,19 +8,18 @@ Phase 3 PipelineOrchestrator 위에서 동작하는 상위 레이어로,
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select
 
 from src.core.enums import ExitReason, StrategyType
-from src.core.exceptions import DatabaseError
 from src.core.models import ExitSignal, PipelineResult, PositionSizing, Signal
 from src.db.models.strategy import PositionRecord
+from src.strategy.exit_checker import ExitConditionChecker
 from src.strategy.portfolio_state import PortfolioStateService
+from src.strategy.position_manager import PositionManager
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -48,6 +47,7 @@ class Strategy(ABC):
         portfolio_service: PortfolioStateService,
         broker: BrokerInterface,
         recorder: DecisionRecorder,
+        position_manager: PositionManager,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
     ) -> None:
@@ -56,8 +56,12 @@ class Strategy(ABC):
         self._portfolio_service = portfolio_service
         self._broker = broker
         self._recorder = recorder
+        self._position_manager = position_manager
         self._session_factory = session_factory
         self._settings = settings
+        self._exit_checker = ExitConditionChecker(
+            max_drawdown_pct=Decimal(str(settings.MAX_DRAWDOWN_PCT)),
+        )
 
     # ── Abstract (서브클래스 구현) ────────────────────────────────────────
 
@@ -118,38 +122,18 @@ class Strategy(ABC):
         trailing_stop_pct: Decimal | None = None,
         max_holding_days: int | None = None,
     ) -> PositionRecord:
-        """새 포지션을 DB에 저장한다."""
-        record = PositionRecord(
+        """새 포지션을 DB에 저장한다. PositionManager에 위임."""
+        return await self._position_manager.create(
             symbol=signal.symbol,
             strategy_type=self.strategy_type.value,
             quantity=sizing.quantity,
-            avg_cost=sizing.entry_price,
             entry_price=sizing.entry_price,
-            entry_date=date.today(),
             stop_loss_price=sizing.stop_loss_price,
             take_profit_price=sizing.take_profit_price,
             trailing_stop_pct=trailing_stop_pct,
             max_holding_days=max_holding_days,
-            status="open",
             entry_session_id=session_id,
         )
-
-        try:
-            async with self._session_factory() as session:
-                session.add(record)
-                await session.commit()
-                await session.refresh(record)
-        except Exception as exc:
-            raise DatabaseError(f"Position save failed: {exc}") from exc
-
-        logger.info(
-            "position.saved",
-            id=record.id,
-            symbol=record.symbol,
-            quantity=record.quantity,
-            strategy=record.strategy_type,
-        )
-        return record
 
     async def close_position(
         self,
@@ -159,59 +143,16 @@ class Strategy(ABC):
         reason: ExitReason,
         session_id: UUID,
     ) -> PositionRecord:
-        """포지션을 청산 처리한다. PnL을 계산하고 DB를 갱신한다."""
-        try:
-            async with self._session_factory() as session:
-                stmt = select(PositionRecord).where(PositionRecord.id == position_id)
-                result = await session.execute(stmt)
-                record = result.scalar_one_or_none()
-
-                if record is None:
-                    raise DatabaseError(f"Position not found: id={position_id}")
-
-                if record.status == "closed":
-                    raise DatabaseError(
-                        f"Position already closed: id={position_id}"
-                    )
-
-                record.status = "closed"
-                record.exit_price = exit_price
-                record.exit_date = date.today()
-                record.exit_reason = reason.value
-                record.realized_pnl = (exit_price - record.avg_cost) * record.quantity
-                record.exit_session_id = session_id
-
-                await session.commit()
-                await session.refresh(record)
-        except DatabaseError:
-            raise
-        except Exception as exc:
-            raise DatabaseError(f"Position close failed: {exc}") from exc
-
-        logger.info(
-            "position.closed",
-            id=record.id,
-            symbol=record.symbol,
-            reason=reason.value,
-            realized_pnl=str(record.realized_pnl),
+        """포지션을 청산 처리한다. PositionManager에 위임."""
+        return await self._position_manager.close(
+            position_id,
+            exit_price=exit_price,
+            exit_reason=reason,
+            exit_session_id=session_id,
         )
-        return record
 
     async def get_open_positions(
         self, strategy_type: StrategyType | None = None
     ) -> list[PositionRecord]:
-        """활성 포지션 목록을 조회한다."""
-        try:
-            async with self._session_factory() as session:
-                stmt = select(PositionRecord).where(PositionRecord.status == "open")
-
-                if strategy_type is not None:
-                    stmt = stmt.where(
-                        PositionRecord.strategy_type == strategy_type.value
-                    )
-
-                stmt = stmt.order_by(PositionRecord.entry_date.asc())
-                result = await session.execute(stmt)
-                return list(result.scalars().all())
-        except Exception as exc:
-            raise DatabaseError(f"Open positions query failed: {exc}") from exc
+        """활성 포지션 목록을 조회한다. PositionManager에 위임."""
+        return await self._position_manager.get_open(strategy_type=strategy_type)

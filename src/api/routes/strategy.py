@@ -54,12 +54,13 @@ class StrategyRunResponse(BaseModel):
 # ── Strategy Factory ─────────────────────────────────────────────────────
 
 
-def _build_strategy(strategy_type: StrategyType):
+async def _build_strategy(strategy_type: StrategyType):
     """전략 실행에 필요한 전체 의존성 트리를 조립.
 
     pipeline.py의 _build_orchestrator() 패턴을 확장하여,
     PipelineOrchestrator + AlgoRiskManager + PortfolioStateService +
     Broker + PositionManager를 조립한 뒤 전략 인스턴스를 반환한다.
+    broker도 함께 반환하여 호출자가 disconnect할 수 있도록 한다.
     """
     from src.agent.agents.market_analyst import MarketAnalyst
     from src.agent.agents.risk_manager import RiskManager
@@ -87,6 +88,7 @@ def _build_strategy(strategy_type: StrategyType):
 
     # Broker
     broker = KISClient(settings=settings, cache=cache)
+    await broker.connect()
 
     # LLM 파이프라인
     cost_tracker = CostTracker(session_factory=session_factory, settings=settings)
@@ -133,10 +135,11 @@ def _build_strategy(strategy_type: StrategyType):
     )
 
     if strategy_type == StrategyType.POSITION:
-        return PositionTradingStrategy(**kwargs)
+        return PositionTradingStrategy(**kwargs), broker
     elif strategy_type == StrategyType.SWING:
-        return SwingTradingStrategy(**kwargs)
+        return SwingTradingStrategy(**kwargs), broker
     else:
+        await broker.disconnect()
         raise ValueError(f"Unknown strategy type: {strategy_type}")
 
 
@@ -150,8 +153,9 @@ async def run_strategy(req: StrategyRunRequest) -> JSONResponse:
     generate_signals() 내부에서 AlgoRiskManager + PositionSizer가 이미 수행되므로
     별도의 리스크 체크/사이징 호출이 불필요하다.
     """
+    broker = None
     try:
-        strategy = _build_strategy(req.strategy_type)
+        strategy, broker = await _build_strategy(req.strategy_type)
 
         # Phase 3 파이프라인에 분석 위임
         pipeline_result = await strategy.analyze(req.symbols)
@@ -176,10 +180,6 @@ async def run_strategy(req: StrategyRunRequest) -> JSONResponse:
             max_days = SwingTradingStrategy.MAX_HOLDING_DAYS
 
         for signal in signals:
-            # Signal의 stop_loss_price로 entry_price 역산 불필요 —
-            # generate_signals()가 이미 Signal에 정확한 값들을 세팅함.
-            # target_price = take_profit, stop_loss_price = stop_loss.
-            # quantity와 position_value_krw도 사이징 완료 상태.
             entry_price = signal.position_value_krw / signal.quantity if signal.quantity > 0 else signal.stop_loss_price
 
             await position_manager.create(
@@ -207,6 +207,9 @@ async def run_strategy(req: StrategyRunRequest) -> JSONResponse:
     except Exception:
         logger.exception("run_strategy_failed", strategy_type=req.strategy_type.value)
         raise HTTPException(status_code=500, detail="Internal server error") from None
+    finally:
+        if broker:
+            await broker.disconnect()
 
 
 # ── GET /api/strategy/signals ────────────────────────────────────────────
@@ -256,6 +259,7 @@ async def check_exit_conditions(req: ExitCheckRequest) -> JSONResponse:
     Strategy.check_all_exit_conditions()는 내부적으로
     get_open_positions → 각 position에 대해 check_exit_conditions 호출.
     """
+    brokers = []
     try:
         all_exit_signals = []
 
@@ -264,9 +268,9 @@ async def check_exit_conditions(req: ExitCheckRequest) -> JSONResponse:
             if req.strategy_type
             else [StrategyType.POSITION, StrategyType.SWING]
         )
-
         for st in types_to_check:
-            strategy = _build_strategy(st)
+            strategy, broker = await _build_strategy(st)
+            brokers.append(broker)
             signals = await strategy.check_all_exit_conditions()
             all_exit_signals.extend(signals)
 
@@ -280,3 +284,6 @@ async def check_exit_conditions(req: ExitCheckRequest) -> JSONResponse:
     except Exception:
         logger.exception("check_exit_conditions_failed")
         raise HTTPException(status_code=500, detail="Internal server error") from None
+    finally:
+        for b in brokers:
+            await b.disconnect()

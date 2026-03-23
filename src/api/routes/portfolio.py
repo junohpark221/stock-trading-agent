@@ -92,8 +92,8 @@ class RiskCheckRequest(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _build_portfolio_service():
-    """PortfolioStateService 의존성 조립."""
+async def _build_portfolio_service():
+    """PortfolioStateService 의존성 조립. KISClient를 connect한 상태로 반환."""
     from src.broker.kis.client import KISClient
     from src.config import get_settings
     from src.data.cache import get_cache
@@ -105,15 +105,16 @@ def _build_portfolio_service():
     cache = get_cache()
 
     broker = KISClient(settings=settings, cache=cache)
+    await broker.connect()
     return PortfolioStateService(
         broker=broker,
         session_factory=session_factory,
         cache=cache,
-    )
+    ), broker
 
 
-def _build_risk_manager():
-    """AlgoRiskManager 의존성 조립."""
+async def _build_risk_manager():
+    """AlgoRiskManager 의존성 조립. KISClient를 connect한 상태로 반환."""
     from src.config import get_settings
     from src.data.cache import get_cache
     from src.db.session import get_session_factory
@@ -127,6 +128,7 @@ def _build_risk_manager():
     from src.broker.kis.client import KISClient
 
     broker = KISClient(settings=settings, cache=cache)
+    await broker.connect()
     portfolio_service = PortfolioStateService(
         broker=broker,
         session_factory=session_factory,
@@ -136,7 +138,7 @@ def _build_risk_manager():
         portfolio_service=portfolio_service,
         session_factory=session_factory,
         settings=settings,
-    )
+    ), broker
 
 
 # ── GET /api/portfolio/state ──────────────────────────────────────────────
@@ -145,14 +147,18 @@ def _build_risk_manager():
 @router.get("/state")
 async def get_portfolio_state() -> JSONResponse:
     """현재 포트폴리오 상태 조회 (Broker 잔고 + DB 이력 기반)."""
+    broker = None
     try:
-        service = _build_portfolio_service()
+        service, broker = await _build_portfolio_service()
         state = await service.get_current_state()
         return JSONResponse(content=state.model_dump(mode="json"))
 
     except Exception:
         logger.exception("get_portfolio_state_failed")
         raise HTTPException(status_code=500, detail="Internal server error") from None
+    finally:
+        if broker:
+            await broker.disconnect()
 
 
 # ── GET /api/portfolio/positions ──────────────────────────────────────────
@@ -234,8 +240,9 @@ async def list_snapshots(
 @router.post("/risk-check")
 async def run_risk_check(req: RiskCheckRequest) -> JSONResponse:
     """특정 종목에 대해 알고리즘 리스크 8규칙 체크를 수행한다."""
+    broker = None
     try:
-        manager = _build_risk_manager()
+        manager, broker = await _build_risk_manager()
         result = await manager.check(
             symbol=req.symbol,
             action=req.action,
@@ -249,3 +256,6 @@ async def run_risk_check(req: RiskCheckRequest) -> JSONResponse:
     except Exception:
         logger.exception("run_risk_check_failed", symbol=req.symbol)
         raise HTTPException(status_code=500, detail="Internal server error") from None
+    finally:
+        if broker:
+            await broker.disconnect()

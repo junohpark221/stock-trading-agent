@@ -213,6 +213,7 @@ def _make_strategy(
         portfolio_service=portfolio_service,
         broker=broker,
         recorder=recorder,
+        position_manager=AsyncMock(),
         session_factory=session_factory,
         settings=settings,
     )

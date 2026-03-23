@@ -125,6 +125,7 @@ def _make_strategy(
         portfolio_service=portfolio_service or AsyncMock(),
         broker=broker or AsyncMock(),
         recorder=recorder or AsyncMock(),
+        position_manager=AsyncMock(),
         session_factory=session_factory or MagicMock(),
         settings=settings or make_settings(),
     )

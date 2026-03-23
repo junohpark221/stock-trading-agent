@@ -173,14 +173,17 @@ def _make_test_strategy(
 ):
     """_TestStrategy 인스턴스를 편리하게 생성."""
     factory = session_factory or _mock_session_factory()[0]
+    settings = MagicMock()
+    settings.MAX_DRAWDOWN_PCT = 10.0
     return _TestStrategy(
         orchestrator=orchestrator or AsyncMock(),
         risk_manager=None,
         portfolio_service=AsyncMock(),
         broker=broker or AsyncMock(),
         recorder=AsyncMock(),
+        position_manager=AsyncMock(),
         session_factory=factory,
-        settings=MagicMock(),
+        settings=settings,
         **kwargs,
     )
 
@@ -522,10 +525,9 @@ class TestCheckAllExitConditions:
 
     @pytest.mark.asyncio
     async def test_no_positions_returns_empty(self):
-        factory, session = _mock_session_factory()
-        session.execute = AsyncMock(return_value=_mock_scalars_result([]))
+        strategy = _make_test_strategy()
+        strategy._position_manager.get_open = AsyncMock(return_value=[])
 
-        strategy = _make_test_strategy(session_factory=factory)
         signals = await strategy.check_all_exit_conditions()
 
         assert signals == []
@@ -555,12 +557,10 @@ class TestCheckAllExitConditions:
             reasoning="손절선 도달",
         )
 
-        factory, session = _mock_session_factory()
-        session.execute = AsyncMock(
-            return_value=_mock_scalars_result([pos1, pos2])
+        strategy = _make_test_strategy()
+        strategy._position_manager.get_open = AsyncMock(
+            return_value=[pos1, pos2]
         )
-
-        strategy = _make_test_strategy(session_factory=factory)
         # 005930만 ExitSignal 반환, 000660은 None
         strategy._exit_map = {"005930": exit_signal}
 
@@ -572,28 +572,39 @@ class TestCheckAllExitConditions:
 
 
 class TestSavePosition:
-    """save_position() — 포지션 DB 저장."""
+    """save_position() — PositionManager.create 위임."""
 
     @pytest.mark.asyncio
     async def test_creates_position_record(self):
-        factory, session = _mock_session_factory()
-        session.add = MagicMock()
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
+        expected_record = PositionRecord(
+            id=1,
+            symbol="005930",
+            strategy_type="position",
+            quantity=10,
+            avg_cost=Decimal("70000"),
+            entry_price=Decimal("70000"),
+            entry_date=date(2026, 3, 23),
+            stop_loss_price=Decimal("66000"),
+            take_profit_price=Decimal("80000"),
+            status="open",
+        )
+        sid = uuid.uuid4()
+        expected_record.entry_session_id = sid
 
-        strategy = _make_test_strategy(session_factory=factory)
+        pm = AsyncMock()
+        pm.create = AsyncMock(return_value=expected_record)
+
+        strategy = _make_test_strategy()
+        strategy._position_manager = pm
+
         signal = _make_signal()
         sizing = _make_sizing()
-        sid = uuid.uuid4()
 
         record = await strategy.save_position(
             signal=signal, sizing=sizing, session_id=sid
         )
 
-        session.add.assert_called_once()
-        session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once()
-
+        pm.create.assert_awaited_once()
         assert record.symbol == "005930"
         assert record.strategy_type == "position"
         assert record.quantity == 10
@@ -605,26 +616,27 @@ class TestSavePosition:
 
 
 class TestClosePosition:
-    """close_position() — 포지션 청산 + PnL 계산."""
+    """close_position() — PositionManager.close 위임."""
 
     @pytest.mark.asyncio
     async def test_calculates_pnl(self):
-        existing = PositionRecord(
+        closed_record = PositionRecord(
             id=1, symbol="005930", strategy_type="position",
             quantity=10, avg_cost=Decimal("70000"),
             entry_price=Decimal("70000"), entry_date=date(2026, 3, 20),
-            stop_loss_price=Decimal("66000"), status="open",
+            stop_loss_price=Decimal("66000"), status="closed",
+            exit_price=Decimal("80000"),
+            exit_reason=ExitReason.TAKE_PROFIT.value,
+            realized_pnl=Decimal("100000"),
         )
-
-        factory, session = _mock_session_factory()
-        session.execute = AsyncMock(
-            return_value=_mock_scalar_one_or_none_result(existing)
-        )
-        session.commit = AsyncMock()
-        session.refresh = AsyncMock()
-
-        strategy = _make_test_strategy(session_factory=factory)
         sid = uuid.uuid4()
+        closed_record.exit_session_id = sid
+
+        pm = AsyncMock()
+        pm.close = AsyncMock(return_value=closed_record)
+
+        strategy = _make_test_strategy()
+        strategy._position_manager = pm
 
         record = await strategy.close_position(
             1,
@@ -633,6 +645,7 @@ class TestClosePosition:
             session_id=sid,
         )
 
+        pm.close.assert_awaited_once()
         assert record.status == "closed"
         assert record.exit_price == Decimal("80000")
         assert record.exit_reason == ExitReason.TAKE_PROFIT.value
@@ -642,7 +655,7 @@ class TestClosePosition:
 
 
 class TestGetOpenPositions:
-    """get_open_positions() — 필터 조회."""
+    """get_open_positions() — PositionManager.get_open 위임."""
 
     @pytest.mark.asyncio
     async def test_with_strategy_filter(self):
@@ -653,16 +666,16 @@ class TestGetOpenPositions:
             status="open",
         )
 
-        factory, session = _mock_session_factory()
-        session.execute = AsyncMock(
-            return_value=_mock_scalars_result([pos])
-        )
+        pm = AsyncMock()
+        pm.get_open = AsyncMock(return_value=[pos])
 
-        strategy = _make_test_strategy(session_factory=factory)
+        strategy = _make_test_strategy()
+        strategy._position_manager = pm
+
         positions = await strategy.get_open_positions(
             strategy_type=StrategyType.POSITION
         )
 
         assert len(positions) == 1
         assert positions[0].symbol == "005930"
-        session.execute.assert_awaited_once()
+        pm.get_open.assert_awaited_once()

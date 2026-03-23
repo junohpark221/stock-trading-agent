@@ -115,6 +115,8 @@ class Strategy(ABC):
         signal: Signal,
         sizing: PositionSizing,
         session_id: UUID,
+        trailing_stop_pct: Decimal | None = None,
+        max_holding_days: int | None = None,
     ) -> PositionRecord:
         """새 포지션을 DB에 저장한다."""
         record = PositionRecord(
@@ -126,6 +128,8 @@ class Strategy(ABC):
             entry_date=date.today(),
             stop_loss_price=sizing.stop_loss_price,
             take_profit_price=sizing.take_profit_price,
+            trailing_stop_pct=trailing_stop_pct,
+            max_holding_days=max_holding_days,
             status="open",
             entry_session_id=session_id,
         )

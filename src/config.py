@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     HUMAN_APPROVAL_TIMEOUT_SEC: int = 300
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_CHAT_ID: str = ""
+    WEB_VERIFY_ENABLED: bool = True
+    WEB_VERIFY_SKIP_ON_STOP_LOSS: bool = True
+    AUTO_EXECUTE_MAX_PORTFOLIO_PCT: float = 5.0
 
     # ── Phase 6: Scheduling ───────────────────────────────────────────
     SCHEDULER_ENABLED: bool = True

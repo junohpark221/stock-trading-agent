@@ -84,6 +84,7 @@ class AgentType(StrEnum):
     TRADER = "trader"
     SENTIMENT_ANALYZER = "sentiment_analyzer"
     REPORT_GENERATOR = "report_generator"
+    WEB_VERIFIER = "web_verifier"
 
 
 class LLMProviderType(StrEnum):
@@ -197,3 +198,16 @@ class ExitReason(StrEnum):
     LLM_SIGNAL = "llm_signal"
     DRAWDOWN = "drawdown"
     MANUAL = "manual"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Order Execution + User Approval
+# ---------------------------------------------------------------------------
+
+
+class WebVerifyResult(StrEnum):
+    """LLM Web Search 최종 검증 결과."""
+
+    SAFE = "safe"           # 특이사항 없음 → 주문 진행
+    WARNING = "warning"     # 주의 필요 → 승인 메시지에 경고 포함
+    BLOCKED = "blocked"     # 위험 감지 → 주문 차단

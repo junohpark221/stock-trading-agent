@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.enums import (
     AgentType,
+    ApprovalStatus,
     DataSourceType,
     DecisionAction,
     ExitReason,
@@ -27,6 +28,7 @@ from src.core.enums import (
     SentimentLabel,
     SentimentMethod,
     SignalAction,
+    WebVerifyResult,
 )
 
 
@@ -574,3 +576,109 @@ class PositionSizing(BaseModel):
     risk_pct_of_portfolio: Decimal
     position_pct_of_portfolio: Decimal
     risk_reward_ratio: Decimal | None = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Order Execution + User Approval
+# ---------------------------------------------------------------------------
+
+
+class WebVerification(BaseModel):
+    """LLM Web Search 최종 검증 결과."""
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    symbol: str
+    result: WebVerifyResult              # safe / warning / blocked
+    summary: str                          # 검증 요약 (한국어)
+    issues_found: list[str] = []          # 감지된 이슈 목록
+    news_checked: int = 0                 # 확인한 뉴스 건수
+    llm_cost_usd: Decimal = Decimal(0)
+    reasoning: str = ""
+
+
+class ApprovalRequestModel(BaseModel):
+    """텔레그램 승인 요청 정보."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    request_id: UUID
+    order_id: int                          # orders 테이블 PK
+    symbol: str
+    side: OrderSide
+    quantity: int
+    price: Decimal
+    position_value_krw: Decimal
+    portfolio_pct: Decimal                 # 포트폴리오 비중 (%)
+    stop_loss_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
+    risk_reward_ratio: Decimal | None = None
+    analysis_summary: str = ""
+    web_verify_summary: str = ""
+    session_id: UUID | None = None
+    status: ApprovalStatus = ApprovalStatus.AUTO_APPROVED
+    requested_at: datetime
+    responded_at: datetime | None = None
+    modified_quantity: int | None = None    # 수정된 수량 (수정 승인 시)
+    response_reason: str = ""
+
+
+class OrderRecord(BaseModel):
+    """주문 기록 — DB orders 테이블 대응."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    symbol: str
+    side: OrderSide
+    order_type: OrderType
+    quantity: int
+    price: Decimal
+    status: OrderStatus
+    approval_status: ApprovalStatus
+    original_quantity: int
+    modified_quantity: int | None = None
+    session_id: UUID | None = None
+    trade_decision_id: UUID | None = None
+    broker_order_id: str | None = None
+    filled_quantity: int = 0
+    filled_price: Decimal | None = None
+    commission: Decimal = Decimal(0)
+    rejection_reason: str = ""
+    web_verify_result: str | None = None
+    created_at: datetime
+    executed_at: datetime | None = None
+
+
+class ExecutionRecord(BaseModel):
+    """체결 기록 — DB executions 테이블 대응."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    order_id: int
+    broker_order_id: str
+    fill_price: Decimal
+    fill_quantity: int
+    commission: Decimal
+    executed_at: datetime
+
+
+class ExecutionResult(BaseModel):
+    """OrderExecutor.execute() 최종 결과."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    success: bool
+    order_id: int | None = None
+    broker_order_id: str | None = None
+    symbol: str
+    side: OrderSide
+    quantity: int
+    fill_price: Decimal | None = None
+    commission: Decimal = Decimal(0)
+    approval_status: ApprovalStatus
+    web_verify_result: WebVerifyResult | None = None
+    position_id: int | None = None         # 생성/청산된 포지션 ID
+    decision_ids: list[UUID] = []          # 기록된 decision_log ID들
+    error: str = ""

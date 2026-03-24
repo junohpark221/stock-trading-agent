@@ -279,10 +279,10 @@ class TestModelExports:
         assert "PositionRecord" in models_pkg.__all__
 
     def test_total_model_count(self):
-        """Phase 1~4까지 총 12개 모델 export 확인."""
+        """Phase 1~5까지 총 15개 모델 export 확인."""
         import src.db.models as models_pkg
 
-        assert len(models_pkg.__all__) == 12
+        assert len(models_pkg.__all__) == 15
 
 
 # ---------------------------------------------------------------------------

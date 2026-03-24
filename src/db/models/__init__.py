@@ -5,6 +5,7 @@ can detect them via ``Base.metadata``.
 """
 
 from src.db.models.analysis import Disclosure, EconomicIndicator, FinancialStatement, NewsArticle
+from src.db.models.execution import ApprovalRequestDB, Execution, Order
 from src.db.models.llm import AgentModelConfigDB, DecisionLog, LLMUsage
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.db.models.strategy import AgentMemory, PortfolioSnapshot, PositionRecord
@@ -12,13 +13,16 @@ from src.db.models.strategy import AgentMemory, PortfolioSnapshot, PositionRecor
 __all__ = [
     "AgentMemory",
     "AgentModelConfigDB",
+    "ApprovalRequestDB",
     "DailyOHLCV",
     "DecisionLog",
     "Disclosure",
     "EconomicIndicator",
+    "Execution",
     "FinancialStatement",
     "LLMUsage",
     "NewsArticle",
+    "Order",
     "PortfolioSnapshot",
     "PositionRecord",
     "StockMaster",

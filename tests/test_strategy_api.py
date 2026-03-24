@@ -193,7 +193,8 @@ async def test_strategy_run_success(mock_build, client):
     mock_strategy._position_manager.create = AsyncMock(return_value=MagicMock())
     mock_strategy.analyze = AsyncMock(return_value=_pipeline_result(["005930"]))
     mock_strategy.generate_signals = AsyncMock(return_value=[_signal("005930")])
-    mock_build.return_value = mock_strategy
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_strategy, mock_broker)
 
     resp = await client.post(
         "/api/strategy/run",
@@ -249,7 +250,8 @@ async def test_strategy_run_no_signals(mock_build, client):
     mock_strategy.strategy_type = StrategyType.SWING
     mock_strategy.analyze = AsyncMock(return_value=_pipeline_result(["005930"]))
     mock_strategy.generate_signals = AsyncMock(return_value=[])
-    mock_build.return_value = mock_strategy
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_strategy, mock_broker)
 
     resp = await client.post(
         "/api/strategy/run",
@@ -314,7 +316,8 @@ async def test_exit_check_with_signals(mock_build, client):
     mock_strategy.check_all_exit_conditions = AsyncMock(
         return_value=[_exit_signal("005930")]
     )
-    mock_build.return_value = mock_strategy
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_strategy, mock_broker)
 
     resp = await client.post(
         "/api/strategy/exit-check",
@@ -334,7 +337,8 @@ async def test_exit_check_no_signals(mock_build, client):
     """POST /api/strategy/exit-check — 청산 조건 없음."""
     mock_strategy = MagicMock()
     mock_strategy.check_all_exit_conditions = AsyncMock(return_value=[])
-    mock_build.return_value = mock_strategy
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_strategy, mock_broker)
 
     resp = await client.post("/api/strategy/exit-check", json={})
 
@@ -350,7 +354,8 @@ async def test_exit_check_all_strategies(mock_build, client):
     """POST /api/strategy/exit-check — 전체 전략 체크 (strategy_type=None)."""
     mock_strategy = MagicMock()
     mock_strategy.check_all_exit_conditions = AsyncMock(return_value=[])
-    mock_build.return_value = mock_strategy
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_strategy, mock_broker)
 
     resp = await client.post("/api/strategy/exit-check", json={})
 
@@ -370,7 +375,8 @@ async def test_portfolio_state_success(mock_build, client):
     """GET /api/portfolio/state — 정상 반환."""
     mock_service = MagicMock()
     mock_service.get_current_state = AsyncMock(return_value=_portfolio_state())
-    mock_build.return_value = mock_service
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_service, mock_broker)
 
     resp = await client.get("/api/portfolio/state")
 
@@ -512,7 +518,8 @@ async def test_risk_check_pass(mock_build, client):
             reasoning="모든 리스크 규칙 통과",
         )
     )
-    mock_build.return_value = mock_mgr
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_mgr, mock_broker)
 
     resp = await client.post(
         "/api/portfolio/risk-check",
@@ -547,7 +554,8 @@ async def test_risk_check_violation(mock_build, client):
             reasoning="최대 드로다운 초과로 전체 매매 중단",
         )
     )
-    mock_build.return_value = mock_mgr
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_mgr, mock_broker)
 
     resp = await client.post(
         "/api/portfolio/risk-check",

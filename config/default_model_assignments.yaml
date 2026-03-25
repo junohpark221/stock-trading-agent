@@ -21,3 +21,6 @@ agents:
   report_generator:
     routing_mode: fixed
     primary_model: "openai/gpt-4.1-mini"
+  web_verifier:
+    routing_mode: fixed
+    primary_model: "openai/gpt-4o"

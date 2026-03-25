@@ -57,6 +57,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = ["e2e: End-to-end tests requiring Docker infrastructure"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -22,8 +22,10 @@ from src.config import get_settings
 from src.core.models import HealthStatus
 from src.data.cache import close_cache, init_cache
 from src.db.session import close_db, get_db_session, init_db
+from src.notification.telegram import TelegramBot
 
 _redis_client: Redis | None = None
+_telegram_bot: TelegramBot | None = None
 logger = structlog.get_logger(__name__)
 
 
@@ -62,10 +64,17 @@ def get_redis() -> Redis:
     return _redis_client
 
 
+def get_telegram_bot() -> TelegramBot:
+    """현재 TelegramBot 싱글톤 반환. 초기화 전이면 RuntimeError."""
+    if _telegram_bot is None:
+        raise RuntimeError("Telegram bot not initialized. App lifespan not started.")
+    return _telegram_bot
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""
-    global _redis_client
+    global _redis_client, _telegram_bot
 
     settings = get_settings()
     is_dev = settings.ENV == "development"
@@ -83,11 +92,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_cache(_redis_client)
     log.info("cache_initialized")
 
+    # Telegram 봇 싱글톤 — polling 시작하여 콜백 수신 가능
+    _telegram_bot = TelegramBot(
+        bot_token=settings.TELEGRAM_BOT_TOKEN,
+        chat_id=settings.TELEGRAM_CHAT_ID,
+    )
+    await _telegram_bot.start()
+    log.info("telegram_bot_initialized")
+
     log.info("app_started", env=settings.ENV)
 
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────
+    if _telegram_bot is not None:
+        await _telegram_bot.stop()
+        _telegram_bot = None
+        log.info("telegram_bot_stopped")
+
     close_cache()
 
     if _redis_client is not None:

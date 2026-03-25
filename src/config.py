@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     WEB_VERIFY_ENABLED: bool = True
     WEB_VERIFY_SKIP_ON_STOP_LOSS: bool = True
     AUTO_EXECUTE_MAX_PORTFOLIO_PCT: float = 5.0
+    USE_MOCK_BROKER: bool = False
 
     # ── Phase 6: Scheduling ───────────────────────────────────────────
     SCHEDULER_ENABLED: bool = True

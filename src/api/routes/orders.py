@@ -52,7 +52,6 @@ async def _build_executor():
     (OrderExecutor, broker) 튜플을 반환하여 호출자가 disconnect 가능.
     """
     from src.agent.decision_recorder import DecisionRecorder
-    from src.broker.kis.client import KISClient
     from src.config import get_settings
     from src.data.cache import get_cache
     from src.db.session import get_session_factory
@@ -61,7 +60,7 @@ async def _build_executor():
     from src.execution.web_verify import WebSearchVerifier
     from src.llm.cost_tracker import CostTracker
     from src.llm.router import LLMRouter
-    from src.notification.telegram import TelegramBot
+    from src.main import get_telegram_bot
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
     from src.strategy.risk_manager import AlgoRiskManager
@@ -70,8 +69,13 @@ async def _build_executor():
     session_factory = get_session_factory()
     cache = get_cache()
 
-    # Broker
-    broker = KISClient(settings=settings, cache=cache)
+    # Broker — USE_MOCK_BROKER=true이면 InMemoryBroker 사용 (테스트/개발용)
+    if settings.USE_MOCK_BROKER:
+        from src.broker.mock.client import InMemoryBroker
+        broker = InMemoryBroker()
+    else:
+        from src.broker.kis.client import KISClient
+        broker = KISClient(settings=settings, cache=cache)
     await broker.connect()
 
     # LLM
@@ -84,11 +88,8 @@ async def _build_executor():
     )
     recorder = DecisionRecorder(session_factory)
 
-    # Notification
-    telegram_bot = TelegramBot(
-        bot_token=settings.TELEGRAM_BOT_TOKEN,
-        chat_id=settings.TELEGRAM_CHAT_ID,
-    )
+    # Notification — 앱 전역 싱글톤 사용 (lifespan에서 start/stop 관리)
+    telegram_bot = get_telegram_bot()
 
     # Execution components
     web_verifier = WebSearchVerifier(
@@ -101,6 +102,7 @@ async def _build_executor():
         cache=cache,
         settings=settings,
     )
+    await approval_manager.initialize()
 
     # Strategy components
     portfolio_service = PortfolioStateService(

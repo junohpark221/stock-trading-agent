@@ -125,6 +125,7 @@ from src.api.routes.decisions import router as decisions_router  # noqa: E402
 from src.api.admin.llm_config import router as admin_llm_router  # noqa: E402
 from src.api.routes.strategy import router as strategy_router  # noqa: E402
 from src.api.routes.portfolio import router as portfolio_router  # noqa: E402
+from src.api.routes.orders import router as orders_router  # noqa: E402
 
 app.include_router(data_router)
 app.include_router(analysis_router)
@@ -133,6 +134,7 @@ app.include_router(decisions_router)
 app.include_router(admin_llm_router)
 app.include_router(strategy_router)
 app.include_router(portfolio_router)
+app.include_router(orders_router)
 
 
 @app.get("/health", response_model=HealthStatus)

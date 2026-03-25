@@ -28,6 +28,7 @@ from src.core.enums import (
     SentimentLabel,
     SentimentMethod,
     SignalAction,
+    StrategyType,
     WebVerifyResult,
 )
 
@@ -682,3 +683,24 @@ class ExecutionResult(BaseModel):
     position_id: int | None = None         # 생성/청산된 포지션 ID
     decision_ids: list[UUID] = []          # 기록된 decision_log ID들
     error: str = ""
+
+
+class ExecuteOrderRequest(BaseModel):
+    """수동 주문 실행 요청 (POST /api/orders/execute)."""
+
+    symbol: str
+    side: OrderSide
+    order_type: OrderType = OrderType.LIMIT
+    quantity: int = Field(gt=0)
+    price: Decimal
+    stop_loss_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
+    strategy_type: StrategyType = StrategyType.SWING
+    skip_web_verify: bool = False
+
+
+class ApprovalResponse(BaseModel):
+    """API 승인/거부/수정 응답 (POST /api/orders/approvals/{request_id}/respond)."""
+
+    action: str = Field(..., pattern="^(approve|reject|modify)$")
+    modified_quantity: int | None = Field(None, gt=0)

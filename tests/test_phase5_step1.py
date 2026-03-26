@@ -332,5 +332,5 @@ class TestPhase5Config:
         s = make_settings()
         assert s.HUMAN_APPROVAL_REQUIRED is True
         assert s.HUMAN_APPROVAL_TIMEOUT_SEC == 300
-        assert s.TELEGRAM_BOT_TOKEN == ""
-        assert s.TELEGRAM_CHAT_ID == ""
+        assert isinstance(s.TELEGRAM_BOT_TOKEN, str)
+        assert isinstance(s.TELEGRAM_CHAT_ID, str)

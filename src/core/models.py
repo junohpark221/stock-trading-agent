@@ -16,9 +16,11 @@ from src.core.enums import (
     DataSourceType,
     DecisionAction,
     ExitReason,
+    JobStatus,
     LLMProviderType,
     MarketType,
     MessageRole,
+    MonitoringAlertType,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -704,3 +706,93 @@ class ApprovalResponse(BaseModel):
 
     action: str = Field(..., pattern="^(approve|reject|modify)$")
     modified_quantity: int | None = Field(None, gt=0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Scheduler + Report + Monitoring
+# ---------------------------------------------------------------------------
+
+
+class PerformanceMetrics(BaseModel):
+    """성과 지표 — PerformanceCalculator 출력. Phase 7 백테스팅에서도 재사용."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    period_start: date
+    period_end: date
+    total_return_pct: Decimal                    # 총 수익률
+    annualized_return_pct: Decimal | None = None  # 연환산 수익률
+    sharpe_ratio: Decimal | None = None          # Sharpe Ratio
+    sortino_ratio: Decimal | None = None         # Sortino Ratio
+    max_drawdown_pct: Decimal                    # MDD (최대 드로다운)
+    win_rate_pct: Decimal                        # 승률
+    avg_win_pct: Decimal                         # 평균 수익 (이긴 거래)
+    avg_loss_pct: Decimal                        # 평균 손실 (진 거래)
+    profit_factor: Decimal | None = None         # 총 이익 / 총 손실
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+
+
+class DailyReportData(BaseModel):
+    """일간 리포트 데이터."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    report_date: date
+    realized_pnl: Decimal
+    realized_pnl_pct: Decimal
+    unrealized_pnl: Decimal
+    unrealized_pnl_pct: Decimal
+    total_value: Decimal
+    cash: Decimal
+    cash_pct: Decimal
+    positions_count: int
+    trades_today: list[dict] = []
+    cumulative_return_pct: Decimal
+    sector_allocations: dict[str, Decimal] = {}
+    warnings: list[str] = []
+    llm_cost_today_usd: Decimal = Decimal(0)
+    llm_cost_monthly_usd: Decimal = Decimal(0)
+    llm_budget_usd: Decimal = Decimal(0)
+
+
+class WeeklyReportData(BaseModel):
+    """주간 리포트 데이터."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    week_start: date
+    week_end: date
+    performance: PerformanceMetrics
+    best_trade: dict | None = None
+    worst_trade: dict | None = None
+    strategy_comparison: dict[str, dict] = {}
+
+
+class JobExecutionRecord(BaseModel):
+    """작업 실행 이력 응답 모델 — job_executions 테이블 대응."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    job_name: str
+    status: JobStatus
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_sec: Decimal | None = None
+    error_message: str = ""
+    result_summary: str = ""
+
+
+class MonitoringAlert(BaseModel):
+    """트레이딩 모니터링 경고."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    alert_type: MonitoringAlertType
+    symbol: str | None = None
+    message: str
+    current_value: Decimal
+    threshold_value: Decimal
+    timestamp: datetime

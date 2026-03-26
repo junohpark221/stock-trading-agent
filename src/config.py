@@ -96,12 +96,35 @@ class Settings(BaseSettings):
     AUTO_EXECUTE_MAX_PORTFOLIO_PCT: float = 5.0
     USE_MOCK_BROKER: bool = False
 
-    # ── Phase 6: Scheduling ───────────────────────────────────────────
+    # ── Phase 6: Scheduler + Report + Monitoring ─────────────────────────
     SCHEDULER_ENABLED: bool = True
     PRE_MARKET_ANALYSIS_TIME: str = "08:30"
     TRADING_SCAN_INTERVAL_MIN: int = 30
 
-    # ── Phase 7: Monitoring ───────────────────────────────────────────
+    # 작업 스케줄 12개 — DESIGN.md 488~505행과 동일
+    MARKET_DATA_COLLECTION_TIME: str = "15:40"
+    SWING_ANALYSIS_TIME: str = "16:00"
+    POSITION_ANALYSIS_DAYS: str = "wed,sat"
+    POSITION_ANALYSIS_TIME: str = "16:30"
+    STOP_LOSS_CHECK_INTERVAL_MIN: int = 5
+    DAILY_REPORT_TIME: str = "20:00"
+    WEEKLY_REPORT_DAY: str = "sat"
+    WEEKLY_REPORT_TIME: str = "10:00"
+    MONTHLY_REPORT_DAY: int = 1
+    MONTHLY_REPORT_TIME: str = "10:00"
+    TOKEN_REFRESH_TIME: str = "06:00"
+    LLM_COST_REPORT_DAY: str = "mon"
+    LLM_COST_REPORT_TIME: str = "09:00"
+
+    # 모니터링 임계치
+    MONITOR_STOP_LOSS_PROXIMITY_PCT: float = 2.0     # 손절 근접 경고 (%)
+    MONITOR_SECTOR_WEIGHT_WARN_PCT: float = 25.0     # 섹터 비중 경고 (%)
+    MONITOR_LLM_BUDGET_WARN_PCT: float = 80.0        # LLM 예산 경고 (%)
+
+    # 성과 계산
+    RISK_FREE_RATE_PCT: float = 3.5                  # 무위험수익률 (Sharpe 계산용, 한국 1년 국채 기준)
+
+    # ── Phase 7: Backtesting ──────────────────────────────────────────
     ALERT_TELEGRAM_ENABLED: bool = True
     ALERT_EMAIL_TO: str = ""
 

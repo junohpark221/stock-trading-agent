@@ -211,3 +211,35 @@ class WebVerifyResult(StrEnum):
     SAFE = "safe"           # 특이사항 없음 → 주문 진행
     WARNING = "warning"     # 주의 필요 → 승인 메시지에 경고 포함
     BLOCKED = "blocked"     # 위험 감지 → 주문 차단
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Scheduler + Report + Monitoring
+# ---------------------------------------------------------------------------
+
+
+class PerformanceReportType(StrEnum):
+    """성과 리포트 유형."""
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    LLM_COST = "llm_cost"
+
+
+class JobStatus(StrEnum):
+    """스케줄러 작업 실행 상태."""
+
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class MonitoringAlertType(StrEnum):
+    """트레이딩 모니터링 경고 유형."""
+
+    STOP_LOSS_PROXIMITY = "stop_loss_proximity"
+    SECTOR_CONCENTRATION = "sector_concentration"
+    LLM_BUDGET = "llm_budget"
+    PORTFOLIO_DRAWDOWN = "portfolio_drawdown"

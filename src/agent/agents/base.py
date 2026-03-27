@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from src.agent.decision_recorder import DecisionRecorder
 from src.agent.tools.registry import ToolRegistry
-from src.core.enums import AgentType, DecisionStage
+from src.core.enums import AgentType, DecisionStage, MessageRole
 from src.core.models import LLMMessage
 from src.llm.router import LLMRouter
 
@@ -78,6 +78,22 @@ class BaseAgent(ABC):
         """후처리. 기본: result 그대로 반환."""
         return result
 
+    def _inject_investment_prompt(
+        self,
+        messages: list[LLMMessage],
+        investment_prompt: str,
+    ) -> list[LLMMessage]:
+        """첫 번째 system 메시지에 투자 철학 블록을 append.
+
+        서브클래스에서 오버라이드하여 주입 방식을 변경할 수 있다.
+        """
+        block = f"\n\n## 투자 철학 (이 계좌의 운용 방침)\n{investment_prompt}"
+        for i, msg in enumerate(messages):
+            if msg.role == MessageRole.SYSTEM:
+                messages[i] = msg.model_copy(update={"content": msg.content + block})
+                break
+        return messages
+
     def _extract_decision(self, result: BaseModel) -> str:
         """감사 로그용 decision 문자열 추출."""
         if hasattr(result, "action"):
@@ -113,6 +129,8 @@ class BaseAgent(ABC):
         session_id: uuid.UUID,
         parent_id: uuid.UUID | None = None,
         symbol: str | None = None,
+        investment_prompt: str | None = None,
+        account_id: str = "default",
     ) -> tuple[BaseModel, uuid.UUID]:
         """Template Method — 에이전트 분석 실행.
 
@@ -124,6 +142,8 @@ class BaseAgent(ABC):
 
         # 2. 프롬프트 생성
         messages = self._build_messages(prepared)
+        if investment_prompt:
+            messages = self._inject_investment_prompt(messages, investment_prompt)
 
         # 3. LLM 호출
         result, routing_result = await self._router.route_structured(
@@ -150,6 +170,7 @@ class BaseAgent(ABC):
             agent_type=self.agent_type.value,
             symbol=symbol,
             confidence=confidence,
+            account_id=account_id,
             llm_provider=resp.provider.value if resp.provider else None,
             llm_model=resp.model,
             llm_tokens_in=resp.tokens_in,

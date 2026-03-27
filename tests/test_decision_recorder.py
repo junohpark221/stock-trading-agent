@@ -391,3 +391,45 @@ class TestErrorHandling:
 
         with pytest.raises(DatabaseError, match="Session decisions query failed"):
             await recorder.get_session_decisions(uuid.uuid4())
+
+
+# ===========================================================================
+# F. account_id 기록 테스트
+# ===========================================================================
+
+
+class TestRecordAccountId:
+    """DecisionRecorder.record() account_id 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_record_with_account_id(self) -> None:
+        """account_id 명시 → DecisionLog에 설정."""
+        factory = _make_mock_session_factory()
+        recorder = DecisionRecorder(factory)
+
+        await recorder.record(
+            session_id=uuid.uuid4(),
+            stage="stock_analysis",
+            decision="BUY",
+            reasoning="test",
+            account_id="acct-aggressive",
+        )
+
+        added_row = factory._session.add.call_args[0][0]
+        assert added_row.account_id == "acct-aggressive"
+
+    @pytest.mark.asyncio
+    async def test_record_default_account_id(self) -> None:
+        """account_id 미지정 → 기본값 'default'."""
+        factory = _make_mock_session_factory()
+        recorder = DecisionRecorder(factory)
+
+        await recorder.record(
+            session_id=uuid.uuid4(),
+            stage="market_analysis",
+            decision="HOLD",
+            reasoning="test",
+        )
+
+        added_row = factory._session.add.call_args[0][0]
+        assert added_row.account_id == "default"

@@ -375,3 +375,76 @@ async def test_session_id_auto_generation(
 
     # 둘이 다름
     assert result_auto.session_id != result_explicit.session_id
+
+
+# ── 투자 철학 프롬프트 / account_id 전파 테스트 ────────────────
+
+
+@pytest.mark.asyncio
+async def test_investment_prompt_passed_to_symbol_agents(
+    orchestrator: PipelineOrchestrator,
+    mock_stock_analyst: MagicMock,
+    mock_risk_manager: MagicMock,
+    mock_trader: MagicMock,
+) -> None:
+    """execute(investment_prompt=...) → Stock/Risk/Trader에 전달."""
+    prompt = "모멘텀 투자 전략으로 운용"
+    await orchestrator.execute(["005930"], investment_prompt=prompt)
+
+    for agent in [mock_stock_analyst, mock_risk_manager, mock_trader]:
+        call_kwargs = agent.analyze.call_args.kwargs
+        assert call_kwargs["investment_prompt"] == prompt
+
+
+@pytest.mark.asyncio
+async def test_market_analyst_no_investment_prompt(
+    orchestrator: PipelineOrchestrator,
+    mock_market_analyst: MagicMock,
+) -> None:
+    """MarketAnalyst에는 investment_prompt 미전달."""
+    await orchestrator.execute(["005930"], investment_prompt="가치투자")
+
+    call_kwargs = mock_market_analyst.analyze.call_args.kwargs
+    assert "investment_prompt" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_account_id_passed_to_all_agents(
+    orchestrator: PipelineOrchestrator,
+    mock_market_analyst: MagicMock,
+    mock_stock_analyst: MagicMock,
+    mock_risk_manager: MagicMock,
+    mock_trader: MagicMock,
+) -> None:
+    """execute(account_id=...) → 4개 에이전트 모두 account_id 전달."""
+    await orchestrator.execute(["005930"], account_id="acct-1")
+
+    for agent in [mock_market_analyst, mock_stock_analyst, mock_risk_manager, mock_trader]:
+        call_kwargs = agent.analyze.call_args.kwargs
+        assert call_kwargs["account_id"] == "acct-1"
+
+
+@pytest.mark.asyncio
+async def test_account_id_set_on_pipeline_result(
+    orchestrator: PipelineOrchestrator,
+) -> None:
+    """PipelineResult.account_id가 설정된다."""
+    result = await orchestrator.execute(["005930"], account_id="acct-2")
+    assert result.account_id == "acct-2"
+
+
+@pytest.mark.asyncio
+async def test_default_params_backward_compatible(
+    orchestrator: PipelineOrchestrator,
+    mock_market_analyst: MagicMock,
+    mock_stock_analyst: MagicMock,
+) -> None:
+    """새 파라미터 없이 호출 시 기존 동작 동일."""
+    result = await orchestrator.execute(["005930"])
+
+    assert result.success is True
+    assert result.account_id == "default"
+    # MarketAnalyst는 investment_prompt 미전달
+    ma_kwargs = mock_market_analyst.analyze.call_args.kwargs
+    assert "investment_prompt" not in ma_kwargs
+    assert ma_kwargs["account_id"] == "default"

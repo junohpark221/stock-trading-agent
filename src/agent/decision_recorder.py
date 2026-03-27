@@ -40,6 +40,7 @@ class DecisionRecorder:
         agent_type: str | None = None,
         symbol: str | None = None,
         confidence: Decimal | None = None,
+        account_id: str = "default",
         llm_provider: str | None = None,
         llm_model: str | None = None,
         llm_prompt: str | None = None,
@@ -53,6 +54,7 @@ class DecisionRecorder:
         decision_id = uuid.uuid4()
         row = DecisionLog(
             decision_id=decision_id,
+            account_id=account_id,
             parent_id=parent_id,
             session_id=session_id,
             stage=stage,

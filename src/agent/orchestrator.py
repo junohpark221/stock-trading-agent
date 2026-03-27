@@ -66,6 +66,8 @@ class PipelineOrchestrator:
         symbols: list[str],
         *,
         session_id: uuid.UUID | None = None,
+        investment_prompt: str | None = None,
+        account_id: str = "default",
     ) -> PipelineResult:
         """전체 파이프라인 실행.
 
@@ -82,11 +84,14 @@ class PipelineOrchestrator:
             session_id=sid,
             started_at=started_at,
             symbols_requested=list(symbols),
+            account_id=account_id,
         )
 
         # 1. 시장 분석 — 실패 시 전체 중단
         try:
-            market_condition, market_decision_id = await self._run_market_analysis(sid)
+            market_condition, market_decision_id = await self._run_market_analysis(
+                sid, account_id=account_id,
+            )
             result.market_condition = market_condition
         except Exception as exc:
             logger.error("Market analysis failed: %s", exc, exc_info=True)
@@ -104,6 +109,8 @@ class PipelineOrchestrator:
                 market_condition=market_condition,
                 market_decision_id=market_decision_id,
                 semaphore=semaphore,
+                investment_prompt=investment_prompt,
+                account_id=account_id,
             )
             for symbol in symbols
         ]
@@ -149,11 +156,12 @@ class PipelineOrchestrator:
     # ── 내부 메서드 ─────────────────────────────────────────
 
     async def _run_market_analysis(
-        self, session_id: uuid.UUID
+        self, session_id: uuid.UUID, *, account_id: str = "default",
     ) -> tuple[MarketCondition, uuid.UUID]:
         """시장 분석 실행."""
         mc, decision_id = await self._market_analyst.analyze(
             data={}, session_id=session_id, parent_id=None,
+            account_id=account_id,
         )
         return mc, decision_id  # type: ignore[return-value]
 
@@ -165,6 +173,8 @@ class PipelineOrchestrator:
         market_condition: MarketCondition,
         market_decision_id: uuid.UUID,
         semaphore: asyncio.Semaphore,
+        investment_prompt: str | None = None,
+        account_id: str = "default",
     ) -> _SymbolResult:
         """종목별 Stock → Risk → Trade 파이프라인 실행."""
         async with semaphore:
@@ -180,6 +190,8 @@ class PipelineOrchestrator:
                     session_id=session_id,
                     parent_id=market_decision_id,
                     symbol=symbol,
+                    investment_prompt=investment_prompt,
+                    account_id=account_id,
                 )
                 sr.stock_analysis = sa  # type: ignore[assignment]
             except Exception as exc:
@@ -201,6 +213,8 @@ class PipelineOrchestrator:
                     session_id=session_id,
                     parent_id=stock_decision_id,
                     symbol=symbol,
+                    investment_prompt=investment_prompt,
+                    account_id=account_id,
                 )
                 sr.risk_assessment = ra  # type: ignore[assignment]
             except Exception as exc:
@@ -223,6 +237,8 @@ class PipelineOrchestrator:
                     session_id=session_id,
                     parent_id=risk_decision_id,
                     symbol=symbol,
+                    investment_prompt=investment_prompt,
+                    account_id=account_id,
                 )
                 sr.trade_decision = td  # type: ignore[assignment]
             except Exception as exc:

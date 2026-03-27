@@ -24,11 +24,13 @@ from src.core.enums import (
     DecisionAction,
     DecisionStage,
     LLMProviderType,
+    MessageRole,
     SentimentLabel,
     SentimentMethod,
 )
 from src.core.models import (
     AgentModelConfig,
+    LLMMessage,
     LLMResponse,
     MarketCondition,
     RiskAssessment,
@@ -668,3 +670,120 @@ class TestErrorHandling:
         # 에러에도 불구하고 분석 완료
         assert isinstance(result, MarketCondition)
         mock_router.route_structured.assert_called_once()
+
+
+# ── 7. 투자 철학 프롬프트 주입 테스트 ─────────────────────────
+
+class _ConcreteAgent(BaseAgent):
+    """테스트용 구체 에이전트."""
+
+    @property
+    def agent_type(self):
+        return AgentType.MARKET_ANALYST
+
+    @property
+    def output_schema(self):
+        return MarketCondition
+
+    @property
+    def tool_modules(self):
+        return []
+
+    @property
+    def decision_stage(self):
+        return DecisionStage.MARKET_ANALYSIS
+
+    def _build_messages(self, data):
+        return [
+            LLMMessage(role=MessageRole.SYSTEM, content="You are an analyst."),
+            LLMMessage(role=MessageRole.USER, content="Analyze the market."),
+        ]
+
+
+class TestInvestmentPromptInjection:
+    """_inject_investment_prompt() 및 analyze() 투자 철학 주입 테스트."""
+
+    def test_inject_appends_to_system_message(self, mock_router, mock_recorder, mock_tool_registry):
+        """system 메시지에 투자 철학 블록이 append된다."""
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        messages = [
+            LLMMessage(role=MessageRole.SYSTEM, content="Base prompt."),
+            LLMMessage(role=MessageRole.USER, content="Hello"),
+        ]
+
+        result = agent._inject_investment_prompt(messages, "가치투자 원칙으로 운용")
+
+        assert "## 투자 철학 (이 계좌의 운용 방침)" in result[0].content
+        assert "가치투자 원칙으로 운용" in result[0].content
+        assert result[0].content.startswith("Base prompt.")
+        # user 메시지는 변경 없음
+        assert result[1].content == "Hello"
+
+    def test_inject_only_first_system_message(self, mock_router, mock_recorder, mock_tool_registry):
+        """system 메시지가 2개일 때 첫 번째만 주입."""
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        messages = [
+            LLMMessage(role=MessageRole.SYSTEM, content="First system."),
+            LLMMessage(role=MessageRole.USER, content="Hello"),
+            LLMMessage(role=MessageRole.SYSTEM, content="Second system."),
+        ]
+
+        result = agent._inject_investment_prompt(messages, "모멘텀 투자")
+
+        assert "모멘텀 투자" in result[0].content
+        assert result[2].content == "Second system."  # 변경 없음
+
+    def test_inject_no_system_message(self, mock_router, mock_recorder, mock_tool_registry):
+        """system 메시지 없으면 에러 없이 원본 반환."""
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        messages = [
+            LLMMessage(role=MessageRole.USER, content="Hello"),
+        ]
+
+        result = agent._inject_investment_prompt(messages, "가치투자")
+
+        assert len(result) == 1
+        assert result[0].content == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_analyze_with_investment_prompt(self, mock_router, mock_recorder, mock_tool_registry, session_id):
+        """analyze(investment_prompt=...) → LLM에 주입된 메시지 전달."""
+        mc = _sample_market_condition()
+        mock_router.route_structured.return_value = (mc, _sample_routing_result())
+
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        await agent.analyze({}, session_id=session_id, investment_prompt="배당주 중심 안정적 투자")
+
+        # router에 전달된 messages 확인
+        call_kwargs = mock_router.route_structured.call_args.kwargs
+        messages = call_kwargs["messages"]
+        system_msg = next(m for m in messages if m.role == MessageRole.SYSTEM)
+        assert "배당주 중심 안정적 투자" in system_msg.content
+        assert "## 투자 철학" in system_msg.content
+
+    @pytest.mark.asyncio
+    async def test_analyze_without_investment_prompt(self, mock_router, mock_recorder, mock_tool_registry, session_id):
+        """analyze(investment_prompt=None) → 기존 동작 동일."""
+        mc = _sample_market_condition()
+        mock_router.route_structured.return_value = (mc, _sample_routing_result())
+
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        await agent.analyze({}, session_id=session_id, investment_prompt=None)
+
+        call_kwargs = mock_router.route_structured.call_args.kwargs
+        messages = call_kwargs["messages"]
+        system_msg = next(m for m in messages if m.role == MessageRole.SYSTEM)
+        assert "투자 철학" not in system_msg.content
+        assert system_msg.content == "You are an analyst."
+
+    @pytest.mark.asyncio
+    async def test_analyze_passes_account_id_to_recorder(self, mock_router, mock_recorder, mock_tool_registry, session_id):
+        """analyze(account_id=...) → recorder.record()에 account_id 전달."""
+        mc = _sample_market_condition()
+        mock_router.route_structured.return_value = (mc, _sample_routing_result())
+
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        await agent.analyze({}, session_id=session_id, account_id="acct-aggressive")
+
+        record_kwargs = mock_recorder.record.call_args.kwargs
+        assert record_kwargs["account_id"] == "acct-aggressive"

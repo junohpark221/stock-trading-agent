@@ -1,6 +1,7 @@
 """Backtesting engine package."""
 
 from src.backtest.engine import BacktestEngine
+from src.backtest.reporter import BacktestReporter
 from src.backtest.simulator import SimulatedBroker
 
-__all__ = ["BacktestEngine", "SimulatedBroker"]
+__all__ = ["BacktestEngine", "BacktestReporter", "SimulatedBroker"]

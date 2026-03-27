@@ -235,6 +235,20 @@ class BacktestEngine:
             )
 
     # ══════════════════════════════════════════════════════════════════════
+    # Read-only Properties (for BacktestReporter)
+    # ══════════════════════════════════════════════════════════════════════
+
+    @property
+    def closed_positions(self) -> list[PositionRecord]:
+        """청산된 포지션 (reporter용 읽기 전용)."""
+        return list(self._closed_positions)
+
+    @property
+    def snapshots(self) -> list[PortfolioSnapshot]:
+        """일별 스냅샷 (reporter용 읽기 전용)."""
+        return list(self._snapshots)
+
+    # ══════════════════════════════════════════════════════════════════════
     # 청산 체크
     # ══════════════════════════════════════════════════════════════════════
 

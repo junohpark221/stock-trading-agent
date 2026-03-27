@@ -854,3 +854,44 @@ class BacktestResult(BaseModel):
     started_at: datetime
     completed_at: datetime | None = None
     error_message: str | None = None
+
+
+class OOSSplitResult(BaseModel):
+    """In-sample / Out-of-sample 분리 결과."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    split_date: date
+    is_ratio: Decimal
+    in_sample_metrics: PerformanceMetrics
+    out_of_sample_metrics: PerformanceMetrics
+    is_overfit: bool  # OOS total_return < IS total_return * 0.5 → True
+
+
+class BacktestReport(BaseModel):
+    """BacktestReporter.generate_report() 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    config: BacktestConfig
+    metrics: PerformanceMetrics
+    benchmark_metrics: PerformanceMetrics | None = None
+    excess_return_pct: Decimal | None = None
+    monthly_returns: dict[str, Decimal] = Field(default_factory=dict)
+    strategy_breakdown: dict[str, dict] = Field(default_factory=dict)
+    oos_split: OOSSplitResult | None = None
+    trade_count: int = 0
+    generated_at: datetime
+
+
+class ComparisonReport(BaseModel):
+    """복수 백테스트 결과 비교."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    reports: list[BacktestReport] = Field(default_factory=list)
+    best_sharpe_run_id: UUID | None = None
+    best_return_run_id: UUID | None = None
+    lowest_mdd_run_id: UUID | None = None
+    generated_at: datetime

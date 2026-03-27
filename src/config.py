@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     # ── Phase 7: Backtesting ──────────────────────────────────────────
     ALERT_TELEGRAM_ENABLED: bool = True
     ALERT_EMAIL_TO: str = ""
+    BACKTEST_DEFAULT_INITIAL_CAPITAL: int = 10_000_000  # 초기 자본 (원)
+    BACKTEST_SLIPPAGE_BPS: int = 10                     # 슬리피지 기본값 (bps)
+    BACKTEST_MAX_WORKERS: int = 4                       # 병렬 백테스트 워커 수
 
     # ── Phase 8: Production (AWS) ─────────────────────────────────────
     AWS_REGION: str = "ap-northeast-2"

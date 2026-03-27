@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.core.enums import (
     AgentType,
     ApprovalStatus,
+    BacktestMode,
+    BacktestStatus,
     DataSourceType,
     DecisionAction,
     ExitReason,
@@ -796,3 +798,59 @@ class MonitoringAlert(BaseModel):
     current_value: Decimal
     threshold_value: Decimal
     timestamp: datetime
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: Backtesting
+# ---------------------------------------------------------------------------
+
+
+class BacktestConfig(BaseModel):
+    """백테스트 실행 설정."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    strategy_type: StrategyType
+    start_date: date
+    end_date: date
+    initial_capital: Decimal = Decimal("10000000")
+    symbols: list[str] = Field(default_factory=list)
+    slippage_bps: int = 10
+    mode: BacktestMode = BacktestMode.TECHNICAL
+    parameters: dict = Field(default_factory=dict)
+    llm_model_filter: str | None = None
+    benchmark_symbol: str = "KOSPI"
+
+
+class BacktestTradeRecord(BaseModel):
+    """백테스트 가상 거래 레코드."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    side: OrderSide
+    quantity: int
+    price: Decimal
+    commission: Decimal
+    slippage: Decimal
+    trade_date: date
+    pnl: Decimal | None = None
+    exit_reason: ExitReason | None = None
+
+
+class BacktestResult(BaseModel):
+    """BacktestEngine.run() 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    run_id: UUID
+    config: BacktestConfig
+    status: BacktestStatus
+    metrics: PerformanceMetrics | None = None
+    benchmark_metrics: PerformanceMetrics | None = None
+    excess_return_pct: Decimal | None = None
+    trades: list[BacktestTradeRecord] = Field(default_factory=list)
+    total_trades: int = 0
+    started_at: datetime
+    completed_at: datetime | None = None
+    error_message: str | None = None

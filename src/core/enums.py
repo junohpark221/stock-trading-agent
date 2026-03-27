@@ -243,3 +243,25 @@ class MonitoringAlertType(StrEnum):
     SECTOR_CONCENTRATION = "sector_concentration"
     LLM_BUDGET = "llm_budget"
     PORTFOLIO_DRAWDOWN = "portfolio_drawdown"
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: Backtesting
+# ---------------------------------------------------------------------------
+
+
+class BacktestStatus(StrEnum):
+    """백테스트 실행 상태."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class BacktestMode(StrEnum):
+    """백테스트 시그널 생성 모드."""
+
+    TECHNICAL = "technical"      # Mode 1: 순수 기술 지표
+    LLM_REPLAY = "llm_replay"   # Mode 2: decision_log 재생
+    LLM_LIVE = "llm_live"       # Mode 3: 실제 LLM 호출 (향후)

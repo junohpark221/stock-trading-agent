@@ -31,8 +31,11 @@ from src.analysis.technical.indicators import (
     calculate_rsi,
     calculate_sma,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from src.core.enums import (
     AgentType,
+    BacktestMode,
     BacktestStatus,
     OrderSide,
     OrderType,
@@ -54,6 +57,7 @@ from src.strategy.exit_checker import ExitConditionChecker
 from src.strategy.sizing import PositionSizer
 
 from .data_loader import HistoricalDataLoader
+from .llm_replay import LLMReplayProvider
 from .simulator import SimulatedBroker
 
 logger = structlog.get_logger(__name__)
@@ -97,10 +101,12 @@ class BacktestEngine:
         data_loader: HistoricalDataLoader,
         broker: SimulatedBroker,
         settings: object,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._data_loader = data_loader
         self._broker = broker
         self._settings = settings
+        self._session_factory = session_factory
 
         # 재사용 모듈
         self._sizer = PositionSizer(settings)  # type: ignore[arg-type]
@@ -120,6 +126,7 @@ class BacktestEngine:
         self._peak_value: Decimal = _ZERO
         self._daily_trade_count: int = 0
         self._daily_realized_pnl: Decimal = _ZERO
+        self._llm_replay: LLMReplayProvider | None = None
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
@@ -145,6 +152,21 @@ class BacktestEngine:
         try:
             self._reset_state()
             self._peak_value = config.initial_capital
+
+            # ── Mode 2: LLM Replay 초기화 ────────────────────────
+            if config.mode == BacktestMode.LLM_REPLAY:
+                if self._session_factory is None:
+                    raise ValueError(
+                        "session_factory is required for LLM_REPLAY mode"
+                    )
+                self._llm_replay = LLMReplayProvider(self._session_factory)
+                loaded = await self._llm_replay.load(
+                    start_date=config.start_date,
+                    end_date=config.end_date,
+                    symbols=config.symbols,
+                    llm_model_filter=config.llm_model_filter,
+                )
+                logger.info("llm_replay_initialized", loaded_count=loaded)
 
             # 거래일 범위 필터
             all_dates = self._data_loader.get_trading_dates()
@@ -457,7 +479,11 @@ class BacktestEngine:
     # ══════════════════════════════════════════════════════════════════════
 
     def _generate_signals(self, trading_date: date, config: BacktestConfig) -> None:
-        """기술 지표 기반 시그널 생성 (Mode 1 TECHNICAL)."""
+        """시그널 생성 — 모드에 따라 분기."""
+        if config.mode == BacktestMode.LLM_REPLAY:
+            self._generate_replay_signals(trading_date, config)
+            return
+        # Mode 1: TECHNICAL
         if config.strategy_type == StrategyType.POSITION:
             self._generate_position_signals(trading_date, config)
         else:
@@ -699,6 +725,147 @@ class BacktestEngine:
         ))
 
     # ══════════════════════════════════════════════════════════════════════
+    # Mode 2: LLM Replay 시그널
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _generate_replay_signals(
+        self, trading_date: date, config: BacktestConfig,
+    ) -> None:
+        """Mode 2: decision_log 기반 시그널 재생.
+
+        각 종목에 대해 최고 confidence 결정을 선택하여 시그널로 변환한다.
+        SL/TP는 strategy_type에 따라 ATR 기반(Position) 또는 고정%(Swing) 적용.
+        """
+        assert self._llm_replay is not None  # noqa: S101
+
+        params = config.parameters or {}
+        total_value = self._broker.get_total_value()
+
+        for symbol in config.symbols:
+            try:
+                self._try_replay_signal(
+                    symbol, trading_date, config, params, total_value,
+                )
+            except Exception:
+                logger.warning(
+                    "replay_signal_failed",
+                    symbol=symbol,
+                    date=str(trading_date),
+                )
+
+    def _try_replay_signal(
+        self,
+        symbol: str,
+        trading_date: date,
+        config: BacktestConfig,
+        params: dict,
+        total_value: Decimal,
+    ) -> None:
+        """Mode 2 시그널 생성 (단일 종목)."""
+        # 이미 보유 중이면 skip
+        if symbol in self._positions:
+            return
+
+        # pending에 이미 있으면 skip
+        if any(s.symbol == symbol for s in self._pending_signals):
+            return
+
+        assert self._llm_replay is not None  # noqa: S101
+        decisions = self._llm_replay.get_decisions(
+            target_date=trading_date, symbol=symbol,
+        )
+        if not decisions:
+            return
+
+        # 최고 confidence 선택
+        best = max(decisions, key=lambda d: d.confidence)
+
+        current_price = self._data_loader.get_close_price(symbol, trading_date)
+        if current_price is None:
+            return
+
+        signal = self._llm_replay.to_signal(best, current_price=current_price)
+        if signal is None:
+            return
+
+        # BUY만 처리 (SELL은 기존 exit 메커니즘이 담당)
+        if signal.action != SignalAction.BUY:
+            return
+
+        # SL/TP 계산 — strategy_type에 따라 분기
+        if config.strategy_type == StrategyType.POSITION:
+            atr_val = self._compute_atr(symbol, trading_date)
+            if atr_val is None:
+                return
+            atr_stop_mult = Decimal(
+                str(params.get("atr_stop_mult", _POS_DEFAULTS["atr_stop_mult"]))
+            )
+            atr_tp_mult = Decimal(
+                str(params.get("atr_tp_mult", _POS_DEFAULTS["atr_tp_mult"]))
+            )
+            sl, tp = ExitPriceCalculator.atr_based(
+                current_price, atr_val,
+                stop_mult=atr_stop_mult, tp_mult=atr_tp_mult,
+            )
+        else:
+            stop_pct = Decimal(
+                str(params.get("stop_pct", _SWING_DEFAULTS["stop_pct"]))
+            )
+            tp_pct = Decimal(
+                str(params.get("tp_pct", _SWING_DEFAULTS["tp_pct"]))
+            )
+            sl, tp = ExitPriceCalculator.fixed_percentage(
+                current_price, stop_pct, tp_pct,
+            )
+
+        # 포지션 사이징
+        sizing = self._sizer.calculate(
+            symbol=symbol,
+            entry_price=current_price,
+            stop_loss_price=sl,
+            take_profit_price=tp,
+            total_portfolio_value=total_value,
+        )
+        if sizing.quantity <= 0:
+            return
+
+        self._pending_signals.append(Signal(
+            symbol=symbol,
+            action=SignalAction.BUY,
+            confidence=best.confidence,
+            target_price=tp,
+            stop_loss_price=sl,
+            quantity=sizing.quantity,
+            position_value_krw=sizing.position_value_krw,
+            reasoning=signal.reasoning,
+            source_agent=signal.source_agent,
+            timestamp=signal.timestamp,
+        ))
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 공용 헬퍼
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _compute_atr(self, symbol: str, trading_date: date) -> Decimal | None:
+        """ATR(14) 계산 — Position 전략 및 Mode 2에서 재사용."""
+        all_dates = self._data_loader.get_trading_dates()
+        earliest = all_dates[0] if all_dates else trading_date
+        df = self._data_loader.get_ohlcv_range(symbol, earliest, trading_date)
+
+        if df.empty or len(df) < 14:
+            return None
+
+        atr = AverageTrueRange(
+            high=df["high"], low=df["low"], close=df["close"], window=14,
+        ).average_true_range()
+        val = atr.iloc[-1]
+
+        if _is_nan(val):
+            return None
+
+        return Decimal(str(val))
+
+    # ══════════════════════════════════════════════════════════════════════
     # 리스크 체크
     # ══════════════════════════════════════════════════════════════════════
 
@@ -830,6 +997,7 @@ class BacktestEngine:
         self._peak_value = _ZERO
         self._daily_trade_count = 0
         self._daily_realized_pnl = _ZERO
+        self._llm_replay = None
 
 
 def _is_nan(val: object) -> bool:

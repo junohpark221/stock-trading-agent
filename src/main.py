@@ -26,6 +26,8 @@ from src.notification.telegram import TelegramBot
 
 _redis_client: Redis | None = None
 _telegram_bot: TelegramBot | None = None
+_scheduler_engine: object | None = None  # SchedulerEngine (lazy import)
+_scheduler_broker: object | None = None  # BrokerInterface (lazy import)
 logger = structlog.get_logger(__name__)
 
 
@@ -71,10 +73,17 @@ def get_telegram_bot() -> TelegramBot:
     return _telegram_bot
 
 
+def get_scheduler():
+    """현재 SchedulerEngine 싱글톤 반환. 미초기화 시 RuntimeError."""
+    if _scheduler_engine is None:
+        raise RuntimeError("Scheduler not initialized. App lifespan not started.")
+    return _scheduler_engine
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""
-    global _redis_client, _telegram_bot
+    global _redis_client, _telegram_bot, _scheduler_engine, _scheduler_broker
 
     settings = get_settings()
     is_dev = settings.ENV == "development"
@@ -100,11 +109,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await _telegram_bot.start()
     log.info("telegram_bot_initialized")
 
+    # Scheduler — TelegramBot 초기화 후 조립 (job들이 telegram_bot 사용)
+    if settings.SCHEDULER_ENABLED:
+        from src.data.cache import get_cache
+        from src.db.session import get_session_factory
+        from src.scheduler.factory import SchedulerFactory
+
+        _scheduler_engine, _scheduler_broker = await SchedulerFactory.create_scheduler(
+            settings=settings,
+            session_factory=get_session_factory(),
+            cache=get_cache(),
+            telegram_bot=_telegram_bot,
+        )
+        await _scheduler_engine.start()
+        log.info(
+            "scheduler_initialized",
+            jobs=len(_scheduler_engine.get_status()["jobs"]),
+        )
+
     log.info("app_started", env=settings.ENV)
 
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────
+    if _scheduler_engine is not None:
+        await _scheduler_engine.stop()
+        _scheduler_engine = None
+        log.info("scheduler_stopped")
+
+    if _scheduler_broker is not None:
+        await _scheduler_broker.disconnect()
+        _scheduler_broker = None
+        log.info("scheduler_broker_disconnected")
+
     if _telegram_bot is not None:
         await _telegram_bot.stop()
         _telegram_bot = None

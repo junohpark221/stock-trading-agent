@@ -50,6 +50,7 @@ class AgentMemoryManager:
         source_session_id: str | None = None,
         expires_days: int = 90,
         relevance_score: Decimal = Decimal("1.0"),
+        account_id: str = "default",
     ) -> int:
         """학습 메모리 저장 → agent_memory.id 반환.
 
@@ -78,6 +79,7 @@ class AgentMemoryManager:
             relevance_score=relevance_score,
             expires_at=expires_at,
             is_active=True,
+            account_id=account_id,
         )
 
         try:
@@ -94,6 +96,7 @@ class AgentMemoryManager:
             agent_type=agent_type,
             symbol=symbol,
             expires_days=expires_days,
+            account_id=account_id,
         )
         return record.id
 
@@ -105,6 +108,7 @@ class AgentMemoryManager:
         symbol: str | None = None,
         *,
         limit: int = 10,
+        account_id: str | None = None,
     ) -> list[AgentMemory]:
         """관련 메모리 조회.
 
@@ -136,6 +140,11 @@ class AgentMemoryManager:
                     )
                 )
 
+                if account_id is not None:
+                    stmt = stmt.where(
+                        AgentMemory.account_id == account_id
+                    )
+
                 if symbol is not None:
                     # 종목별 + 범용(symbol=None) 모두 조회
                     stmt = stmt.where(
@@ -161,6 +170,8 @@ class AgentMemoryManager:
         self,
         position: PositionRecord,
         pipeline_result: PipelineResult,
+        *,
+        account_id: str = "default",
     ) -> int | None:
         """청산 후 자동 학습 — 수익/손실 분석 → 교훈 메모리 생성.
 
@@ -230,6 +241,7 @@ class AgentMemoryManager:
             context=context,
             source_session_id=session_id,
             relevance_score=relevance,
+            account_id=account_id,
         )
 
         logger.info(

@@ -98,6 +98,7 @@ class Signal(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: str = "default"
     symbol: str
     action: SignalAction
     confidence: Decimal
@@ -115,6 +116,7 @@ class OrderRequest(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: str = "default"
     symbol: str
     side: OrderSide
     order_type: OrderType
@@ -128,6 +130,7 @@ class OrderResult(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: str = "default"
     order_id: str
     symbol: str
     side: OrderSide
@@ -146,6 +149,7 @@ class Position(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: str = "default"
     symbol: str
     quantity: int
     average_cost: Decimal
@@ -162,6 +166,7 @@ class AccountBalance(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: str = "default"
     total_assets: Decimal
     cash: Decimal
     invested: Decimal
@@ -495,6 +500,7 @@ class PipelineResult(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: str = "default"
     session_id: UUID
     started_at: datetime
     completed_at: datetime | None = None
@@ -536,6 +542,7 @@ class PortfolioState(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    account_id: str = "default"
     total_value: Decimal
     cash: Decimal
     invested: Decimal

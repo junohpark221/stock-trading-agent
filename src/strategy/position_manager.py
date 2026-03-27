@@ -50,6 +50,7 @@ class PositionManager:
         trailing_stop_pct: Decimal | None = None,
         max_holding_days: int | None = None,
         entry_session_id: UUID | None = None,
+        account_id: str = "default",
     ) -> PositionRecord:
         """포지션 생성 (avg_cost = entry_price, status = 'open').
 
@@ -78,6 +79,7 @@ class PositionManager:
             max_holding_days=max_holding_days,
             status="open",
             entry_session_id=entry_session_id,
+            account_id=account_id,
         )
 
         try:
@@ -94,6 +96,7 @@ class PositionManager:
             symbol=record.symbol,
             quantity=record.quantity,
             strategy=record.strategy_type,
+            account_id=account_id,
         )
         return record
 
@@ -168,13 +171,17 @@ class PositionManager:
     # ── Read ──────────────────────────────────────────────────────────────
 
     async def get_open(
-        self, strategy_type: StrategyType | None = None
+        self,
+        strategy_type: StrategyType | None = None,
+        *,
+        account_id: str | None = None,
     ) -> list[PositionRecord]:
-        """열린 포지션 조회 (strategy_type 필터 옵션).
+        """열린 포지션 조회 (strategy_type, account_id 필터 옵션).
 
         Parameters
         ----------
         strategy_type: 전략 유형 필터 (None이면 전체)
+        account_id: 계좌 ID 필터 (None이면 전체 계좌)
         """
         try:
             async with self._session_factory() as session:
@@ -187,6 +194,11 @@ class PositionManager:
                         PositionRecord.strategy_type == strategy_type.value
                     )
 
+                if account_id is not None:
+                    stmt = stmt.where(
+                        PositionRecord.account_id == account_id
+                    )
+
                 stmt = stmt.order_by(PositionRecord.entry_date.asc())
                 result = await session.execute(stmt)
                 return list(result.scalars().all())
@@ -196,7 +208,11 @@ class PositionManager:
             ) from exc
 
     async def get_by_symbol(
-        self, symbol: str, *, status: str = "open"
+        self,
+        symbol: str,
+        *,
+        status: str = "open",
+        account_id: str | None = None,
     ) -> PositionRecord | None:
         """종목별 포지션 조회.
 
@@ -204,6 +220,7 @@ class PositionManager:
         ----------
         symbol: 종목 코드
         status: 포지션 상태 필터 (기본: "open")
+        account_id: 계좌 ID 필터 (None이면 전체 계좌)
         """
         try:
             async with self._session_factory() as session:
@@ -213,8 +230,14 @@ class PositionManager:
                         PositionRecord.symbol == symbol,
                         PositionRecord.status == status,
                     )
-                    .limit(1)
                 )
+
+                if account_id is not None:
+                    stmt = stmt.where(
+                        PositionRecord.account_id == account_id
+                    )
+
+                stmt = stmt.limit(1)
                 result = await session.execute(stmt)
                 return result.scalar_one_or_none()
         except Exception as exc:
@@ -222,18 +245,26 @@ class PositionManager:
                 f"Position query by symbol failed: {exc}"
             ) from exc
 
-    async def get_daily_entries(self, target_date: date) -> int:
+    async def get_daily_entries(
+        self, target_date: date, *, account_id: str | None = None
+    ) -> int:
         """당일 진입 건수.
 
         Parameters
         ----------
         target_date: 조회 대상 날짜
+        account_id: 계좌 ID 필터 (None이면 전체 계좌)
         """
         try:
             async with self._session_factory() as session:
                 stmt = select(func.count()).where(
                     PositionRecord.entry_date == target_date
                 )
+
+                if account_id is not None:
+                    stmt = stmt.where(
+                        PositionRecord.account_id == account_id
+                    )
                 result = await session.execute(stmt)
                 return result.scalar_one()
         except Exception as exc:

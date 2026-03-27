@@ -39,10 +39,13 @@ class PortfolioStateService:
         broker: BrokerInterface,
         session_factory: async_sessionmaker[AsyncSession],
         cache: RedisCache,
+        *,
+        account_id: str = "default",
     ) -> None:
         self._broker = broker
         self._session_factory = session_factory
         self._cache = cache
+        self._account_id = account_id
 
     # -- 포트폴리오 상태 집계 --------------------------------------------------
 
@@ -67,6 +70,7 @@ class PortfolioStateService:
         daily_trade_count = await self.get_daily_trade_count(date.today())
 
         state = PortfolioState(
+            account_id=self._account_id,
             total_value=balance.total_assets,
             cash=balance.cash,
             invested=balance.invested,
@@ -83,6 +87,7 @@ class PortfolioStateService:
 
         logger.info(
             "portfolio_state.aggregated",
+            account_id=self._account_id,
             total_value=str(balance.total_assets),
             positions_count=len(positions),
             drawdown_pct=str(drawdown_pct),
@@ -168,6 +173,7 @@ class PortfolioStateService:
             sector_json = {k: float(v) for k, v in state.sector_allocations.items()}
 
         values = {
+            "account_id": self._account_id,
             "snapshot_date": snapshot_date,
             "total_value": state.total_value,
             "cash": state.cash,
@@ -182,9 +188,12 @@ class PortfolioStateService:
         }
 
         stmt = pg_insert(PortfolioSnapshot).values(**values)
-        update_cols = {k: v for k, v in values.items() if k != "snapshot_date"}
+        update_cols = {
+            k: v for k, v in values.items()
+            if k not in ("snapshot_date", "account_id")
+        }
         stmt = stmt.on_conflict_do_update(
-            constraint="uq_portfolio_snapshots_date",
+            constraint="uq_portfolio_snapshots_account_date",
             set_=update_cols,
         )
 
@@ -195,15 +204,21 @@ class PortfolioStateService:
         except Exception as exc:
             raise DatabaseError(f"Portfolio snapshot upsert failed: {exc}") from exc
 
-        logger.info("portfolio_snapshot.saved", date=str(snapshot_date))
+        logger.info(
+            "portfolio_snapshot.saved",
+            account_id=self._account_id,
+            date=str(snapshot_date),
+        )
 
     # -- 역대 최고 자산 --------------------------------------------------------
 
     async def get_peak_value(self) -> Decimal:
-        """portfolio_snapshots에서 역대 최고 total_value를 반환한다."""
+        """portfolio_snapshots에서 역대 최고 total_value를 반환한다 (계좌별)."""
         try:
             async with self._session_factory() as session:
-                stmt = select(func.max(PortfolioSnapshot.total_value))
+                stmt = select(func.max(PortfolioSnapshot.total_value)).where(
+                    PortfolioSnapshot.account_id == self._account_id
+                )
                 result = await session.execute(stmt)
                 peak = result.scalar()
         except Exception as exc:
@@ -214,11 +229,12 @@ class PortfolioStateService:
     # -- 당일 매매 건수 --------------------------------------------------------
 
     async def get_daily_trade_count(self, target_date: date) -> int:
-        """positions 테이블에서 해당 날짜의 신규 진입 건수를 반환한다."""
+        """positions 테이블에서 해당 날짜의 신규 진입 건수를 반환한다 (계좌별)."""
         try:
             async with self._session_factory() as session:
                 stmt = select(func.count()).select_from(PositionRecord).where(
-                    PositionRecord.entry_date == target_date
+                    PositionRecord.entry_date == target_date,
+                    PositionRecord.account_id == self._account_id,
                 )
                 result = await session.execute(stmt)
                 count = result.scalar()

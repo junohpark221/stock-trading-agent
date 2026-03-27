@@ -70,6 +70,8 @@ class AlgoRiskManager:
         price: Decimal,
         stop_loss_price: Decimal | None,
         sector: str,
+        *,
+        account_id: str = "default",
     ) -> RiskCheckResult:
         """8개 리스크 규칙을 순회하여 매매 가능 여부를 판정한다.
 
@@ -158,6 +160,7 @@ class AlgoRiskManager:
 
         logger.info(
             "algo_risk.checked",
+            account_id=account_id,
             symbol=symbol,
             passed=passed,
             violations=violations,

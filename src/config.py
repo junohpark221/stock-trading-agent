@@ -123,6 +123,7 @@ class Settings(BaseSettings):
 
     # 성과 계산
     RISK_FREE_RATE_PCT: float = 3.5                  # 무위험수익률 (Sharpe 계산용, 한국 1년 국채 기준)
+    INITIAL_CAPITAL: Decimal = Decimal("10000000")   # 초기 자본금 (1천만원)
 
     # ── Phase 7: Backtesting ──────────────────────────────────────────
     ALERT_TELEGRAM_ENABLED: bool = True

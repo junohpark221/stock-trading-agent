@@ -895,3 +895,39 @@ class ComparisonReport(BaseModel):
     best_return_run_id: UUID | None = None
     lowest_mdd_run_id: UUID | None = None
     generated_at: datetime
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Walk-forward Analysis
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class WalkForwardWindow(BaseModel):
+    """Walk-forward 개별 윈도우 결과."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    window_index: int
+    is_start: date
+    is_end: date
+    oos_start: date
+    oos_end: date
+    is_metrics: PerformanceMetrics
+    oos_metrics: PerformanceMetrics
+    oos_trade_count: int
+
+
+class WalkForwardResult(BaseModel):
+    """WalkForwardAnalyzer.run() 출력."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    config: BacktestConfig
+    window_months: int
+    oos_months: int
+    windows: list[WalkForwardWindow]
+    aggregated_oos_metrics: PerformanceMetrics
+    consistency_ratio: Decimal
+    avg_oos_return_pct: Decimal
+    is_robust: bool
+    generated_at: datetime

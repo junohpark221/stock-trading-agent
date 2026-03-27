@@ -3,5 +3,6 @@
 from src.backtest.engine import BacktestEngine
 from src.backtest.reporter import BacktestReporter
 from src.backtest.simulator import SimulatedBroker
+from src.backtest.walk_forward import WalkForwardAnalyzer
 
-__all__ = ["BacktestEngine", "BacktestReporter", "SimulatedBroker"]
+__all__ = ["BacktestEngine", "BacktestReporter", "SimulatedBroker", "WalkForwardAnalyzer"]

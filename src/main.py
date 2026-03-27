@@ -187,6 +187,7 @@ from src.api.routes.portfolio import router as portfolio_router  # noqa: E402
 from src.api.routes.orders import router as orders_router  # noqa: E402
 from src.api.routes.control import router as control_router  # noqa: E402
 from src.api.routes.trades import router as trades_router  # noqa: E402
+from src.api.routes.backtest import router as backtest_router  # noqa: E402
 
 app.include_router(data_router)
 app.include_router(analysis_router)
@@ -198,6 +199,7 @@ app.include_router(portfolio_router)
 app.include_router(orders_router)
 app.include_router(control_router)
 app.include_router(trades_router)
+app.include_router(backtest_router)
 
 
 @app.get("/health", response_model=HealthStatus)

@@ -181,7 +181,7 @@ class TestPortfolioSnapshot:
     def test_unique_constraint_defined(self):
         constraints = _get_table_args_by_type(PortfolioSnapshot, UniqueConstraint)
         names = [c.name for c in constraints]
-        assert "uq_portfolio_snapshots_date" in names
+        assert "uq_portfolio_snapshots_account_date" in names
 
     def test_index_defined(self):
         names = _get_index_names(PortfolioSnapshot)
@@ -282,7 +282,7 @@ class TestModelExports:
         """Phase 1~7까지 총 18개 모델 export 확인."""
         import src.db.models as models_pkg
 
-        assert len(models_pkg.__all__) == 18
+        assert len(models_pkg.__all__) == 20
 
 
 # ---------------------------------------------------------------------------

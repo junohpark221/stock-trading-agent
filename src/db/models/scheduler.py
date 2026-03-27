@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Index, Numeric, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -26,9 +26,13 @@ class JobExecution(TimestampMixin, Base):
         Index("ix_job_exec_name_started", "job_name", "started_at"),
         Index("ix_job_exec_status", "status"),
         Index("ix_job_exec_started_at", "started_at"),
+        Index("ix_job_exec_account_id", "account_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str | None] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=True
+    )
     job_name: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
     started_at: Mapped[datetime] = mapped_column(

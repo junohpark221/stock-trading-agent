@@ -8,6 +8,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Date,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -34,9 +35,13 @@ class DecisionLog(TimestampMixin, Base):
         Index("ix_decision_log_session_id", "session_id"),
         Index("ix_decision_log_symbol", "symbol"),
         Index("ix_decision_log_stage", "stage"),
+        Index("ix_decision_log_account_id", "account_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=False, server_default="default"
+    )
     decision_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False
     )

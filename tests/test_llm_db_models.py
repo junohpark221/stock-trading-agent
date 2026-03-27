@@ -42,9 +42,9 @@ class TestDecisionLogModel:
         assert DecisionLog.__tablename__ == "decision_log"
 
     def test_column_count(self):
-        """23 columns: 21 data + created_at + updated_at."""
+        """24 columns: 21 data + account_id + created_at + updated_at."""
         cols = _col_map(DecisionLog)
-        assert len(cols) == 23
+        assert len(cols) == 24
 
     def test_primary_key(self):
         pk_cols = [c.name for c in _table(DecisionLog).primary_key.columns]

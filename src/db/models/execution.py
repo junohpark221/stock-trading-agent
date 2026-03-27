@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import (
     BigInteger,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -31,9 +32,13 @@ class Order(TimestampMixin, Base):
         Index("ix_orders_symbol_status", "symbol", "status"),
         Index("ix_orders_session_id", "session_id"),
         Index("ix_orders_created_at", "created_at"),
+        Index("ix_orders_account_id", "account_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=False, server_default="default"
+    )
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     side: Mapped[str] = mapped_column(String(10), nullable=False)  # OrderSide.value
     order_type: Mapped[str] = mapped_column(String(10), nullable=False)  # OrderType.value
@@ -101,9 +106,13 @@ class ApprovalRequestDB(TimestampMixin, Base):
         Index("ix_approval_requests_order_id", "order_id"),
         Index("ix_approval_requests_status", "status"),
         Index("ix_approval_requests_request_id", "request_id"),
+        Index("ix_approval_requests_account_id", "account_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=False, server_default="default"
+    )
     request_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, unique=True
     )

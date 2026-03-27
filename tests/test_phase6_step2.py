@@ -140,7 +140,7 @@ class TestJobExecutionIndexes:
 
     def test_has_three_indexes(self):
         index_names = _get_index_names(JobExecution)
-        assert len(index_names) == 3
+        assert len(index_names) == 4
 
     def test_name_started_composite_index(self):
         index_names = _get_index_names(JobExecution)

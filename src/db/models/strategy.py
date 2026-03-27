@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -34,9 +35,13 @@ class PositionRecord(TimestampMixin, Base):
         Index("ix_positions_symbol_status", "symbol", "status"),
         Index("ix_positions_strategy_status", "strategy_type", "status"),
         Index("ix_positions_entry_date", "entry_date"),
+        Index("ix_positions_account_id", "account_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=False, server_default="default"
+    )
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     strategy_type: Mapped[str] = mapped_column(String(20), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -67,11 +72,15 @@ class PortfolioSnapshot(TimestampMixin, Base):
 
     __tablename__ = "portfolio_snapshots"
     __table_args__ = (
-        UniqueConstraint("snapshot_date", name="uq_portfolio_snapshots_date"),
+        UniqueConstraint("account_id", "snapshot_date", name="uq_portfolio_snapshots_account_date"),
         Index("ix_portfolio_snapshots_date", "snapshot_date"),
+        Index("ix_portfolio_snapshots_account_id", "account_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=False, server_default="default"
+    )
     snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
     total_value: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     cash: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
@@ -100,9 +109,13 @@ class AgentMemory(TimestampMixin, Base):
         Index("ix_agent_memory_agent_active", "agent_type", "is_active"),
         Index("ix_agent_memory_symbol_active", "symbol", "is_active"),
         Index("ix_agent_memory_expires", "expires_at"),
+        Index("ix_agent_memory_account_id", "account_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=False, server_default="default"
+    )
     agent_type: Mapped[str] = mapped_column(String(50), nullable=False)
     memory_type: Mapped[str] = mapped_column(String(20), nullable=False)
     symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)

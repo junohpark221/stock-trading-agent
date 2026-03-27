@@ -132,7 +132,10 @@ class Settings(BaseSettings):
     BACKTEST_SLIPPAGE_BPS: int = 10                     # 슬리피지 기본값 (bps)
     BACKTEST_MAX_WORKERS: int = 4                       # 병렬 백테스트 워커 수
 
-    # ── Phase 8: Production (AWS) ─────────────────────────────────────
+    # ── Phase 8: Multi-Account ─────────────────────────────────────────
+    ACCOUNT_ENCRYPTION_KEY: str = ""  # Fernet key (base64-encoded 32 bytes)
+
+    # ── Phase 9: Production (AWS) ─────────────────────────────────────
     AWS_REGION: str = "ap-northeast-2"
     AWS_ECS_CLUSTER: str = ""
     AWS_SECRET_NAME: str = ""

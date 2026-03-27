@@ -265,3 +265,16 @@ class BacktestMode(StrEnum):
     TECHNICAL = "technical"      # Mode 1: 순수 기술 지표
     LLM_REPLAY = "llm_replay"   # Mode 2: decision_log 재생
     LLM_LIVE = "llm_live"       # Mode 3: 실제 LLM 호출 (향후)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: Multi-Account
+# ---------------------------------------------------------------------------
+
+
+class AccountStatus(StrEnum):
+    """계정 상태."""
+
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    SUSPENDED = "suspended"

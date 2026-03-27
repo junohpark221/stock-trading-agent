@@ -27,6 +27,7 @@ import aiohttp
 import structlog
 
 from src.broker.base import BrokerInterface
+from src.broker.credentials import AccountCredentials
 from src.broker.kis.auth import KISAuth
 from src.broker.kis.models import (
     KISBalanceOutput1,
@@ -89,10 +90,12 @@ class KISClient(BrokerInterface):
     """
 
     def __init__(self, *, settings: Settings, cache: RedisCache) -> None:
-        self._settings = settings
+        self._settings: Settings | None = settings
         self._cache = cache
         self._session: aiohttp.ClientSession | None = None
         self._auth: KISAuth | None = None
+        self._credentials: AccountCredentials | None = None
+        self._token_ttl: int = settings.KIS_TOKEN_REDIS_TTL
 
         # Rate limiting
         self._semaphore = asyncio.Semaphore(1)
@@ -110,16 +113,80 @@ class KISClient(BrokerInterface):
         self._cano = settings.KIS_ACCOUNT_NO[:8] if settings.KIS_ACCOUNT_NO else ""
         self._acnt_prdt_cd = settings.KIS_ACCOUNT_PROD
 
+    @classmethod
+    def from_credentials(
+        cls,
+        credentials: AccountCredentials,
+        cache: RedisCache,
+        *,
+        rate_limit_interval: float | None = None,
+        token_ttl: int = 82800,
+    ) -> KISClient:
+        """Create a KISClient from per-account credentials (no Settings needed).
+
+        WARNING: This bypasses __init__. Any new attribute added to __init__
+        must also be set here.
+
+        Args:
+            credentials: Decrypted account credentials.
+            cache: RedisCache instance for token caching.
+            rate_limit_interval: Seconds between API calls.
+                None → auto-detect (paper=0.5s, prod=0.05s).
+            token_ttl: OAuth token cache TTL in seconds.
+        """
+        instance = cls.__new__(cls)
+        instance._settings = None
+        instance._cache = cache
+        instance._session = None
+        instance._auth = None
+        instance._credentials = credentials
+        instance._token_ttl = token_ttl
+
+        # Rate limiting
+        instance._semaphore = asyncio.Semaphore(1)
+        if rate_limit_interval is not None:
+            instance._rate_limit_interval = rate_limit_interval
+        else:
+            instance._rate_limit_interval = 0.5 if credentials.is_paper else 0.05
+
+        # Base URL
+        instance._base_url = (
+            _KIS_PAPER_BASE_URL if credentials.is_paper else _KIS_PROD_BASE_URL
+        )
+
+        # Account
+        instance._cano = credentials.account_no[:8] if credentials.account_no else ""
+        instance._acnt_prdt_cd = credentials.account_prod
+
+        return instance
+
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def connect(self) -> None:
         """Create HTTP session and initialize auth."""
         self._session = aiohttp.ClientSession()
-        self._auth = KISAuth(
-            settings=self._settings,
-            cache=self._cache,
-            session=self._session,
-        )
+
+        if self._settings is not None:
+            # Legacy path — create KISAuth from Settings
+            self._auth = KISAuth(
+                settings=self._settings,
+                cache=self._cache,
+                session=self._session,
+            )
+        else:
+            # from_credentials path — create KISAuth with direct params
+            creds = self._credentials
+            assert creds is not None  # noqa: S101
+            self._auth = KISAuth(
+                cache=self._cache,
+                session=self._session,
+                account_id=creds.account_id,
+                app_key=creds.app_key,
+                app_secret=creds.app_secret,
+                is_paper=creds.is_paper,
+                token_ttl=self._token_ttl,
+            )
+
         # Validate credentials by fetching a token
         await self._auth.get_token()
         logger.info("kis_client_connected", base_url=self._base_url)

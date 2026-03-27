@@ -86,7 +86,7 @@ class TestGetToken:
         result = await auth.get_token()
 
         assert result == "cached_token_abc"
-        cache.get.assert_awaited_once_with("kis", "token")
+        cache.get.assert_awaited_once_with("kis", "default:token")
 
     @pytest.mark.asyncio
     async def test_cache_miss_issues_new_token(self) -> None:
@@ -102,7 +102,7 @@ class TestGetToken:
         result = await auth.get_token()
 
         assert result == "new_token_xyz"
-        cache.set.assert_awaited_once_with("kis", "token", "new_token_xyz", ttl=82800)
+        cache.set.assert_awaited_once_with("kis", "default:token", "new_token_xyz", ttl=82800)
 
     @pytest.mark.asyncio
     async def test_http_error_raises_auth_error(self) -> None:
@@ -163,7 +163,7 @@ class TestRefreshToken:
         result = await auth.refresh_token()
 
         assert result == "refreshed_token"
-        cache.delete.assert_awaited_once_with("kis", "token")
+        cache.delete.assert_awaited_once_with("kis", "default:token")
         cache.set.assert_awaited_once()
 
 

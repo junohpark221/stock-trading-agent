@@ -10,6 +10,13 @@ Usage::
     auth = KISAuth(settings=settings, cache=cache, session=session)
     token = await auth.get_token()
     headers = auth.build_headers(token, tr_id="TTTC0012U")
+
+Multi-account usage (Phase 8)::
+
+    auth = KISAuth(
+        cache=cache, session=session,
+        account_id="acct-1", app_key="KEY", app_secret="SECRET",
+    )
 """
 
 from __future__ import annotations
@@ -27,65 +34,101 @@ _KIS_PAPER_BASE_URL = "https://openapivts.koreainvestment.com:29443"
 _KIS_PROD_BASE_URL = "https://openapi.koreainvestment.com:9443"
 
 _CACHE_NAMESPACE = "kis"
-_CACHE_KEY_TOKEN = "token"
 
 
 class KISAuth:
     """KIS OAuth2 token manager with Redis caching.
 
+    Supports two creation paths:
+
+    1. **Legacy (Settings-based)**: ``KISAuth(settings=s, cache=c, session=ss)``
+    2. **Direct credentials**: ``KISAuth(cache=c, session=ss, account_id="x", app_key="K", app_secret="S")``
+
     Args:
-        settings: Application settings (KIS credentials, base URL, TTL).
+        settings: Application settings. If provided, credentials are extracted from it.
         cache: RedisCache instance for token storage.
         session: aiohttp session for HTTP requests (shared with KISClient).
+        account_id: Account identifier for cache key namespacing (default "default").
+        app_key: KIS API app key (used when settings is None).
+        app_secret: KIS API app secret (used when settings is None).
+        is_paper: Paper trading flag (used when settings is None).
+        base_url: KIS API base URL override (used when settings is None).
+        token_ttl: Token cache TTL in seconds (used when settings is None).
 
     Raises:
-        ConfigurationError: If ``KIS_APP_KEY`` or ``KIS_APP_SECRET`` is empty.
+        ConfigurationError: If ``app_key`` or ``app_secret`` is empty.
     """
 
     def __init__(
         self,
         *,
-        settings: Settings,
+        settings: Settings | None = None,
         cache: RedisCache,
         session: aiohttp.ClientSession,
+        account_id: str = "default",
+        app_key: str = "",
+        app_secret: str = "",
+        is_paper: bool = True,
+        base_url: str = "",
+        token_ttl: int = 82800,
     ) -> None:
-        if not settings.KIS_APP_KEY:
+        if settings is not None:
+            effective_app_key = settings.KIS_APP_KEY
+            effective_app_secret = settings.KIS_APP_SECRET
+            effective_is_paper = settings.KIS_IS_PAPER
+            effective_token_ttl = settings.KIS_TOKEN_REDIS_TTL
+            raw_base_url = settings.KIS_BASE_URL
+        else:
+            effective_app_key = app_key
+            effective_app_secret = app_secret
+            effective_is_paper = is_paper
+            effective_token_ttl = token_ttl
+            raw_base_url = base_url
+
+        if not effective_app_key:
             raise ConfigurationError("KIS_APP_KEY is required")
-        if not settings.KIS_APP_SECRET:
+        if not effective_app_secret:
             raise ConfigurationError("KIS_APP_SECRET is required")
 
-        self._settings = settings
+        self._account_id = account_id
         self._cache = cache
         self._session = session
 
-        self._app_key = settings.KIS_APP_KEY
-        self._app_secret = settings.KIS_APP_SECRET
-        self._is_paper = settings.KIS_IS_PAPER
-        self._token_ttl = settings.KIS_TOKEN_REDIS_TTL
+        self._app_key = effective_app_key
+        self._app_secret = effective_app_secret
+        self._is_paper = effective_is_paper
+        self._token_ttl = effective_token_ttl
 
-        # Base URL: explicit setting takes priority, else derive from KIS_IS_PAPER
-        if settings.KIS_BASE_URL:
-            self._base_url = settings.KIS_BASE_URL.rstrip("/")
+        # Base URL: explicit setting takes priority, else derive from is_paper
+        if raw_base_url:
+            self._base_url = raw_base_url.rstrip("/")
         else:
             self._base_url = (
                 _KIS_PAPER_BASE_URL if self._is_paper else _KIS_PROD_BASE_URL
             )
 
+    # ── Properties ─────────────────────────────────────────────────────
+
+    @property
+    def _cache_key_token(self) -> str:
+        """Per-account token cache key: ``{account_id}:token``."""
+        return f"{self._account_id}:token"
+
     # ── Public API ────────────────────────────────────────────────────
 
     async def get_token(self) -> str:
         """Return a valid access token, using cache when available."""
-        cached = await self._cache.get(_CACHE_NAMESPACE, _CACHE_KEY_TOKEN)
+        cached = await self._cache.get(_CACHE_NAMESPACE, self._cache_key_token)
         if cached is not None:
-            logger.debug("kis_token_cache_hit")
+            logger.debug("kis_token_cache_hit", account_id=self._account_id)
             return cached
-        logger.info("kis_token_cache_miss")
+        logger.info("kis_token_cache_miss", account_id=self._account_id)
         return await self._issue_token()
 
     async def refresh_token(self) -> str:
         """Invalidate the cached token and issue a new one."""
-        await self._cache.delete(_CACHE_NAMESPACE, _CACHE_KEY_TOKEN)
-        logger.info("kis_token_refresh")
+        await self._cache.delete(_CACHE_NAMESPACE, self._cache_key_token)
+        logger.info("kis_token_refresh", account_id=self._account_id)
         return await self._issue_token()
 
     def build_headers(
@@ -139,7 +182,7 @@ class KISAuth:
             raise AuthError(f"KIS token response missing access_token: {data}")
 
         await self._cache.set(
-            _CACHE_NAMESPACE, _CACHE_KEY_TOKEN, access_token, ttl=self._token_ttl
+            _CACHE_NAMESPACE, self._cache_key_token, access_token, ttl=self._token_ttl
         )
         logger.info("kis_token_issued", ttl=self._token_ttl)
         return access_token

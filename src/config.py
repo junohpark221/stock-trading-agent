@@ -135,7 +135,11 @@ class Settings(BaseSettings):
     # ── Phase 8: Multi-Account ─────────────────────────────────────────
     ACCOUNT_ENCRYPTION_KEY: str = ""  # Fernet key (base64-encoded 32 bytes)
 
-    # ── Phase 9: Production (AWS) ─────────────────────────────────────
+    # ── Phase 9: Backoffice ─────────────────────────────────────────
+    ADMIN_PASSWORD: str = ""           # 백오피스 로그인 비밀번호. 빈값이면 백오피스 비활성화
+    SESSION_SECRET_KEY: str = ""       # 세션 쿠키 서명 키. 빈값이면 ACCOUNT_ENCRYPTION_KEY 폴백
+
+    # ── Phase 10: Production (AWS) ─────────────────────────────────────
     AWS_REGION: str = "ap-northeast-2"
     AWS_ECS_CLUSTER: str = ""
     AWS_SECRET_NAME: str = ""

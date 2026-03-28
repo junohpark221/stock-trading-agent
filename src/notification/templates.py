@@ -154,11 +154,19 @@ class MessageTemplates:
         """Return '+' for positive values, '' otherwise."""
         return "+" if value > 0 else ""
 
+    @staticmethod
+    def _account_header(account_label: str) -> list[str]:
+        """Return account label header lines, or empty list if no label."""
+        if not account_label:
+            return []
+        return [f"<b>[{html.escape(account_label, quote=False)}]</b>", ""]
+
     # -- public templates ----------------------------------------------------
 
     @staticmethod
     def approval_request(
         *,
+        account_label: str = "",
         symbol: str,
         name: str,
         side: OrderSide,
@@ -181,7 +189,8 @@ class MessageTemplates:
         side_kr = _SIDE_KR.get(side, str(side))
         session_display = str(session_id)[:8] if session_id else "N/A"
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             "📊 <b>매매 승인 요청</b>",
             "",
             f"{emoji} <b>{esc(name)}</b> ({esc(symbol)})",
@@ -206,12 +215,13 @@ class MessageTemplates:
             esc(fmt._truncate(web_verify_summary)),
             "",
             f"<i>Session: {session_display}</i>",
-        ]
+        ])
         return "\n".join(lines)
 
     @staticmethod
     def execution_notification(
         *,
+        account_label: str = "",
         symbol: str,
         name: str,
         side: OrderSide,
@@ -228,7 +238,8 @@ class MessageTemplates:
         side_kr = _SIDE_KR.get(side, str(side))
         approval_kr = _APPROVAL_STATUS_KR.get(approval_status, str(approval_status))
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             "✅ <b>주문 체결 완료</b>",
             "",
             f"{emoji} <b>{esc(name)}</b> ({esc(symbol)})",
@@ -239,12 +250,13 @@ class MessageTemplates:
             f"• 체결가: {fmt._fmt_price(fill_price)}원",
             f"• 수수료: {fmt._fmt_krw(commission)}",
             f"• 승인: {approval_kr}",
-        ]
+        ])
         return "\n".join(lines)
 
     @staticmethod
     def rejection_notification(
         *,
+        account_label: str = "",
         symbol: str,
         name: str,
         side: OrderSide,
@@ -260,7 +272,8 @@ class MessageTemplates:
         emoji = _SIDE_EMOJI.get(side, "⚪")
         side_kr = _SIDE_KR.get(side, str(side))
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             f"{icon} <b>주문 {action} — {esc(label)}</b>",
             "",
             f"{emoji} <b>{esc(name)}</b> ({esc(symbol)})",
@@ -268,12 +281,13 @@ class MessageTemplates:
             "",
             f"• 구분: {side_kr}",
             f"• 사유: {esc(reason)}",
-        ]
+        ])
         return "\n".join(lines)
 
     @staticmethod
     def exit_signal_notification(
         *,
+        account_label: str = "",
         symbol: str,
         name: str,
         reason: ExitReason,
@@ -290,7 +304,8 @@ class MessageTemplates:
         reason_kr = _EXIT_REASON_KR.get(reason, str(reason))
         auto_kr = "예" if auto_executed else "아니오"
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             f"🔔 <b>청산 시그널</b> ({urgency_kr})",
             "",
             f"🔴 <b>{esc(name)}</b> ({esc(symbol)})",
@@ -300,7 +315,7 @@ class MessageTemplates:
             f"• 현재가: {fmt._fmt_price(current_price)}원",
             f"• 미실현 수익률: {fmt._fmt_pct(unrealized_pnl_pct)}",
             f"• 자동 실행: {auto_kr}",
-        ]
+        ])
         return "\n".join(lines)
 
     @staticmethod
@@ -311,17 +326,18 @@ class MessageTemplates:
     # -- report templates (Phase 6 Step 5) -----------------------------------
 
     @staticmethod
-    def daily_report(data: DailyReportData) -> str:
+    def daily_report(data: DailyReportData, *, account_label: str = "") -> str:
         """일간 리포트 메시지 — 6개 섹션."""
         fmt = MessageTemplates
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             f"📋 <b>일간 리포트</b> — {data.report_date}",
             _DIVIDER,
             "",
             # 섹션 2: 오늘의 손익
             "<b>💰 오늘의 손익</b>",
-        ]
+        ])
 
         # PnL lines (local vars to stay within line length)
         r_sign = fmt._pnl_sign(data.realized_pnl)
@@ -393,18 +409,19 @@ class MessageTemplates:
         return "\n".join(lines)
 
     @staticmethod
-    def weekly_report(data: WeeklyReportData) -> str:
+    def weekly_report(data: WeeklyReportData, *, account_label: str = "") -> str:
         """주간 리포트 메시지 — 4개 섹션."""
         fmt = MessageTemplates
         perf = data.performance
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             f"📋 <b>주간 리포트</b> — {data.week_start} ~ {data.week_end}",
             _DIVIDER,
             "",
             # 섹션 2: 주간 성과
             "<b>📊 주간 성과</b>",
-        ]
+        ])
 
         ret_str = fmt._pnl_sign(perf.total_return_pct) + fmt._fmt_pct(perf.total_return_pct)
         wr_str = f"{perf.winning_trades}승 {perf.losing_trades}패"
@@ -458,13 +475,15 @@ class MessageTemplates:
     @staticmethod
     def monthly_report(
         *,
+        account_label: str = "",
         metrics: PerformanceMetrics,
         summary: DailyReportData,
     ) -> str:
         """월간 리포트 메시지 — 5개 섹션."""
         fmt = MessageTemplates
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             f"📋 <b>월간 리포트</b> — {metrics.period_start} ~ {metrics.period_end}",
             _DIVIDER,
             "",
@@ -474,7 +493,7 @@ class MessageTemplates:
             f"{fmt._pnl_sign(metrics.total_return_pct)}"
             f"{fmt._fmt_pct(metrics.total_return_pct)}",
             f"• MDD: {fmt._fmt_pct(metrics.max_drawdown_pct)}",
-        ]
+        ])
         if metrics.annualized_return_pct is not None:
             lines.append(
                 f"• 연환산 수익률: {fmt._pnl_sign(metrics.annualized_return_pct)}"
@@ -590,6 +609,7 @@ class MessageTemplates:
     @staticmethod
     def monitoring_alert(
         *,
+        account_label: str = "",
         alert_type: MonitoringAlertType,
         symbol: str | None,
         message: str,
@@ -602,10 +622,11 @@ class MessageTemplates:
         icon = _ALERT_TYPE_ICON.get(alert_type, "⚠️")
         label = _ALERT_TYPE_KR.get(alert_type, str(alert_type))
 
-        lines = [
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
             f"{icon} <b>{label}</b>",
             _DIVIDER,
-        ]
+        ])
         if symbol is not None:
             lines.append(f"• 종목: {fmt._escape(symbol)}")
         lines.extend([

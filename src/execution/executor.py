@@ -123,6 +123,7 @@ class OrderExecutor:
         parent_decision_id: UUID | None = None,
         analysis_summary: str = "",
         account_id: str = "default",
+        account_label: str = "",
         broker: BrokerInterface | None = None,
     ) -> ExecutionResult:
         """진입 주문 실행.
@@ -178,6 +179,7 @@ class OrderExecutor:
                     rejection_reason=f"Web 검증 차단: {verification.summary}",
                 )
                 await self._notify_safe(MessageTemplates.rejection_notification(
+                    account_label=account_label,
                     symbol=symbol, name=symbol, side=side,
                     reason=verification.summary, stage="web_verify",
                 ))
@@ -212,6 +214,7 @@ class OrderExecutor:
                 web_verification=verification,
                 analysis_summary=analysis_summary,
                 account_id=account_id,
+                account_label=account_label,
             )
 
             if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
@@ -257,6 +260,7 @@ class OrderExecutor:
                         rejection_reason=f"리스크 재검증 실패: {', '.join(risk_result.violations)}",
                     )
                     await self._notify_safe(MessageTemplates.rejection_notification(
+                        account_label=account_label,
                         symbol=symbol, name=symbol, side=side,
                         reason=f"리스크 재검증 실패 (수정 수량 {modified_qty:,}주)",
                         stage="risk_blocked",
@@ -358,6 +362,7 @@ class OrderExecutor:
 
             # 10. 텔레그램 체결 통보
             await self._notify_safe(MessageTemplates.execution_notification(
+                account_label=account_label,
                 symbol=symbol, name=symbol, side=side,
                 quantity=fill_quantity, fill_price=fill_price,
                 commission=commission, approval_status=approval_status,
@@ -424,6 +429,7 @@ class OrderExecutor:
         session_id: UUID,
         parent_decision_id: UUID | None = None,
         account_id: str = "default",
+        account_label: str = "",
         broker: BrokerInterface | None = None,
     ) -> ExecutionResult:
         """청산 주문 실행.
@@ -491,6 +497,7 @@ class OrderExecutor:
                     rejection_reason=f"Web 검증 차단: {verification.summary}",
                 )
                 await self._notify_safe(MessageTemplates.rejection_notification(
+                    account_label=account_label,
                     symbol=symbol, name=symbol, side=side,
                     reason=verification.summary, stage="web_verify",
                 ))
@@ -519,6 +526,7 @@ class OrderExecutor:
                 portfolio_state=portfolio_state,
                 web_verification=verification,
                 account_id=account_id,
+                account_label=account_label,
             )
 
             if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
@@ -610,6 +618,7 @@ class OrderExecutor:
 
             # 9. 텔레그램 체결 통보
             await self._notify_safe(MessageTemplates.execution_notification(
+                account_label=account_label,
                 symbol=symbol, name=symbol, side=side,
                 quantity=fill_quantity, fill_price=fill_price,
                 commission=commission, approval_status=approval_status,

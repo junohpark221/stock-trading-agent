@@ -76,6 +76,7 @@ class ExitExecutionService:
         *,
         session_id: UUID,
         account_id: str = "default",
+        account_label: str = "",
         broker: BrokerInterface | None = None,
     ) -> list[ExecutionResult]:
         """청산 시그널 목록을 받아 urgency순 실행.
@@ -117,6 +118,7 @@ class ExitExecutionService:
                     signal, position,
                     session_id=session_id,
                     account_id=account_id,
+                    account_label=account_label,
                     broker=broker,
                 )
                 results.append(result)
@@ -127,6 +129,7 @@ class ExitExecutionService:
                     signal, position,
                     session_id=session_id,
                     account_id=account_id,
+                    account_label=account_label,
                 )
                 results.append(result)
                 alert_count += 1
@@ -160,6 +163,7 @@ class ExitExecutionService:
         *,
         session_id: UUID,
         account_id: str = "default",
+        account_label: str = "",
         broker: BrokerInterface | None = None,
     ) -> ExecutionResult:
         """immediate/end_of_day 시그널을 OrderExecutor로 실행. 장애 격리."""
@@ -169,6 +173,7 @@ class ExitExecutionService:
                 position=position,
                 session_id=session_id,
                 account_id=account_id,
+                account_label=account_label,
                 broker=broker,
             )
         except Exception as exc:
@@ -194,6 +199,7 @@ class ExitExecutionService:
         *,
         session_id: UUID,
         account_id: str = "default",
+        account_label: str = "",
     ) -> ExecutionResult:
         """next_session 시그널: decision_log 기록 + 텔레그램 알림만 전송."""
         decision_ids: list[UUID] = []
@@ -225,6 +231,7 @@ class ExitExecutionService:
         # 2. 텔레그램 알림
         try:
             msg = MessageTemplates.exit_signal_notification(
+                account_label=account_label,
                 symbol=signal.symbol,
                 name=signal.symbol,
                 reason=signal.reason,

@@ -49,6 +49,8 @@ class TradingMonitor:
         broker: BrokerInterface,
         cache: RedisCache,
         settings: Settings,
+        account_id: str = "default",
+        account_label: str = "",
     ) -> None:
         self._portfolio = portfolio_state_service
         self._positions = position_manager
@@ -57,6 +59,8 @@ class TradingMonitor:
         self._broker = broker
         self._cache = cache
         self._settings = settings
+        self._account_id = account_id
+        self._account_label = account_label
 
     # ── Public ────────────────────────────────────────────────────────
 
@@ -84,13 +88,13 @@ class TradingMonitor:
         """오픈 포지션의 손절가 근접 여부를 확인한다."""
         alerts: list[MonitoringAlert] = []
         threshold = Decimal(str(self._settings.MONITOR_STOP_LOSS_PROXIMITY_PCT))
-        positions = await self._positions.get_open()
+        positions = await self._positions.get_open(account_id=self._account_id)
 
         for pos in positions:
             if not pos.stop_loss_price or pos.stop_loss_price <= 0:
                 continue
 
-            dedup_key = f"stop_loss_proximity:{pos.symbol}:{date.today().isoformat()}"
+            dedup_key = f"stop_loss_proximity:{self._account_id}:{pos.symbol}:{date.today().isoformat()}"
             if await self._is_alert_sent_today(dedup_key):
                 continue
 
@@ -132,7 +136,7 @@ class TradingMonitor:
             if allocation <= threshold:
                 continue
 
-            dedup_key = f"sector_concentration:{sector}:{date.today().isoformat()}"
+            dedup_key = f"sector_concentration:{self._account_id}:{sector}:{date.today().isoformat()}"
             if await self._is_alert_sent_today(dedup_key):
                 continue
 
@@ -184,7 +188,7 @@ class TradingMonitor:
         if state.drawdown_pct < threshold:
             return []
 
-        dedup_key = f"portfolio_drawdown:portfolio:{date.today().isoformat()}"
+        dedup_key = f"portfolio_drawdown:{self._account_id}:portfolio:{date.today().isoformat()}"
         if await self._is_alert_sent_today(dedup_key):
             return []
 
@@ -206,6 +210,7 @@ class TradingMonitor:
     async def _send_alert(self, alert: MonitoringAlert) -> None:
         """알림을 HTML로 포맷하고 Telegram으로 전송한다."""
         html = MessageTemplates.monitoring_alert(
+            account_label=self._account_label,
             alert_type=alert.alert_type,
             symbol=alert.symbol,
             message=alert.message,

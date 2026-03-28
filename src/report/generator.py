@@ -50,6 +50,7 @@ class ReportGenerator:
         self,
         *,
         report_date: date | None = None,
+        account_id: str | None = None,
     ) -> DailyReportData:
         """일간 리포트 데이터 생성.
 
@@ -59,9 +60,9 @@ class ReportGenerator:
             report_date = date.today()
 
         # 데이터 수집
-        snapshot = await self._fetcher.get_latest_snapshot()
-        orders = await self._fetcher.get_todays_orders()
-        open_positions = await self._fetcher.get_open_positions()
+        snapshot = await self._fetcher.get_latest_snapshot(account_id=account_id)
+        orders = await self._fetcher.get_todays_orders(account_id=account_id)
+        open_positions = await self._fetcher.get_open_positions(account_id=account_id)
         budget_status = await self._cost_tracker.get_budget_status()
         usage_stats = await self._cost_tracker.get_usage_stats(
             start_date=report_date, end_date=report_date,
@@ -169,6 +170,7 @@ class ReportGenerator:
         self,
         *,
         week_end: date | None = None,
+        account_id: str | None = None,
     ) -> WeeklyReportData:
         """주간 리포트 데이터 생성.
 
@@ -179,10 +181,10 @@ class ReportGenerator:
         week_start = week_end - timedelta(days=6)
 
         closed_positions = await self._fetcher.get_closed_positions(
-            start_date=week_start, end_date=week_end,
+            start_date=week_start, end_date=week_end, account_id=account_id,
         )
         snapshots = await self._fetcher.get_portfolio_snapshots(
-            start_date=week_start, end_date=week_end,
+            start_date=week_start, end_date=week_end, account_id=account_id,
         )
 
         risk_free = Decimal(str(self._settings.RISK_FREE_RATE_PCT))
@@ -224,6 +226,7 @@ class ReportGenerator:
         *,
         year: int | None = None,
         month: int | None = None,
+        account_id: str | None = None,
     ) -> tuple[PerformanceMetrics, DailyReportData]:
         """월간 리포트 = PerformanceMetrics(월간) + DailyReportData(현재 상태)."""
         today = date.today()
@@ -237,10 +240,10 @@ class ReportGenerator:
         period_end = date(year, month, last_day)
 
         closed_positions = await self._fetcher.get_closed_positions(
-            start_date=period_start, end_date=period_end,
+            start_date=period_start, end_date=period_end, account_id=account_id,
         )
         snapshots = await self._fetcher.get_portfolio_snapshots(
-            start_date=period_start, end_date=period_end,
+            start_date=period_start, end_date=period_end, account_id=account_id,
         )
 
         risk_free = Decimal(str(self._settings.RISK_FREE_RATE_PCT))
@@ -252,7 +255,7 @@ class ReportGenerator:
             risk_free_rate_pct=risk_free,
         )
 
-        daily_data = await self.generate_daily_report()
+        daily_data = await self.generate_daily_report(account_id=account_id)
 
         return (metrics, daily_data)
 

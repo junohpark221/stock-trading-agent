@@ -169,6 +169,7 @@ class TestImmediateSignal:
             position=position,
             session_id=session_id,
             account_id="default",
+            account_label="",
             broker=None,
         )
 

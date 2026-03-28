@@ -135,6 +135,7 @@ class ApprovalManager:
         name: str = "",
         account_id: str = "default",
         account_nickname: str = "",
+        account_label: str = "",
     ) -> ApprovalStatus:
         """승인 요청 처리 — 자동 실행 또는 텔레그램 승인 요청.
 
@@ -171,6 +172,7 @@ class ApprovalManager:
                 reason=reason,
                 now=now,
                 account_id=account_id,
+                account_label=account_label,
             )
 
         # ── 수동 승인 ──
@@ -187,6 +189,7 @@ class ApprovalManager:
             portfolio_pct=portfolio_pct,
             now=now,
             account_id=account_id,
+            account_label=account_label,
         )
 
     async def get_modified_quantity(self, request_id: UUID) -> int | None:
@@ -237,6 +240,7 @@ class ApprovalManager:
         reason: str,
         now: datetime,
         account_id: str = "default",
+        account_label: str = "",
     ) -> ApprovalStatus:
         """자동 승인 경로: DB 저장 → decision_log → 텔레그램 통보."""
         async with self._session_factory() as session:
@@ -281,8 +285,9 @@ class ApprovalManager:
         # 텔레그램 통보 (승인 요청 아닌 자동 실행 알림)
         side = _ACTION_TO_SIDE.get(trade_decision.action, OrderSide.BUY)
         side_kr = "매수" if side == OrderSide.BUY else "매도"
+        label_prefix = f"<b>[{account_label}]</b> " if account_label else ""
         await self._bot.send_message(
-            f"⚡ <b>자동 실행</b> — {display_name} {side_kr} "
+            f"{label_prefix}⚡ <b>자동 실행</b> — {display_name} {side_kr} "
             f"{trade_decision.quantity:,}주 ({reason})"
         )
 
@@ -311,6 +316,7 @@ class ApprovalManager:
         portfolio_pct: Decimal,
         now: datetime,
         account_id: str = "default",
+        account_label: str = "",
     ) -> ApprovalStatus:
         """수동 승인 경로: DB 저장 → Redis → 텔레그램 승인 요청 → 대기."""
         timeout_sec = self._settings.HUMAN_APPROVAL_TIMEOUT_SEC
@@ -350,6 +356,7 @@ class ApprovalManager:
             web_summary = web_verification.summary if hasattr(web_verification, "summary") else ""
 
         msg_text = MessageTemplates.approval_request(
+            account_label=account_label,
             symbol=trade_decision.symbol,
             name=display_name,
             side=side,
@@ -397,6 +404,7 @@ class ApprovalManager:
                 display_name=display_name,
                 side=side,
                 account_id=account_id,
+                account_label=account_label,
             )
 
         # 정리 (modified_quantities는 유지 — OrderExecutor가 조회)
@@ -423,6 +431,7 @@ class ApprovalManager:
         display_name: str,
         side: OrderSide,
         account_id: str = "default",
+        account_label: str = "",
     ) -> None:
         """타임아웃 시 DB/텔레그램/decision_log 업데이트."""
         now = datetime.now(UTC)
@@ -461,6 +470,7 @@ class ApprovalManager:
         # 거부 알림
         await self._bot.send_message(
             MessageTemplates.rejection_notification(
+                account_label=account_label,
                 symbol=trade_decision.symbol,
                 name=display_name,
                 side=side,

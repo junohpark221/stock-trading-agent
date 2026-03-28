@@ -37,6 +37,7 @@ class ReportDataFetcher:
         start_date: date,
         end_date: date,
         strategy_type: str | None = None,
+        account_id: str | None = None,
     ) -> list[PositionRecord]:
         """기간 내 청산된 포지션 (exit_date 기준, ASC 정렬).
 
@@ -54,6 +55,8 @@ class ReportDataFetcher:
             )
             if strategy_type is not None:
                 stmt = stmt.where(PositionRecord.strategy_type == strategy_type)
+            if account_id is not None:
+                stmt = stmt.where(PositionRecord.account_id == account_id)
 
             result = await session.execute(stmt)
             return list(result.scalars().all())
@@ -63,6 +66,7 @@ class ReportDataFetcher:
         *,
         start_date: date,
         end_date: date,
+        account_id: str | None = None,
     ) -> list[PortfolioSnapshot]:
         """기간 내 포트폴리오 스냅샷 (snapshot_date ASC 정렬)."""
         async with self._session_factory() as session:
@@ -74,10 +78,14 @@ class ReportDataFetcher:
                 )
                 .order_by(PortfolioSnapshot.snapshot_date.asc())
             )
+            if account_id is not None:
+                stmt = stmt.where(PortfolioSnapshot.account_id == account_id)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_todays_orders(self) -> list[Order]:
+    async def get_todays_orders(
+        self, *, account_id: str | None = None,
+    ) -> list[Order]:
         """오늘 생성된 주문 목록 (created_at::date = today)."""
         async with self._session_factory() as session:
             stmt = (
@@ -85,10 +93,14 @@ class ReportDataFetcher:
                 .where(func.cast(Order.created_at, Date) == date.today())
                 .order_by(Order.created_at.asc())
             )
+            if account_id is not None:
+                stmt = stmt.where(Order.account_id == account_id)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_todays_executions(self) -> list[Execution]:
+    async def get_todays_executions(
+        self, *, account_id: str | None = None,
+    ) -> list[Execution]:
         """오늘 체결된 거래 (executed_at::date = today)."""
         async with self._session_factory() as session:
             stmt = (
@@ -96,10 +108,16 @@ class ReportDataFetcher:
                 .where(func.cast(Execution.executed_at, Date) == date.today())
                 .order_by(Execution.executed_at.asc())
             )
+            if account_id is not None:
+                stmt = stmt.join(Order, Execution.order_id == Order.id).where(
+                    Order.account_id == account_id
+                )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_open_positions(self) -> list[PositionRecord]:
+    async def get_open_positions(
+        self, *, account_id: str | None = None,
+    ) -> list[PositionRecord]:
         """현재 보유 포지션 (status='open')."""
         async with self._session_factory() as session:
             stmt = (
@@ -107,10 +125,14 @@ class ReportDataFetcher:
                 .where(PositionRecord.status == "open")
                 .order_by(PositionRecord.entry_date.asc())
             )
+            if account_id is not None:
+                stmt = stmt.where(PositionRecord.account_id == account_id)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_latest_snapshot(self) -> PortfolioSnapshot | None:
+    async def get_latest_snapshot(
+        self, *, account_id: str | None = None,
+    ) -> PortfolioSnapshot | None:
         """가장 최근 포트폴리오 스냅샷 (snapshot_date DESC LIMIT 1)."""
         async with self._session_factory() as session:
             stmt = (
@@ -118,6 +140,8 @@ class ReportDataFetcher:
                 .order_by(PortfolioSnapshot.snapshot_date.desc())
                 .limit(1)
             )
+            if account_id is not None:
+                stmt = stmt.where(PortfolioSnapshot.account_id == account_id)
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 

@@ -1,0 +1,67 @@
+{% if trades %}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>종목</th>
+                <th>전략</th>
+                <th>매수일</th>
+                <th>매도일</th>
+                <th>수량</th>
+                <th>매수가</th>
+                <th>매도가</th>
+                <th>수익률</th>
+                <th>손익</th>
+                <th>청산 사유</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in trades %}
+            <tr>
+                <td>{{ t.symbol }}</td>
+                <td>{{ t.strategy_type }}</td>
+                <td>{{ t.entry_date }}</td>
+                <td>{{ t.exit_date }}</td>
+                <td>{{ "{:,}".format(t.quantity) }}</td>
+                <td>{{ "{:,.0f}".format(t.entry_price) }}원</td>
+                <td>{{ "{:,.0f}".format(t.exit_price) if t.exit_price else "-" }}원</td>
+                {% if t.entry_price and t.exit_price %}
+                {% set pct = ((t.exit_price - t.entry_price) / t.entry_price * 100) %}
+                <td class="{{ 'pnl-positive' if pct >= 0 else 'pnl-negative' }}">
+                    {{ "{:+.2f}".format(pct) }}%
+                </td>
+                {% else %}
+                <td>-</td>
+                {% endif %}
+                <td class="{{ 'pnl-positive' if t.realized_pnl and t.realized_pnl >= 0 else 'pnl-negative' if t.realized_pnl else '' }}">
+                    {{ "{:+,.0f}".format(t.realized_pnl) if t.realized_pnl is not none else "-" }}원
+                </td>
+                <td>{{ t.exit_reason or "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</figure>
+
+<!-- 페이지네이션 -->
+{% if total_pages > 1 %}
+<nav>
+    <ul>
+        {% if page > 1 %}
+        <li><a href="#"
+               hx-get="/admin/trades?page={{ page - 1 }}&per_page={{ per_page }}{% if account_id %}&account_id={{ account_id }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}{% if symbol %}&symbol={{ symbol }}{% endif %}"
+               hx-target="#trade-table">&laquo; 이전</a></li>
+        {% endif %}
+        <li><small>{{ page }} / {{ total_pages }} ({{ total }}건)</small></li>
+        {% if page < total_pages %}
+        <li><a href="#"
+               hx-get="/admin/trades?page={{ page + 1 }}&per_page={{ per_page }}{% if account_id %}&account_id={{ account_id }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}{% if symbol %}&symbol={{ symbol }}{% endif %}"
+               hx-target="#trade-table">다음 &raquo;</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<p>매매 이력이 없습니다.</p>
+{% endif %}

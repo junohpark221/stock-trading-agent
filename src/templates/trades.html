@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}매매이력 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>매매이력</h2>
+
+<!-- 필터 -->
+<form hx-get="/admin/trades" hx-target="#trade-table" hx-trigger="change" hx-push-url="true">
+    <div class="grid">
+        <label>
+            계좌
+            <select name="account_id">
+                <option value="">전체</option>
+                {% for acct in accounts %}
+                <option value="{{ acct.id }}" {% if account_id == acct.id %}selected{% endif %}>
+                    {{ acct.nickname }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            시작일
+            <input type="date" name="from_date" value="{{ from_date or '' }}">
+        </label>
+        <label>
+            종료일
+            <input type="date" name="to_date" value="{{ to_date or '' }}">
+        </label>
+        <label>
+            종목
+            <input type="search" name="symbol" value="{{ symbol or '' }}" placeholder="종목코드">
+        </label>
+    </div>
+    <input type="hidden" name="page" value="1">
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+</form>
+
+<!-- 매매 이력 테이블 -->
+<div id="trade-table">
+    {% include "partials/trade_rows.html" %}
+</div>
+{% endblock %}

@@ -32,3 +32,30 @@ nav a[aria-current="page"] {
 .htmx-request .htmx-indicator {
     display: inline-block;
 }
+
+/* 상태 인디케이터 */
+.status-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+}
+
+.status-connected {
+    background: var(--pico-ins-color, #2e7d32);
+}
+
+.status-disconnected {
+    background: var(--pico-del-color, #c62828);
+}
+
+/* 손익 색상 */
+.pnl-positive {
+    color: var(--pico-ins-color, #2e7d32);
+}
+
+.pnl-negative {
+    color: var(--pico-del-color, #c62828);
+}

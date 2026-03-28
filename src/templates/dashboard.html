@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}대시보드 - Trading Agent{% endblock %}
+
+{% block content %}
+<!-- 시스템 상태 -->
+<section>
+    <h2>시스템 상태</h2>
+    <div class="grid">
+        <article>
+            <header>데이터베이스</header>
+            <p>
+                <span class="status-dot status-{{ db_status }}"></span>
+                {{ "연결됨" if db_status == "connected" else "연결 끊김" }}
+            </p>
+        </article>
+        <article>
+            <header>Redis</header>
+            <p>
+                <span class="status-dot status-{{ redis_status }}"></span>
+                {{ "연결됨" if redis_status == "connected" else "연결 끊김" }}
+            </p>
+        </article>
+        <article>
+            <header>스케줄러</header>
+            {% if scheduler.get("disabled") %}
+            <p><span class="status-dot status-disconnected"></span>비활성</p>
+            {% elif scheduler.is_paused %}
+            <p><span class="status-dot" style="background: orange;"></span>일시정지</p>
+            {% elif scheduler.is_running %}
+            <p><span class="status-dot status-connected"></span>실행중</p>
+            {% else %}
+            <p><span class="status-dot status-disconnected"></span>중지됨</p>
+            {% endif %}
+            <small>등록 작업: {{ scheduler.get("jobs", [])|length }}개</small>
+        </article>
+    </div>
+</section>
+
+<!-- 계좌 현황 -->
+<section>
+    <h2>계좌 현황</h2>
+    {% if accounts %}
+    <div class="grid">
+        {% for acct in accounts %}
+        <article>
+            <header>
+                <a href="/admin/accounts/{{ acct.id }}">{{ acct.nickname }}</a>
+                {% if acct.is_paper %}<small>(모의)</small>{% else %}<small>(실전)</small>{% endif %}
+            </header>
+            <p>전략: {{ acct.strategy_type }}</p>
+            {% if acct.total_value is not none %}
+            <p>총 자산: {{ "{:,.0f}".format(acct.total_value) }}원</p>
+            <p>일일 손익:
+                <span class="{{ 'pnl-positive' if acct.realized_pnl_daily >= 0 else 'pnl-negative' }}">
+                    {{ "{:+,.0f}".format(acct.realized_pnl_daily) }}원
+                </span>
+            </p>
+            <p>포지션: {{ acct.positions_count }}개</p>
+            <small>기준일: {{ acct.snapshot_date }}</small>
+            {% else %}
+            <p>데이터 없음</p>
+            {% endif %}
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p>활성 계좌가 없습니다.</p>
+    {% endif %}
+</section>
+
+<!-- 오늘의 매매 활동 -->
+<section>
+    <h2>오늘의 매매 활동</h2>
+    <div class="grid">
+        <article>
+            <header>총 주문</header>
+            <p>{{ order_summary.total }}건</p>
+        </article>
+        <article>
+            <header>매수 / 매도</header>
+            <p>{{ order_summary.buy }} / {{ order_summary.sell }}</p>
+        </article>
+        <article>
+            <header>체결</header>
+            <p>{{ order_summary.filled }}건</p>
+        </article>
+    </div>
+
+    {% if recent_orders %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>시각</th>
+                    <th>계좌</th>
+                    <th>종목</th>
+                    <th>매매</th>
+                    <th>수량</th>
+                    <th>가격</th>
+                    <th>상태</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in recent_orders %}
+                <tr>
+                    <td>{{ order.created_at.strftime("%H:%M:%S") }}</td>
+                    <td>{{ order.account_id }}</td>
+                    <td>{{ order.symbol }}</td>
+                    <td>{{ "매수" if order.side == "buy" else "매도" }}</td>
+                    <td>{{ "{:,}".format(order.quantity) }}</td>
+                    <td>{{ "{:,.0f}".format(order.price) }}원</td>
+                    <td>{{ order.status }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>오늘 매매 활동이 없습니다.</p>
+    {% endif %}
+</section>
+{% endblock %}

@@ -122,6 +122,8 @@ class OrderExecutor:
         strategy_type: str,
         parent_decision_id: UUID | None = None,
         analysis_summary: str = "",
+        account_id: str = "default",
+        broker: BrokerInterface | None = None,
     ) -> ExecutionResult:
         """진입 주문 실행.
 
@@ -141,6 +143,7 @@ class OrderExecutor:
         quantity = trade_decision.quantity
         decision_ids: list[UUID] = []
         order: Order | None = None
+        effective_broker = broker or self._broker
 
         try:
             # 1. 주문 생성 (PENDING)
@@ -151,6 +154,7 @@ class OrderExecutor:
                 quantity=quantity,
                 price=price,
                 session_id=session_id,
+                account_id=account_id,
             )
 
             # 2. Web 검증
@@ -182,6 +186,7 @@ class OrderExecutor:
                     decision=DecisionAction.REJECT, symbol=symbol,
                     reasoning=f"Web 검증 차단: {verification.summary}",
                     parent_id=parent_decision_id,
+                    account_id=account_id,
                     data_snapshot={"order_id": order.id, "web_verify": verification.result.value},
                 )
                 if did:
@@ -206,6 +211,7 @@ class OrderExecutor:
                 portfolio_state=portfolio_state,
                 web_verification=verification,
                 analysis_summary=analysis_summary,
+                account_id=account_id,
             )
 
             if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
@@ -216,6 +222,7 @@ class OrderExecutor:
                     decision=DecisionAction.REJECT, symbol=symbol,
                     reasoning=f"승인 {approval_status.value}",
                     parent_id=parent_decision_id,
+                    account_id=account_id,
                     data_snapshot={"order_id": order.id, "approval": approval_status.value},
                 )
                 if did:
@@ -259,6 +266,7 @@ class OrderExecutor:
                         decision=DecisionAction.REJECT, symbol=symbol,
                         reasoning=f"수정 수량 리스크 위반: {risk_result.violations}",
                         parent_id=parent_decision_id,
+                        account_id=account_id,
                         data_snapshot={
                             "order_id": order.id,
                             "modified_qty": modified_qty,
@@ -277,13 +285,14 @@ class OrderExecutor:
                 effective_quantity = risk_result.adjusted_quantity or modified_qty
 
             # 6. 브로커 주문
-            order_result = await self._broker.place_order(OrderRequest(
+            order_result = await effective_broker.place_order(OrderRequest(
                 symbol=symbol,
                 side=side,
                 order_type=trade_decision.order_type,
                 quantity=effective_quantity,
                 price=price,
                 reason=trade_decision.reasoning[:200],
+                account_id=account_id,
             ))
 
             if order_result.status not in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
@@ -324,6 +333,7 @@ class OrderExecutor:
                     stop_loss_price=trade_decision.stop_loss_price or Decimal("0"),
                     take_profit_price=trade_decision.take_profit_price,
                     entry_session_id=session_id,
+                    account_id=account_id,
                 )
                 position_id = pos.id
             except Exception:
@@ -360,6 +370,7 @@ class OrderExecutor:
                 decision=action, symbol=symbol,
                 reasoning=f"체결 완료: {fill_quantity}주 @ {fill_price}",
                 parent_id=parent_decision_id,
+                account_id=account_id,
                 data_snapshot={
                     "order_id": order.id,
                     "broker_order_id": order_result.order_id,
@@ -412,6 +423,8 @@ class OrderExecutor:
         position: PositionRecord,
         session_id: UUID,
         parent_decision_id: UUID | None = None,
+        account_id: str = "default",
+        broker: BrokerInterface | None = None,
     ) -> ExecutionResult:
         """청산 주문 실행.
 
@@ -440,6 +453,7 @@ class OrderExecutor:
         quantity = position.quantity
         decision_ids: list[UUID] = []
         order: Order | None = None
+        effective_broker = broker or self._broker
 
         try:
             # 1. TradeDecision 구성 (ApprovalManager 인터페이스용)
@@ -453,6 +467,7 @@ class OrderExecutor:
                 quantity=quantity,
                 price=price,
                 session_id=session_id,
+                account_id=account_id,
             )
 
             # 3. Web 검증
@@ -484,6 +499,7 @@ class OrderExecutor:
                     decision=DecisionAction.REJECT, symbol=symbol,
                     reasoning=f"Web 검증 차단: {verification.summary}",
                     parent_id=parent_decision_id,
+                    account_id=account_id,
                     data_snapshot={"order_id": order.id, "exit_reason": reason.value},
                 )
                 if did:
@@ -502,6 +518,7 @@ class OrderExecutor:
                 session_id=session_id,
                 portfolio_state=portfolio_state,
                 web_verification=verification,
+                account_id=account_id,
             )
 
             if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
@@ -511,6 +528,7 @@ class OrderExecutor:
                     decision=DecisionAction.REJECT, symbol=symbol,
                     reasoning=f"청산 승인 {approval_status.value}",
                     parent_id=parent_decision_id,
+                    account_id=account_id,
                     data_snapshot={"order_id": order.id, "exit_reason": reason.value},
                 )
                 if did:
@@ -523,12 +541,13 @@ class OrderExecutor:
                 )
 
             # 5. 브로커 주문
-            order_result = await self._broker.place_order(OrderRequest(
+            order_result = await effective_broker.place_order(OrderRequest(
                 symbol=symbol,
                 side=side,
                 order_type=order_type,
                 quantity=quantity,
                 price=price,
+                account_id=account_id,
             ))
 
             if order_result.status not in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
@@ -602,6 +621,7 @@ class OrderExecutor:
                 decision=action, symbol=symbol,
                 reasoning=f"청산 체결: {reason.value} {fill_quantity}주 @ {fill_price}",
                 parent_id=parent_decision_id,
+                account_id=account_id,
                 data_snapshot={
                     "order_id": order.id,
                     "exit_reason": reason.value,
@@ -658,6 +678,7 @@ class OrderExecutor:
         quantity: int,
         price: Decimal,
         session_id: UUID,
+        account_id: str = "default",
     ) -> Order:
         """orders 테이블에 PENDING 주문 생성."""
         row = Order(
@@ -670,6 +691,7 @@ class OrderExecutor:
             approval_status=ApprovalStatus.AUTO_APPROVED.value,
             original_quantity=quantity,
             session_id=session_id,
+            account_id=account_id,
         )
         async with self._session_factory() as session:
             session.add(row)
@@ -769,6 +791,7 @@ class OrderExecutor:
         symbol: str,
         reasoning: str,
         parent_id: UUID | None = None,
+        account_id: str = "default",
         data_snapshot: dict | None = None,
     ) -> UUID | None:
         """decision_log 기록 — 실패 시 예외 흡수, None 반환."""
@@ -780,6 +803,7 @@ class OrderExecutor:
                 reasoning=reasoning,
                 parent_id=parent_id,
                 symbol=symbol,
+                account_id=account_id,
                 data_snapshot=data_snapshot,
             )
         except Exception:

@@ -25,6 +25,7 @@ from src.notification.templates import MessageTemplates
 
 if TYPE_CHECKING:
     from src.agent.decision_recorder import DecisionRecorder
+    from src.broker.base import BrokerInterface
     from src.db.models.strategy import PositionRecord
     from src.execution.executor import OrderExecutor
     from src.notification.telegram import TelegramBot
@@ -74,6 +75,8 @@ class ExitExecutionService:
         positions: list[PositionRecord],
         *,
         session_id: UUID,
+        account_id: str = "default",
+        broker: BrokerInterface | None = None,
     ) -> list[ExecutionResult]:
         """청산 시그널 목록을 받아 urgency순 실행.
 
@@ -111,14 +114,19 @@ class ExitExecutionService:
 
             if signal.urgency in ("immediate", "end_of_day"):
                 result = await self._execute_signal(
-                    signal, position, session_id=session_id,
+                    signal, position,
+                    session_id=session_id,
+                    account_id=account_id,
+                    broker=broker,
                 )
                 results.append(result)
                 executed_count += 1
             else:
                 # next_session: 알림만
                 result = await self._handle_next_session_signal(
-                    signal, position, session_id=session_id,
+                    signal, position,
+                    session_id=session_id,
+                    account_id=account_id,
                 )
                 results.append(result)
                 alert_count += 1
@@ -151,6 +159,8 @@ class ExitExecutionService:
         position: PositionRecord,
         *,
         session_id: UUID,
+        account_id: str = "default",
+        broker: BrokerInterface | None = None,
     ) -> ExecutionResult:
         """immediate/end_of_day 시그널을 OrderExecutor로 실행. 장애 격리."""
         try:
@@ -158,6 +168,8 @@ class ExitExecutionService:
                 exit_signal=signal,
                 position=position,
                 session_id=session_id,
+                account_id=account_id,
+                broker=broker,
             )
         except Exception as exc:
             logger.exception(
@@ -181,6 +193,7 @@ class ExitExecutionService:
         position: PositionRecord,
         *,
         session_id: UUID,
+        account_id: str = "default",
     ) -> ExecutionResult:
         """next_session 시그널: decision_log 기록 + 텔레그램 알림만 전송."""
         decision_ids: list[UUID] = []
@@ -193,6 +206,7 @@ class ExitExecutionService:
                 decision=signal.recommended_action,
                 symbol=signal.symbol,
                 reasoning=f"next_session 시그널: {signal.reasoning}",
+                account_id=account_id,
                 data_snapshot={
                     "urgency": "next_session",
                     "exit_reason": signal.reason.value,

@@ -77,6 +77,7 @@ class ApprovalManager:
         self._pending_results: dict[UUID, ApprovalStatus] = {}
         self._pending_message_ids: dict[UUID, int] = {}
         self._modified_quantities: dict[UUID, int] = {}
+        self._pending_account_ids: dict[UUID, str] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -132,6 +133,8 @@ class ApprovalManager:
         web_verification: WebVerification | None = None,
         analysis_summary: str = "",
         name: str = "",
+        account_id: str = "default",
+        account_nickname: str = "",
     ) -> ApprovalStatus:
         """승인 요청 처리 — 자동 실행 또는 텔레그램 승인 요청.
 
@@ -167,6 +170,7 @@ class ApprovalManager:
                 portfolio_pct=portfolio_pct,
                 reason=reason,
                 now=now,
+                account_id=account_id,
             )
 
         # ── 수동 승인 ──
@@ -182,6 +186,7 @@ class ApprovalManager:
             position_value=position_value,
             portfolio_pct=portfolio_pct,
             now=now,
+            account_id=account_id,
         )
 
     async def get_modified_quantity(self, request_id: UUID) -> int | None:
@@ -231,6 +236,7 @@ class ApprovalManager:
         portfolio_pct: Decimal,
         reason: str,
         now: datetime,
+        account_id: str = "default",
     ) -> ApprovalStatus:
         """자동 승인 경로: DB 저장 → decision_log → 텔레그램 통보."""
         async with self._session_factory() as session:
@@ -238,6 +244,7 @@ class ApprovalManager:
             approval_row = ApprovalRequestDB(
                 request_id=request_id,
                 order_id=order_id,
+                account_id=account_id,
                 status="auto_approved",
                 requested_at=now,
                 responded_at=now,
@@ -262,10 +269,12 @@ class ApprovalManager:
             reasoning=f"Auto-approved: {reason}",
             symbol=trade_decision.symbol,
             confidence=trade_decision.confidence,
+            account_id=account_id,
             data_snapshot={
                 "order_id": order_id,
                 "request_id": str(request_id),
                 "auto_approve_reason": reason,
+                "account_id": account_id,
             },
         )
 
@@ -301,6 +310,7 @@ class ApprovalManager:
         position_value: Decimal,
         portfolio_pct: Decimal,
         now: datetime,
+        account_id: str = "default",
     ) -> ApprovalStatus:
         """수동 승인 경로: DB 저장 → Redis → 텔레그램 승인 요청 → 대기."""
         timeout_sec = self._settings.HUMAN_APPROVAL_TIMEOUT_SEC
@@ -311,6 +321,7 @@ class ApprovalManager:
             approval_row = ApprovalRequestDB(
                 request_id=request_id,
                 order_id=order_id,
+                account_id=account_id,
                 status="pending",
                 requested_at=now,
                 expires_at=expires_at,
@@ -322,10 +333,11 @@ class ApprovalManager:
         # Redis 상태 저장
         await self._cache.set_json(
             _REDIS_NAMESPACE,
-            str(request_id),
+            f"{account_id}:{request_id}",
             {
                 "status": "pending",
                 "order_id": order_id,
+                "account_id": account_id,
                 "requested_at": now.isoformat(),
             },
             ttl=timeout_sec + _REDIS_TTL_BUFFER,
@@ -370,6 +382,7 @@ class ApprovalManager:
         self._pending_events[request_id] = event
         if message_id is not None:
             self._pending_message_ids[request_id] = message_id
+        self._pending_account_ids[request_id] = account_id
 
         # 응답 대기
         status = await self._wait_for_response(request_id, timeout_sec)
@@ -383,12 +396,14 @@ class ApprovalManager:
                 trade_decision=trade_decision,
                 display_name=display_name,
                 side=side,
+                account_id=account_id,
             )
 
         # 정리 (modified_quantities는 유지 — OrderExecutor가 조회)
         self._pending_events.pop(request_id, None)
         self._pending_results.pop(request_id, None)
         self._pending_message_ids.pop(request_id, None)
+        self._pending_account_ids.pop(request_id, None)
 
         logger.info(
             "approval_result",
@@ -407,6 +422,7 @@ class ApprovalManager:
         trade_decision: TradeDecision,
         display_name: str,
         side: OrderSide,
+        account_id: str = "default",
     ) -> None:
         """타임아웃 시 DB/텔레그램/decision_log 업데이트."""
         now = datetime.now(UTC)
@@ -428,8 +444,8 @@ class ApprovalManager:
         # Redis 업데이트
         await self._cache.set_json(
             _REDIS_NAMESPACE,
-            str(request_id),
-            {"status": "timeout", "order_id": order_id},
+            f"{account_id}:{request_id}",
+            {"status": "timeout", "order_id": order_id, "account_id": account_id},
             ttl=_REDIS_TTL_BUFFER,
         )
 
@@ -461,10 +477,12 @@ class ApprovalManager:
             reasoning="Approval timeout",
             symbol=trade_decision.symbol,
             confidence=trade_decision.confidence,
+            account_id=account_id,
             data_snapshot={
                 "order_id": order_id,
                 "request_id": str(request_id),
                 "timeout_sec": self._settings.HUMAN_APPROVAL_TIMEOUT_SEC,
+                "account_id": account_id,
             },
         )
 
@@ -566,9 +584,10 @@ class ApprovalManager:
 
         # Redis 업데이트
         try:
+            cb_account_id = self._pending_account_ids.get(request_id, "default")
             await self._cache.set_json(
                 _REDIS_NAMESPACE,
-                str(request_id),
+                f"{cb_account_id}:{request_id}",
                 {"status": status.value, "responded_at": now.isoformat()},
                 ttl=_REDIS_TTL_BUFFER,
             )

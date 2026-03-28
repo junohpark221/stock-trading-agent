@@ -468,3 +468,115 @@ class TestDecisionLogRecorded:
         # recorder.record는 최소 0회 (콜백 자체에서는 호출 안 함)
         # — 이 테스트는 콜백 정상 처리를 검증
         assert mock_recorder.record.call_count >= 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Step 6: account_id 전파
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_sets_account_id(manager, session_factory, mock_settings, mock_recorder):
+    """자동 승인 시 ApprovalRequestDB.account_id + recorder.account_id 설정."""
+    mock_settings.HUMAN_APPROVAL_REQUIRED = False
+    td = _make_trade_decision()
+    ps = _make_portfolio_state()
+    acct = "acct-growth"
+
+    status = await manager.request_approval(
+        trade_decision=td, order_id=10, session_id=uuid.uuid4(),
+        portfolio_state=ps, account_id=acct,
+    )
+
+    assert status == ApprovalStatus.AUTO_APPROVED
+
+    # DB에 account_id 저장 확인
+    session = session_factory._session
+    approval_row = session.added[0]
+    assert approval_row.account_id == acct
+
+    # recorder에 account_id 전달 확인
+    rec_call = mock_recorder.record.call_args
+    assert rec_call.kwargs["account_id"] == acct
+
+
+@pytest.mark.asyncio
+async def test_manual_approve_redis_key_has_account_id(
+    manager, mock_bot, mock_cache, mock_settings, session_factory,
+):
+    """수동 승인 시 Redis 키가 '{account_id}:{request_id}' 형태인지 확인."""
+    mock_settings.HUMAN_APPROVAL_REQUIRED = True
+    mock_settings.HUMAN_APPROVAL_TIMEOUT_SEC = 1  # 빠른 타임아웃
+    td = _make_trade_decision(quantity=100, price=Decimal("72000"))
+    ps = _make_portfolio_state()
+    acct = "acct-safe"
+
+    await manager.initialize()
+
+    status = await manager.request_approval(
+        trade_decision=td, order_id=20, session_id=uuid.uuid4(),
+        portfolio_state=ps, account_id=acct,
+    )
+
+    # 타임아웃이지만 Redis 키 확인이 목적
+    assert status == ApprovalStatus.TIMEOUT
+
+    # set_json 첫 호출(pending) 키 확인
+    first_set_call = mock_cache.set_json.call_args_list[0]
+    redis_key = first_set_call[0][1]  # namespace, key, value positional args
+    assert redis_key.startswith(f"{acct}:")
+    # payload에 account_id 포함
+    redis_payload = first_set_call[0][2]
+    assert redis_payload["account_id"] == acct
+
+
+@pytest.mark.asyncio
+async def test_callback_redis_key_uses_account_id(
+    manager, mock_bot, mock_cache, mock_settings, session_factory,
+):
+    """콜백 처리 시 Redis 키에 account_id 포함 확인."""
+    mock_settings.HUMAN_APPROVAL_REQUIRED = True
+    mock_settings.HUMAN_APPROVAL_TIMEOUT_SEC = 5
+    td = _make_trade_decision(quantity=100, price=Decimal("72000"))
+    ps = _make_portfolio_state()
+    acct = "acct-balanced"
+
+    await manager.initialize()
+    handler = mock_bot.register_callback_handler.call_args[0][0]
+
+    async def trigger_approve():
+        await asyncio.sleep(0.05)
+        request_id = next(iter(manager._pending_events))
+        await handler("approve", request_id)
+
+    task = asyncio.create_task(trigger_approve())
+    status = await manager.request_approval(
+        trade_decision=td, order_id=30, session_id=uuid.uuid4(),
+        portfolio_state=ps, account_id=acct,
+    )
+    await task
+
+    assert status == ApprovalStatus.APPROVED
+
+    # 콜백에서 set_json 호출 시 키 확인
+    # set_json이 여러 번 호출됨: pending + callback
+    callback_set_call = mock_cache.set_json.call_args_list[-1]
+    redis_key = callback_set_call[0][1]
+    assert redis_key.startswith(f"{acct}:")
+
+
+@pytest.mark.asyncio
+async def test_default_account_id_backward_compat(manager, session_factory, mock_settings):
+    """account_id 미전달 시 'default' 사용."""
+    mock_settings.HUMAN_APPROVAL_REQUIRED = False
+    td = _make_trade_decision()
+    ps = _make_portfolio_state()
+
+    status = await manager.request_approval(
+        trade_decision=td, order_id=40, session_id=uuid.uuid4(),
+        portfolio_state=ps,
+    )
+
+    assert status == ApprovalStatus.AUTO_APPROVED
+    approval_row = session_factory._session.added[0]
+    assert approval_row.account_id == "default"

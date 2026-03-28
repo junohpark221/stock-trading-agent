@@ -865,3 +865,118 @@ async def test_execute_entry_db_creation_fails(executor, fake_session):
     assert result.success is False
     assert result.order_id is None
     assert "DB connection lost" in result.error
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Step 6: account_id + broker override
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_account_id_propagation(
+    executor, fake_session, mock_approval_manager, mock_position_manager, mock_recorder,
+):
+    """account_id가 Order, approval, position, recorder에 모두 전파되는지 확인."""
+    td = _make_trade_decision()
+    sid = uuid.uuid4()
+    acct = "acct-growth"
+
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=sid,
+        strategy_type=StrategyType.POSITION.value,
+        account_id=acct,
+    )
+
+    assert result.success is True
+
+    # Order에 account_id 설정 확인
+    order_row = fake_session.added[0]
+    assert order_row.account_id == acct
+
+    # approval_manager에 account_id 전달 확인
+    approval_call = mock_approval_manager.request_approval.call_args
+    assert approval_call.kwargs["account_id"] == acct
+
+    # position_manager에 account_id 전달 확인
+    pos_call = mock_position_manager.create.call_args
+    assert pos_call.kwargs["account_id"] == acct
+
+    # recorder에 account_id 전달 확인 (최소 1회 호출)
+    assert mock_recorder.record.await_count >= 1
+    for call in mock_recorder.record.call_args_list:
+        assert call.kwargs.get("account_id") == acct
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_broker_override(executor, mock_broker):
+    """broker 파라미터 전달 시 self._broker 대신 전달된 broker 사용."""
+    alt_broker = AsyncMock()
+    alt_broker.place_order = AsyncMock(return_value=_make_order_result())
+
+    td = _make_trade_decision()
+    sid = uuid.uuid4()
+
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=sid,
+        strategy_type=StrategyType.POSITION.value,
+        broker=alt_broker,
+    )
+
+    assert result.success is True
+    alt_broker.place_order.assert_awaited_once()
+    mock_broker.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_account_id(executor, fake_session, mock_recorder):
+    """execute_exit에도 account_id가 전파되는지 확인."""
+    sig = _make_exit_signal()
+    pos = _make_fake_position()
+    sid = uuid.uuid4()
+    acct = "acct-safe"
+
+    result = await executor.execute_exit(
+        exit_signal=sig, position=pos, session_id=sid, account_id=acct,
+    )
+
+    assert result.success is True
+    # Order에 account_id 설정 확인
+    order_row = fake_session.added[0]
+    assert order_row.account_id == acct
+
+    # recorder에 account_id 전달 확인
+    for call in mock_recorder.record.call_args_list:
+        assert call.kwargs.get("account_id") == acct
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_broker_override(executor, mock_broker):
+    """execute_exit에서 broker override 동작 확인."""
+    alt_broker = AsyncMock()
+    alt_broker.place_order = AsyncMock(return_value=_make_order_result())
+
+    sig = _make_exit_signal()
+    pos = _make_fake_position()
+    sid = uuid.uuid4()
+
+    result = await executor.execute_exit(
+        exit_signal=sig, position=pos, session_id=sid, broker=alt_broker,
+    )
+
+    assert result.success is True
+    alt_broker.place_order.assert_awaited_once()
+    mock_broker.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_default_account_id(executor, fake_session):
+    """account_id 미지정 시 'default' 사용."""
+    td = _make_trade_decision()
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    order_row = fake_session.added[0]
+    assert order_row.account_id == "default"

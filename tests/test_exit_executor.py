@@ -168,6 +168,8 @@ class TestImmediateSignal:
             exit_signal=signal,
             position=position,
             session_id=session_id,
+            account_id="default",
+            broker=None,
         )
 
 
@@ -343,3 +345,70 @@ class TestBatchWithFaultIsolation:
 
         # execute_exit 2번 호출됨 (장애 격리)
         assert mock_order_executor.execute_exit.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Step 6: account_id + broker 전파
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_process_exit_signals_account_id(
+    mock_order_executor, mock_position_manager, mock_portfolio_service,
+    mock_recorder, mock_bot,
+):
+    """process_exit_signals에서 account_id와 broker가 execute_exit에 전파."""
+    exit_service = ExitExecutionService(
+        order_executor=mock_order_executor,
+        position_manager=mock_position_manager,
+        portfolio_service=mock_portfolio_service,
+        recorder=mock_recorder,
+        telegram_bot=mock_bot,
+    )
+
+    sig = _make_exit_signal()
+    pos = _make_fake_position()
+    alt_broker = AsyncMock()
+    acct = "acct-growth"
+
+    results = await exit_service.process_exit_signals(
+        [sig], [pos], session_id=uuid.uuid4(),
+        account_id=acct, broker=alt_broker,
+    )
+
+    assert len(results) == 1
+    assert results[0].success is True
+
+    # execute_exit에 account_id와 broker 전달 확인
+    call_kwargs = mock_order_executor.execute_exit.call_args.kwargs
+    assert call_kwargs["account_id"] == acct
+    assert call_kwargs["broker"] is alt_broker
+
+
+@pytest.mark.asyncio
+async def test_next_session_records_account_id(
+    mock_order_executor, mock_position_manager, mock_portfolio_service,
+    mock_recorder, mock_bot,
+):
+    """next_session 시그널에서 recorder에 account_id 전달 확인."""
+    exit_service = ExitExecutionService(
+        order_executor=mock_order_executor,
+        position_manager=mock_position_manager,
+        portfolio_service=mock_portfolio_service,
+        recorder=mock_recorder,
+        telegram_bot=mock_bot,
+    )
+
+    sig = _make_exit_signal(urgency="next_session")
+    pos = _make_fake_position()
+    acct = "acct-safe"
+
+    results = await exit_service.process_exit_signals(
+        [sig], [pos], session_id=uuid.uuid4(), account_id=acct,
+    )
+
+    assert len(results) == 1
+
+    # recorder에 account_id 전달 확인
+    rec_call = mock_recorder.record.call_args
+    assert rec_call.kwargs["account_id"] == acct

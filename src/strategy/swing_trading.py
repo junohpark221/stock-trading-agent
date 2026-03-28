@@ -40,6 +40,7 @@ from src.core.models import OHLCV, ExitSignal, PipelineResult, Signal
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.strategy.base import Strategy
 from src.strategy.exit_calculator import ExitPriceCalculator
+from src.strategy.registry import register_strategy
 from src.strategy.sizing import PositionSizer
 
 if TYPE_CHECKING:
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+@register_strategy(StrategyType.SWING)
 class SwingTradingStrategy(Strategy):
     """스윙 트레이딩 전략 — 일~주 단위 단기 매매.
 

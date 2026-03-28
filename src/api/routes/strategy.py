@@ -35,6 +35,8 @@ class StrategyRunRequest(BaseModel):
     symbols: list[str] = Field(
         ..., min_length=1, max_length=50, description="분석 대상 종목 코드"
     )
+    account_id: str = Field("default", description="계좌 ID")
+    investment_prompt: str = Field("", description="투자 철학 프롬프트")
 
 
 class ExitCheckRequest(BaseModel):
@@ -54,12 +56,17 @@ class StrategyRunResponse(BaseModel):
 # ── Strategy Factory ─────────────────────────────────────────────────────
 
 
-async def _build_strategy(strategy_type: StrategyType):
+async def _build_strategy(
+    strategy_type: StrategyType,
+    *,
+    account_id: str = "default",
+    investment_prompt: str = "",
+    risk_overrides: dict[str, object] | None = None,
+):
     """전략 실행에 필요한 전체 의존성 트리를 조립.
 
     pipeline.py의 _build_orchestrator() 패턴을 확장하여,
-    PipelineOrchestrator + AlgoRiskManager + PortfolioStateService +
-    Broker + PositionManager를 조립한 뒤 전략 인스턴스를 반환한다.
+    PipelineOrchestrator + StrategyFactory를 통해 전략 인스턴스를 생성한다.
     broker도 함께 반환하여 호출자가 disconnect할 수 있도록 한다.
     """
     from src.agent.agents.market_analyst import MarketAnalyst
@@ -76,11 +83,7 @@ async def _build_strategy(strategy_type: StrategyType):
     from src.db.session import get_session_factory
     from src.llm.cost_tracker import CostTracker
     from src.llm.router import LLMRouter
-    from src.strategy.portfolio_state import PortfolioStateService
-    from src.strategy.position_manager import PositionManager
-    from src.strategy.position_trading import PositionTradingStrategy
-    from src.strategy.risk_manager import AlgoRiskManager
-    from src.strategy.swing_trading import SwingTradingStrategy
+    from src.strategy.registry import StrategyCommonDeps, StrategyFactory
 
     settings = get_settings()
     session_factory = get_session_factory()
@@ -111,36 +114,29 @@ async def _build_strategy(strategy_type: StrategyType):
         recorder=recorder,
     )
 
-    # Strategy 컴포넌트
-    portfolio_service = PortfolioStateService(
-        broker=broker, session_factory=session_factory, cache=cache
-    )
-    risk_manager = AlgoRiskManager(
-        portfolio_service=portfolio_service,
-        session_factory=session_factory,
-        settings=settings,
-    )
-    position_manager = PositionManager(session_factory)
-
-    # 전략 공통 kwargs
-    kwargs = dict(
+    # StrategyFactory를 통한 전략 생성
+    deps = StrategyCommonDeps(
         orchestrator=orchestrator,
-        risk_manager=risk_manager,
-        portfolio_service=portfolio_service,
-        broker=broker,
         recorder=recorder,
-        position_manager=position_manager,
+        broker=broker,
         session_factory=session_factory,
         settings=settings,
+        cache=cache,
     )
 
-    if strategy_type == StrategyType.POSITION:
-        return PositionTradingStrategy(**kwargs), broker
-    elif strategy_type == StrategyType.SWING:
-        return SwingTradingStrategy(**kwargs), broker
-    else:
+    try:
+        strategy = StrategyFactory.create(
+            strategy_type,
+            deps,
+            account_id=account_id,
+            investment_prompt=investment_prompt,
+            risk_overrides=risk_overrides,
+        )
+    except (KeyError, ValueError):
         await broker.disconnect()
-        raise ValueError(f"Unknown strategy type: {strategy_type}")
+        raise
+
+    return strategy, broker
 
 
 # ── POST /api/strategy/run ───────────────────────────────────────────────
@@ -155,7 +151,11 @@ async def run_strategy(req: StrategyRunRequest) -> JSONResponse:
     """
     broker = None
     try:
-        strategy, broker = await _build_strategy(req.strategy_type)
+        strategy, broker = await _build_strategy(
+            req.strategy_type,
+            account_id=req.account_id,
+            investment_prompt=req.investment_prompt,
+        )
 
         # Phase 3 파이프라인에 분석 위임
         pipeline_result = await strategy.analyze(req.symbols)

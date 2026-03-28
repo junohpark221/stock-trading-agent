@@ -35,6 +35,7 @@ from src.core.models import OHLCV, ExitSignal, PipelineResult, Signal
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.strategy.base import Strategy
 from src.strategy.exit_calculator import ExitPriceCalculator
+from src.strategy.registry import register_strategy
 from src.strategy.sizing import PositionSizer
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+@register_strategy(StrategyType.POSITION)
 class PositionTradingStrategy(Strategy):
     """포지션 트레이딩 전략 — 주~월 단위 중장기 매매.
 

@@ -50,6 +50,8 @@ class Strategy(ABC):
         position_manager: PositionManager,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
+        account_id: str = "default",
+        investment_prompt: str = "",
     ) -> None:
         self._orchestrator = orchestrator
         self._risk_manager = risk_manager
@@ -59,6 +61,8 @@ class Strategy(ABC):
         self._position_manager = position_manager
         self._session_factory = session_factory
         self._settings = settings
+        self._account_id = account_id
+        self._investment_prompt = investment_prompt
         self._exit_checker = ExitConditionChecker(
             max_drawdown_pct=Decimal(str(settings.MAX_DRAWDOWN_PCT)),
         )
@@ -92,8 +96,13 @@ class Strategy(ABC):
             "strategy.analyze",
             strategy=self.strategy_type.value,
             symbols=symbols,
+            account_id=self._account_id,
         )
-        return await self._orchestrator.execute(symbols)
+        return await self._orchestrator.execute(
+            symbols,
+            investment_prompt=self._investment_prompt or None,
+            account_id=self._account_id,
+        )
 
     async def check_all_exit_conditions(self) -> list[ExitSignal]:
         """현재 전략의 모든 활성 포지션에 대해 청산 조건을 확인한다."""
@@ -133,6 +142,7 @@ class Strategy(ABC):
             trailing_stop_pct=trailing_stop_pct,
             max_holding_days=max_holding_days,
             entry_session_id=session_id,
+            account_id=self._account_id,
         )
 
     async def close_position(
@@ -155,4 +165,6 @@ class Strategy(ABC):
         self, strategy_type: StrategyType | None = None
     ) -> list[PositionRecord]:
         """활성 포지션 목록을 조회한다. PositionManager에 위임."""
-        return await self._position_manager.get_open(strategy_type=strategy_type)
+        return await self._position_manager.get_open(
+            strategy_type=strategy_type, account_id=self._account_id
+        )

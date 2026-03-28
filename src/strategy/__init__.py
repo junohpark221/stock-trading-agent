@@ -7,6 +7,12 @@ from src.strategy.memory_manager import AgentMemoryManager
 from src.strategy.portfolio_state import PortfolioStateService
 from src.strategy.position_manager import PositionManager
 from src.strategy.position_trading import PositionTradingStrategy
+from src.strategy.registry import (
+    StrategyCommonDeps,
+    StrategyFactory,
+    get_strategy_class,
+    register_strategy,
+)
 from src.strategy.risk_manager import AlgoRiskManager
 from src.strategy.sizing import PositionSizer
 from src.strategy.swing_trading import SwingTradingStrategy
@@ -21,5 +27,9 @@ __all__ = [
     "PositionSizer",
     "PositionTradingStrategy",
     "Strategy",
+    "StrategyCommonDeps",
+    "StrategyFactory",
     "SwingTradingStrategy",
+    "get_strategy_class",
+    "register_strategy",
 ]

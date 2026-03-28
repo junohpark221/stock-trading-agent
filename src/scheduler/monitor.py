@@ -94,7 +94,9 @@ class TradingMonitor:
             if not pos.stop_loss_price or pos.stop_loss_price <= 0:
                 continue
 
-            dedup_key = f"stop_loss_proximity:{self._account_id}:{pos.symbol}:{date.today().isoformat()}"
+            dedup_key = (
+                f"stop_loss_proximity:{self._account_id}:{pos.symbol}:{date.today().isoformat()}"
+            )
             if await self._is_alert_sent_today(dedup_key):
                 continue
 
@@ -136,7 +138,9 @@ class TradingMonitor:
             if allocation <= threshold:
                 continue
 
-            dedup_key = f"sector_concentration:{self._account_id}:{sector}:{date.today().isoformat()}"
+            dedup_key = (
+                f"sector_concentration:{self._account_id}:{sector}:{date.today().isoformat()}"
+            )
             if await self._is_alert_sent_today(dedup_key):
                 continue
 

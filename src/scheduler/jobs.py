@@ -40,10 +40,14 @@ _Q2 = Decimal("0.01")
 # ── Token / Data Collection ────────────────────────────────────────────
 
 
-async def job_token_refresh(*, auth: KISAuth) -> None:
-    """KIS OAuth 토큰 사전 갱신. Daily 06:00."""
+async def job_token_refresh(
+    *,
+    auth: KISAuth,
+    account_id: str = "default",
+) -> None:
+    """KIS OAuth 토큰 사전 갱신. Daily 06:00. 계좌별 실행."""
     token = await auth.refresh_token()
-    logger.info("job.token_refresh.done", token_prefix=token[:8])
+    logger.info("job.token_refresh.done", token_prefix=token[:8], account_id=account_id)
 
 
 async def job_market_data_collect(
@@ -69,13 +73,20 @@ async def job_swing_analysis(
     *,
     orchestrator: PipelineOrchestrator,
     symbols: list[str],
+    account_id: str = "default",
+    investment_prompt: str = "",
 ) -> None:
-    """스윙 전략 시그널 스캔. Daily 16:00."""
-    result = await orchestrator.execute(symbols)
+    """스윙 전략 시그널 스캔. Daily 16:00. 계좌별 실행."""
+    result = await orchestrator.execute(
+        symbols,
+        investment_prompt=investment_prompt,
+        account_id=account_id,
+    )
     logger.info(
         "job.swing_analysis.done",
         session_id=str(result.session_id),
         symbols_count=len(symbols),
+        account_id=account_id,
     )
 
 
@@ -83,20 +94,27 @@ async def job_position_analysis(
     *,
     orchestrator: PipelineOrchestrator,
     position_manager: PositionManager,
+    account_id: str = "default",
+    investment_prompt: str = "",
 ) -> None:
-    """보유 포지션 심층 분석. Wed & Sat 16:30."""
-    positions = await position_manager.get_open()
+    """보유 포지션 심층 분석. Wed & Sat 16:30. 계좌별 실행."""
+    positions = await position_manager.get_open(account_id=account_id)
     if not positions:
-        logger.info("job.position_analysis.skip", reason="no_open_positions")
+        logger.info("job.position_analysis.skip", reason="no_open_positions", account_id=account_id)
         return
 
     symbols = list({p.symbol for p in positions})
-    result = await orchestrator.execute(symbols)
+    result = await orchestrator.execute(
+        symbols,
+        investment_prompt=investment_prompt,
+        account_id=account_id,
+    )
     logger.info(
         "job.position_analysis.done",
         session_id=str(result.session_id),
         positions_count=len(positions),
         symbols_count=len(symbols),
+        account_id=account_id,
     )
 
 
@@ -111,8 +129,10 @@ async def job_stop_loss_check(
     portfolio_service: PortfolioStateService,
     broker: BrokerInterface,
     monitor: TradingMonitor,
+    account_id: str = "default",
+    account_label: str = "",
 ) -> None:
-    """손절/익절/트레일링 스톱 체크 + 자동 청산 + 근접 알림. 5분 간격.
+    """손절/익절/트레일링 스톱 체크 + 자동 청산 + 근접 알림. 5분 간격. 계좌별 실행.
 
     Flow:
     1. 오픈 포지션 조회 (없으면 조기 리턴)
@@ -120,9 +140,9 @@ async def job_stop_loss_check(
     3. exit_signals 수집 → ExitExecutionService로 일괄 청산
     4. TradingMonitor.check_all() → 근접/편중/예산/낙폭 알림
     """
-    positions = await position_manager.get_open()
+    positions = await position_manager.get_open(account_id=account_id)
     if not positions:
-        logger.debug("job.stop_loss_check.skip", reason="no_open_positions")
+        logger.debug("job.stop_loss_check.skip", reason="no_open_positions", account_id=account_id)
         return
 
     from src.core.models import ExitSignal
@@ -138,9 +158,7 @@ async def job_stop_loss_check(
             # 미실현 손익률 계산
             if position.entry_price > _ZERO:
                 unrealized_pnl_pct = (
-                    (current_price - position.entry_price)
-                    / position.entry_price
-                    * _HUNDRED
+                    (current_price - position.entry_price) / position.entry_price * _HUNDRED
                 ).quantize(_Q2, rounding=ROUND_HALF_UP)
             else:
                 unrealized_pnl_pct = _ZERO
@@ -160,19 +178,24 @@ async def job_stop_loss_check(
             if position.trailing_stop_pct is not None:
                 # trailing_stop_price = 최고가 * (1 - trailing_stop_pct/100)
                 # 간이 계산: entry_price 기준 (실제 high water mark는 별도 추적 필요)
-                trailing_stop_price = (
-                    position.entry_price
-                    * (Decimal("1") - position.trailing_stop_pct / _HUNDRED)
+                trailing_stop_price = position.entry_price * (
+                    Decimal("1") - position.trailing_stop_pct / _HUNDRED
                 )
                 signal = exit_checker.check_trailing_stop(
-                    position, current_price, unrealized_pnl_pct, trailing_stop_price,
+                    position,
+                    current_price,
+                    unrealized_pnl_pct,
+                    trailing_stop_price,
                 )
                 if signal:
                     exit_signals.append(signal)
                     continue
 
             signal = exit_checker.check_time_based(
-                position, current_price, unrealized_pnl_pct, today,
+                position,
+                current_price,
+                unrealized_pnl_pct,
+                today,
             )
             if signal:
                 exit_signals.append(signal)
@@ -188,19 +211,28 @@ async def job_stop_loss_check(
     if exit_signals:
         session_id = uuid.uuid4()
         results = await exit_service.process_exit_signals(
-            exit_signals, positions, session_id=session_id,
+            exit_signals,
+            positions,
+            session_id=session_id,
+            account_id=account_id,
+            account_label=account_label,
         )
         logger.info(
             "job.stop_loss_check.exit_executed",
             signal_count=len(exit_signals),
             result_count=len(results),
             session_id=str(session_id),
+            account_id=account_id,
         )
 
     # 모니터링 알림 (손절 근접, 섹터 편중, LLM 예산, 포트폴리오 낙폭)
     alerts = await monitor.check_all()
     if alerts:
-        logger.info("job.stop_loss_check.alerts_sent", alert_count=len(alerts))
+        logger.info(
+            "job.stop_loss_check.alerts_sent",
+            alert_count=len(alerts),
+            account_id=account_id,
+        )
 
 
 # ── Reports ─────────────────────────────────────────────────────────────
@@ -211,8 +243,10 @@ async def job_daily_report(
     generator: ReportGenerator,
     telegram_bot: TelegramBot,
     portfolio_service: PortfolioStateService,
+    account_id: str = "default",
+    account_label: str = "",
 ) -> None:
-    """일간 리포트 생성 + Telegram 전송. Daily 20:00.
+    """일간 리포트 생성 + Telegram 전송. Daily 20:00. 계좌별 실행.
 
     1. 포트폴리오 스냅샷 저장 (일일 기록)
     2. 일간 리포트 생성
@@ -223,10 +257,10 @@ async def job_daily_report(
     await portfolio_service.save_snapshot(state)
 
     # 리포트 생성 + 전송
-    data = await generator.generate_daily_report()
-    html = MessageTemplates.daily_report(data)
+    data = await generator.generate_daily_report(account_id=account_id)
+    html = MessageTemplates.daily_report(data, account_label=account_label)
     await telegram_bot.send_message(html)
-    logger.info("job.daily_report.sent")
+    logger.info("job.daily_report.sent", account_id=account_id)
 
 
 async def job_weekly_report(

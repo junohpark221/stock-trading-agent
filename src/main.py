@@ -27,7 +27,7 @@ from src.notification.telegram import TelegramBot
 _redis_client: Redis | None = None
 _telegram_bot: TelegramBot | None = None
 _scheduler_engine: object | None = None  # SchedulerEngine (lazy import)
-_scheduler_broker: object | None = None  # BrokerInterface (lazy import)
+_broker_registry: object | None = None  # BrokerRegistry (lazy import)
 logger = structlog.get_logger(__name__)
 
 
@@ -83,7 +83,7 @@ def get_scheduler():
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""
-    global _redis_client, _telegram_bot, _scheduler_engine, _scheduler_broker
+    global _redis_client, _telegram_bot, _scheduler_engine, _broker_registry
 
     settings = get_settings()
     is_dev = settings.ENV == "development"
@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from src.db.session import get_session_factory
         from src.scheduler.factory import SchedulerFactory
 
-        _scheduler_engine, _scheduler_broker = await SchedulerFactory.create_scheduler(
+        _scheduler_engine, _broker_registry = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=get_session_factory(),
             cache=get_cache(),
@@ -137,10 +137,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         _scheduler_engine = None
         log.info("scheduler_stopped")
 
-    if _scheduler_broker is not None:
-        await _scheduler_broker.disconnect()
-        _scheduler_broker = None
-        log.info("scheduler_broker_disconnected")
+    if _broker_registry is not None:
+        await _broker_registry.disconnect_all()
+        _broker_registry = None
+        log.info("broker_registry_disconnected")
 
     if _telegram_bot is not None:
         await _telegram_bot.stop()
@@ -177,17 +177,17 @@ def create_app() -> FastAPI:
 app = create_app()
 
 # ── Router registration ──────────────────────────────────────────────────
-from src.api.routes.data import router as data_router  # noqa: E402
-from src.api.routes.analysis import router as analysis_router  # noqa: E402
-from src.api.routes.pipeline import router as pipeline_router  # noqa: E402
-from src.api.routes.decisions import router as decisions_router  # noqa: E402
 from src.api.admin.llm_config import router as admin_llm_router  # noqa: E402
-from src.api.routes.strategy import router as strategy_router  # noqa: E402
-from src.api.routes.portfolio import router as portfolio_router  # noqa: E402
-from src.api.routes.orders import router as orders_router  # noqa: E402
-from src.api.routes.control import router as control_router  # noqa: E402
-from src.api.routes.trades import router as trades_router  # noqa: E402
+from src.api.routes.analysis import router as analysis_router  # noqa: E402
 from src.api.routes.backtest import router as backtest_router  # noqa: E402
+from src.api.routes.control import router as control_router  # noqa: E402
+from src.api.routes.data import router as data_router  # noqa: E402
+from src.api.routes.decisions import router as decisions_router  # noqa: E402
+from src.api.routes.orders import router as orders_router  # noqa: E402
+from src.api.routes.pipeline import router as pipeline_router  # noqa: E402
+from src.api.routes.portfolio import router as portfolio_router  # noqa: E402
+from src.api.routes.strategy import router as strategy_router  # noqa: E402
+from src.api.routes.trades import router as trades_router  # noqa: E402
 
 app.include_router(data_router)
 app.include_router(analysis_router)

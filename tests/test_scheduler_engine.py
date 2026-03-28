@@ -1,7 +1,7 @@
 """SchedulerEngine + job functions 단위 테스트.
 
-engine.py: 라이프사이클, _wrap_job DB 이력, parse 헬퍼
-jobs.py: stop_loss_check (조기 리턴 / 시그널), daily_report (호출 순서)
+engine.py: 라이프사이클, _wrap_job DB 이력, parse 헬퍼, register_job
+jobs.py: stop_loss_check (조기 리턴 / 시그널 / 계좌별), daily_report (호출 순서 / 계좌별)
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from src.core.enums import JobStatus
 from src.scheduler.engine import SchedulerEngine
@@ -68,19 +70,33 @@ def engine_disabled(mock_session_factory, settings_disabled):
     )
 
 
-def _make_9_fns():
-    """9개 AsyncMock job 함수 dict."""
-    return {
-        "token_refresh_fn": AsyncMock(),
-        "market_data_collect_fn": AsyncMock(),
-        "swing_analysis_fn": AsyncMock(),
-        "position_analysis_fn": AsyncMock(),
-        "stop_loss_check_fn": AsyncMock(),
-        "daily_report_fn": AsyncMock(),
-        "weekly_report_fn": AsyncMock(),
-        "monthly_report_fn": AsyncMock(),
-        "llm_cost_report_fn": AsyncMock(),
-    }
+def _register_sample_jobs(engine: SchedulerEngine) -> dict[str, AsyncMock]:
+    """9개 샘플 작업을 register_job()으로 등록."""
+    fns: dict[str, AsyncMock] = {}
+    job_configs = [
+        ("token_refresh", CronTrigger(hour=6, minute=0, timezone="UTC")),
+        ("market_data_collect", CronTrigger(hour=15, minute=40, timezone="UTC")),
+        ("swing_analysis", CronTrigger(hour=16, minute=0, timezone="UTC")),
+        (
+            "position_analysis",
+            CronTrigger(
+                day_of_week="wed,sat",
+                hour=16,
+                minute=30,
+                timezone="UTC",
+            ),
+        ),
+        ("stop_loss_check", IntervalTrigger(minutes=5)),
+        ("daily_report", CronTrigger(hour=20, minute=0, timezone="UTC")),
+        ("weekly_report", CronTrigger(day_of_week="sat", hour=10, minute=0, timezone="UTC")),
+        ("monthly_report", CronTrigger(day=1, hour=10, minute=0, timezone="UTC")),
+        ("llm_cost_report", CronTrigger(day_of_week="mon", hour=9, minute=0, timezone="UTC")),
+    ]
+    for name, trigger in job_configs:
+        fn = AsyncMock()
+        fns[name] = fn
+        engine.register_job(name, fn, trigger)
+    return fns
 
 
 # ── Parse Helpers ───────────────────────────────────────────────────────
@@ -136,37 +152,56 @@ class TestSchedulerDisabled:
     @pytest.mark.asyncio
     async def test_start_skips_when_disabled(self, engine_disabled):
         """SCHEDULER_ENABLED=False → start()는 스케줄러를 시작하지 않는다."""
-        fns = _make_9_fns()
-        engine_disabled.register_jobs(**fns)
+        _register_sample_jobs(engine_disabled)
         await engine_disabled.start()
         assert not engine_disabled.is_running
 
-    def test_register_jobs_stores_fns_but_no_scheduler_jobs(self, engine_disabled):
+    def test_register_job_stores_fn_but_no_scheduler_job(self, engine_disabled):
         """disabled여도 _job_fns에는 저장 (run_job_now 용)."""
-        fns = _make_9_fns()
-        engine_disabled.register_jobs(**fns)
-        assert len(engine_disabled._job_fns) == 9
-        # 스케줄러에는 등록되지 않음
+        fn = AsyncMock()
+        engine_disabled.register_job("test_job", fn, CronTrigger(hour=0, timezone="UTC"))
+        assert "test_job" in engine_disabled._job_fns
         assert len(engine_disabled._scheduler.get_jobs()) == 0
 
 
-class TestRegisterJobs:
-    def test_registers_9_jobs(self, engine):
-        """register_jobs() → 스케줄러에 9개 작업 등록."""
-        fns = _make_9_fns()
-        engine.register_jobs(**fns)
+class TestRegisterJob:
+    def test_registers_single_job(self, engine):
+        """register_job() → 스케줄러에 1개 작업 등록."""
+        fn = AsyncMock()
+        engine.register_job("my_job", fn, CronTrigger(hour=10, timezone="UTC"))
+        assert len(engine._scheduler.get_jobs()) == 1
+        assert engine._job_fns["my_job"] is fn
+
+    def test_registers_multiple_jobs(self, engine):
+        """register_job() 반복 → 여러 작업 등록."""
+        _register_sample_jobs(engine)
         assert len(engine._scheduler.get_jobs()) == 9
         assert len(engine._job_fns) == 9
 
+    def test_account_scoped_job_names(self, engine):
+        """계좌별 작업 이름 (예: swing_analysis:acct-1)."""
+        fn1 = AsyncMock()
+        fn2 = AsyncMock()
+        engine.register_job("swing_analysis:acct-1", fn1, CronTrigger(hour=16, timezone="UTC"))
+        engine.register_job("swing_analysis:acct-2", fn2, CronTrigger(hour=16, timezone="UTC"))
+        assert "swing_analysis:acct-1" in engine._job_fns
+        assert "swing_analysis:acct-2" in engine._job_fns
+        assert len(engine._scheduler.get_jobs()) == 2
+
     def test_job_names(self, engine):
         """등록된 작업 이름이 올바른지."""
-        fns = _make_9_fns()
-        engine.register_jobs(**fns)
+        _register_sample_jobs(engine)
         job_names = {j.name for j in engine._scheduler.get_jobs()}
         expected = {
-            "token_refresh", "market_data_collect", "swing_analysis",
-            "position_analysis", "stop_loss_check", "daily_report",
-            "weekly_report", "monthly_report", "llm_cost_report",
+            "token_refresh",
+            "market_data_collect",
+            "swing_analysis",
+            "position_analysis",
+            "stop_loss_check",
+            "daily_report",
+            "weekly_report",
+            "monthly_report",
+            "llm_cost_report",
         }
         assert job_names == expected
 
@@ -174,8 +209,7 @@ class TestRegisterJobs:
 class TestGetStatus:
     def test_status_structure(self, engine):
         """get_status()가 올바른 구조를 반환."""
-        fns = _make_9_fns()
-        engine.register_jobs(**fns)
+        _register_sample_jobs(engine)
         status = engine.get_status()
         assert "is_running" in status
         assert "is_paused" in status
@@ -184,8 +218,7 @@ class TestGetStatus:
 
     def test_job_info_fields(self, engine):
         """각 job info에 name, next_run_time, trigger가 있다."""
-        fns = _make_9_fns()
-        engine.register_jobs(**fns)
+        _register_sample_jobs(engine)
         status = engine.get_status()
         for job_info in status["jobs"]:
             assert "name" in job_info
@@ -197,8 +230,7 @@ class TestPauseResume:
     @pytest.mark.asyncio
     async def test_pause_resume(self, engine):
         """pause_all → is_paused=True, resume_all → is_paused=False."""
-        fns = _make_9_fns()
-        engine.register_jobs(**fns)
+        _register_sample_jobs(engine)
         await engine.start()
 
         assert not engine.is_paused
@@ -217,11 +249,10 @@ class TestRunJobNow:
     @pytest.mark.asyncio
     async def test_success(self, engine, mock_session):
         """run_job_now → 함수 실행 + JobExecution DB 기록."""
-        fns = _make_9_fns()
-        engine.register_jobs(**fns)
+        fns = _register_sample_jobs(engine)
 
         await engine.run_job_now("daily_report")
-        fns["daily_report_fn"].assert_awaited_once()
+        fns["daily_report"].assert_awaited_once()
 
         # session.add 호출 확인 (JobExecution INSERT)
         mock_session.add.assert_called_once()
@@ -230,10 +261,21 @@ class TestRunJobNow:
         assert added_obj.status == JobStatus.RUNNING
 
     @pytest.mark.asyncio
+    async def test_account_scoped_job(self, engine, mock_session):
+        """계좌별 작업 이름으로 run_job_now 실행."""
+        fn = AsyncMock()
+        engine.register_job("swing_analysis:acct-1", fn, CronTrigger(hour=16, timezone="UTC"))
+
+        await engine.run_job_now("swing_analysis:acct-1")
+        fn.assert_awaited_once()
+
+        added_obj = mock_session.add.call_args[0][0]
+        assert added_obj.job_name == "swing_analysis:acct-1"
+
+    @pytest.mark.asyncio
     async def test_invalid_raises(self, engine):
         """등록되지 않은 job → ValueError."""
-        fns = _make_9_fns()
-        engine.register_jobs(**fns)
+        _register_sample_jobs(engine)
 
         with pytest.raises(ValueError, match="Unknown job: nonexistent"):
             await engine.run_job_now("nonexistent")
@@ -337,6 +379,30 @@ class TestJobStopLossCheck:
         monitor.check_all.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_account_id_passed_to_get_open(self):
+        """account_id가 position_manager.get_open에 전달된다."""
+        position_manager = AsyncMock()
+        position_manager.get_open = AsyncMock(return_value=[])
+        exit_service = AsyncMock()
+        exit_checker = MagicMock()
+        portfolio_service = AsyncMock()
+        broker = AsyncMock()
+        monitor = AsyncMock()
+
+        await job_stop_loss_check(
+            exit_checker=exit_checker,
+            exit_service=exit_service,
+            position_manager=position_manager,
+            portfolio_service=portfolio_service,
+            broker=broker,
+            monitor=monitor,
+            account_id="acct-1",
+            account_label="공격형 (1234)",
+        )
+
+        position_manager.get_open.assert_awaited_once_with(account_id="acct-1")
+
+    @pytest.mark.asyncio
     async def test_with_exit_signals(self):
         """손절 시그널 발생 → process_exit_signals 호출."""
         from datetime import UTC, datetime
@@ -357,12 +423,14 @@ class TestJobStopLossCheck:
 
         # 현재가 = 44000 (손절가 이하)
         broker = AsyncMock()
-        broker.get_price = AsyncMock(return_value=PriceInfo(
-            symbol="005930",
-            current_price=Decimal("44000"),
-            previous_close=Decimal("50000"),
-            timestamp=datetime.now(UTC),
-        ))
+        broker.get_price = AsyncMock(
+            return_value=PriceInfo(
+                symbol="005930",
+                current_price=Decimal("44000"),
+                previous_close=Decimal("50000"),
+                timestamp=datetime.now(UTC),
+            )
+        )
 
         # exit_checker가 stop_loss 시그널 반환
         stop_signal = ExitSignal(
@@ -392,11 +460,15 @@ class TestJobStopLossCheck:
             portfolio_service=portfolio_service,
             broker=broker,
             monitor=monitor,
+            account_id="acct-1",
+            account_label="공격형 (1234)",
         )
 
         exit_service.process_exit_signals.assert_awaited_once()
         args = exit_service.process_exit_signals.call_args
         assert len(args[0][0]) == 1  # 1 signal
+        assert args[1]["account_id"] == "acct-1"
+        assert args[1]["account_label"] == "공격형 (1234)"
         monitor.check_all.assert_awaited_once()
 
 
@@ -430,3 +502,32 @@ class TestJobDailyReport:
         portfolio_service.save_snapshot.assert_awaited_once_with(state)
         generator.generate_daily_report.assert_awaited_once()
         telegram_bot.send_message.assert_awaited_once_with("<html>report</html>")
+
+    @pytest.mark.asyncio
+    async def test_account_params_passed(self):
+        """account_id와 account_label이 generator/template에 전달된다."""
+        generator = AsyncMock()
+        generator.generate_daily_report = AsyncMock(return_value=MagicMock())
+
+        telegram_bot = AsyncMock()
+        telegram_bot.send_message = AsyncMock()
+
+        portfolio_service = AsyncMock()
+        portfolio_service.get_current_state = AsyncMock(return_value=MagicMock())
+        portfolio_service.save_snapshot = AsyncMock()
+
+        with patch(
+            "src.scheduler.jobs.MessageTemplates.daily_report",
+            return_value="<html>",
+        ) as mock_template:
+            await job_daily_report(
+                generator=generator,
+                telegram_bot=telegram_bot,
+                portfolio_service=portfolio_service,
+                account_id="acct-1",
+                account_label="공격형 (1234)",
+            )
+
+        generator.generate_daily_report.assert_awaited_once_with(account_id="acct-1")
+        mock_template.assert_called_once()
+        assert mock_template.call_args[1]["account_label"] == "공격형 (1234)"

@@ -1,6 +1,6 @@
 """SchedulerEngine — APScheduler AsyncIOScheduler wrapper with DB execution tracking.
 
-9개 작업을 크론/인터벌 트리거로 등록하고, 실행마다 job_executions 테이블에
+동적으로 N개 작업을 크론/인터벌 트리거로 등록하고, 실행마다 job_executions 테이블에
 이력을 기록한다. SCHEDULER_ENABLED=False이면 작업 등록을 건너뛴다.
 """
 
@@ -35,7 +35,7 @@ _AsyncFn = Callable[[], Coroutine[Any, Any, None]]
 class SchedulerEngine:
     """APScheduler AsyncIOScheduler 래퍼.
 
-    register_jobs()로 9개 작업을 등록하고, start()/stop()으로 생명주기를 관리.
+    register_job()으로 개별 작업을 동적 등록하고, start()/stop()으로 생명주기를 관리.
     _wrap_job()이 모든 실행을 감싸서 job_executions 테이블에 이력을 기록한다.
     """
 
@@ -110,123 +110,38 @@ class SchedulerEngine:
 
     # ── Job Registration ────────────────────────────────────────────────
 
-    def register_jobs(
+    def register_job(
         self,
-        *,
-        token_refresh_fn: _AsyncFn,
-        market_data_collect_fn: _AsyncFn,
-        swing_analysis_fn: _AsyncFn,
-        position_analysis_fn: _AsyncFn,
-        stop_loss_check_fn: _AsyncFn,
-        daily_report_fn: _AsyncFn,
-        weekly_report_fn: _AsyncFn,
-        monthly_report_fn: _AsyncFn,
-        llm_cost_report_fn: _AsyncFn,
+        job_name: str,
+        fn: _AsyncFn,
+        trigger: CronTrigger | IntervalTrigger,
     ) -> None:
-        """9개 작업을 스케줄러에 등록.
+        """단일 작업을 스케줄러에 등록.
 
-        ``SCHEDULER_ENABLED=False``이면 함수 참조만 저장하고 스케줄러에는
+        ``SCHEDULER_ENABLED=False``이면 함수 참조만 저장하고 APScheduler에는
         등록하지 않는다 (run_job_now는 여전히 사용 가능).
+
+        Args:
+            job_name: 작업 고유 이름 (e.g. ``"swing_analysis:acct-1"``).
+            fn: 인자 없는 async callable (partial로 바인딩 완료).
+            trigger: APScheduler 트리거 (CronTrigger 또는 IntervalTrigger).
         """
-        s = self._settings
+        self._job_fns[job_name] = fn
 
-        # 함수 참조 저장 (run_job_now에서 사용)
-        self._job_fns = {
-            "token_refresh": token_refresh_fn,
-            "market_data_collect": market_data_collect_fn,
-            "swing_analysis": swing_analysis_fn,
-            "position_analysis": position_analysis_fn,
-            "stop_loss_check": stop_loss_check_fn,
-            "daily_report": daily_report_fn,
-            "weekly_report": weekly_report_fn,
-            "monthly_report": monthly_report_fn,
-            "llm_cost_report": llm_cost_report_fn,
-        }
-
-        if not s.SCHEDULER_ENABLED:
-            logger.info("scheduler.register_jobs.disabled", job_count=len(self._job_fns))
+        if not self._settings.SCHEDULER_ENABLED:
             return
 
-        # 트리거 매핑
-        tr_h, tr_m = self._parse_time(s.TOKEN_REFRESH_TIME)
-        md_h, md_m = self._parse_time(s.MARKET_DATA_COLLECTION_TIME)
-        sw_h, sw_m = self._parse_time(s.SWING_ANALYSIS_TIME)
-        pa_h, pa_m = self._parse_time(s.POSITION_ANALYSIS_TIME)
-        pa_days = self._parse_day_of_week(s.POSITION_ANALYSIS_DAYS)
-        dr_h, dr_m = self._parse_time(s.DAILY_REPORT_TIME)
-        wr_h, wr_m = self._parse_time(s.WEEKLY_REPORT_TIME)
-        wr_day = self._parse_day_of_week(s.WEEKLY_REPORT_DAY)
-        mr_h, mr_m = self._parse_time(s.MONTHLY_REPORT_TIME)
-        lc_h, lc_m = self._parse_time(s.LLM_COST_REPORT_TIME)
-        lc_day = self._parse_day_of_week(s.LLM_COST_REPORT_DAY)
-
-        job_configs: list[tuple[str, _AsyncFn, CronTrigger | IntervalTrigger]] = [
-            (
-                "token_refresh",
-                token_refresh_fn,
-                CronTrigger(hour=tr_h, minute=tr_m, timezone="UTC"),
-            ),
-            (
-                "market_data_collect",
-                market_data_collect_fn,
-                CronTrigger(hour=md_h, minute=md_m, timezone="UTC"),
-            ),
-            (
-                "swing_analysis",
-                swing_analysis_fn,
-                CronTrigger(hour=sw_h, minute=sw_m, timezone="UTC"),
-            ),
-            (
-                "position_analysis",
-                position_analysis_fn,
-                CronTrigger(
-                    day_of_week=pa_days, hour=pa_h, minute=pa_m, timezone="UTC",
-                ),
-            ),
-            (
-                "stop_loss_check",
-                stop_loss_check_fn,
-                IntervalTrigger(minutes=s.STOP_LOSS_CHECK_INTERVAL_MIN),
-            ),
-            (
-                "daily_report",
-                daily_report_fn,
-                CronTrigger(hour=dr_h, minute=dr_m, timezone="UTC"),
-            ),
-            (
-                "weekly_report",
-                weekly_report_fn,
-                CronTrigger(
-                    day_of_week=wr_day, hour=wr_h, minute=wr_m, timezone="UTC",
-                ),
-            ),
-            (
-                "monthly_report",
-                monthly_report_fn,
-                CronTrigger(day=s.MONTHLY_REPORT_DAY, hour=mr_h, minute=mr_m, timezone="UTC"),
-            ),
-            (
-                "llm_cost_report",
-                llm_cost_report_fn,
-                CronTrigger(
-                    day_of_week=lc_day, hour=lc_h, minute=lc_m, timezone="UTC",
-                ),
-            ),
-        ]
-
-        for job_name, fn, trigger in job_configs:
-            self._scheduler.add_job(
-                self._wrap_job,
-                trigger=trigger,
-                args=[job_name, fn],
-                id=job_name,
-                name=job_name,
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-            )
-
-        logger.info("scheduler.register_jobs.done", job_count=len(job_configs))
+        self._scheduler.add_job(
+            self._wrap_job,
+            trigger=trigger,
+            args=[job_name, fn],
+            id=job_name,
+            name=job_name,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.debug("scheduler.register_job", job_name=job_name)
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -289,15 +204,17 @@ class SchedulerEngine:
         """스케줄러 상태 + 등록된 작업 목록 반환."""
         jobs_info: list[dict[str, Any]] = []
         for job in self._scheduler.get_jobs():
-            jobs_info.append({
-                "name": job.name,
-                "next_run_time": (
-                    job.next_run_time.isoformat()
-                    if getattr(job, "next_run_time", None)
-                    else None
-                ),
-                "trigger": str(job.trigger),
-            })
+            jobs_info.append(
+                {
+                    "name": job.name,
+                    "next_run_time": (
+                        job.next_run_time.isoformat()
+                        if getattr(job, "next_run_time", None)
+                        else None
+                    ),
+                    "trigger": str(job.trigger),
+                }
+            )
 
         return {
             "is_running": self.is_running,

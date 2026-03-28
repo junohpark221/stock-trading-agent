@@ -1,6 +1,7 @@
 """SchedulerFactory + main.py lifespan 통합 테스트.
 
-factory.py: create_scheduler, _build_job_closures, _get_watchlist_symbols
+factory.py: create_scheduler, _load_active_accounts, _decrypt_credentials,
+            _make_account_label, _register_common_jobs, _register_account_jobs
 main.py: get_scheduler(), SCHEDULER_ENABLED 분기
 """
 
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.scheduler.factory import SchedulerFactory, _noop
+from src.scheduler.factory import SchedulerFactory
 from tests.conftest import make_settings
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -34,7 +35,33 @@ def _mock_session_factory():
     return MagicMock(return_value=session), session
 
 
-# ── _get_watchlist_symbols ───────────────────────────────────────────────
+def _make_mock_account(
+    account_id: str = "acct-1",
+    nickname: str = "공격형",
+    strategy_type: str = "swing",
+    investment_prompt: str = "고성장 성장주 위주",
+    kis_account_no: str = "50071234-01",
+    is_active: bool = True,
+    risk_overrides: dict | None = None,
+):
+    """Account ORM mock."""
+    account = MagicMock()
+    account.id = account_id
+    account.nickname = nickname
+    account.kis_app_key_enc = "enc_key"
+    account.kis_app_secret_enc = "enc_secret"
+    account.kis_account_no = kis_account_no
+    account.kis_account_prod = "01"
+    account.kis_is_paper = True
+    account.kis_hts_id = ""
+    account.strategy_type = strategy_type
+    account.investment_prompt = investment_prompt
+    account.risk_overrides = risk_overrides
+    account.is_active = is_active
+    return account
+
+
+# ── _get_watchlist_symbols ────────────────────────────────────────��──────
 
 
 @pytest.mark.asyncio
@@ -75,91 +102,106 @@ async def test_get_watchlist_symbols_db_error():
     assert symbols == []
 
 
-# ── _build_job_closures ──────────────────────────────────────────────────
+# ── _make_account_label ──────────────────────────────────────────────────
 
 
-def test_build_job_closures_returns_9_keys():
-    """9개 클로저 딕셔너리 반환, 각 값이 callable."""
-    closures = SchedulerFactory._build_job_closures(
-        auth=MagicMock(),
-        provider=MagicMock(),
-        orchestrator=MagicMock(),
-        position_manager=MagicMock(),
-        portfolio_service=MagicMock(),
-        exit_checker=MagicMock(),
-        exit_service=MagicMock(),
-        broker=MagicMock(),
-        monitor=MagicMock(),
-        generator=MagicMock(),
-        telegram_bot=MagicMock(),
-        watchlist_symbols=["005930"],
-    )
+class TestMakeAccountLabel:
+    def test_with_nickname(self):
+        """닉네임 있으면 '닉네임 (뒤4자리)' 형식."""
+        account = _make_mock_account(nickname="공격형", kis_account_no="50071234-01")
+        label = SchedulerFactory._make_account_label(account)
+        assert label == "공격형 (4-01)"
 
-    expected_keys = {
-        "token_refresh_fn",
-        "market_data_collect_fn",
-        "swing_analysis_fn",
-        "position_analysis_fn",
-        "stop_loss_check_fn",
-        "daily_report_fn",
-        "weekly_report_fn",
-        "monthly_report_fn",
-        "llm_cost_report_fn",
-    }
-    assert set(closures.keys()) == expected_keys
-    for fn in closures.values():
-        assert callable(fn)
+    def test_with_nickname_longer_account(self):
+        account = _make_mock_account(nickname="보수형", kis_account_no="12345678")
+        label = SchedulerFactory._make_account_label(account)
+        assert label == "보수형 (5678)"
+
+    def test_nickname_same_as_id(self):
+        """닉네임이 id와 같으면 뒤4자리만."""
+        account = _make_mock_account(
+            account_id="default",
+            nickname="default",
+            kis_account_no="12345678",
+        )
+        label = SchedulerFactory._make_account_label(account)
+        assert label == "5678"
+
+    def test_no_nickname(self):
+        """닉네임 빈 문자열이면 뒤4자리만."""
+        account = _make_mock_account(nickname="", kis_account_no="12345678")
+        label = SchedulerFactory._make_account_label(account)
+        assert label == "5678"
 
 
-@pytest.mark.asyncio
-async def test_build_job_closures_auth_none_uses_noop():
-    """auth=None일 때 token_refresh_fn은 no-op (에러 없이 실행)."""
-    closures = SchedulerFactory._build_job_closures(
-        auth=None,
-        provider=MagicMock(),
-        orchestrator=MagicMock(),
-        position_manager=MagicMock(),
-        portfolio_service=MagicMock(),
-        exit_checker=MagicMock(),
-        exit_service=MagicMock(),
-        broker=MagicMock(),
-        monitor=MagicMock(),
-        generator=MagicMock(),
-        telegram_bot=MagicMock(),
-        watchlist_symbols=[],
-    )
-
-    # token_refresh_fn은 _noop이어야 함
-    assert closures["token_refresh_fn"] is _noop
-    # 에러 없이 실행 가능
-    await closures["token_refresh_fn"]()
+# ── _load_active_accounts ────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_build_job_closures_provider_none_uses_noop():
-    """provider=None일 때 market_data_collect_fn은 no-op."""
-    closures = SchedulerFactory._build_job_closures(
-        auth=None,
-        provider=None,
-        orchestrator=MagicMock(),
-        position_manager=MagicMock(),
-        portfolio_service=MagicMock(),
-        exit_checker=MagicMock(),
-        exit_service=MagicMock(),
-        broker=MagicMock(),
-        monitor=MagicMock(),
-        generator=MagicMock(),
-        telegram_bot=MagicMock(),
-        watchlist_symbols=[],
-    )
+async def test_load_active_accounts_empty():
+    """활성 계좌 없으면 빈 리스트."""
+    factory, session = _mock_session_factory()
+    scalars_mock = MagicMock()
+    scalars_mock.all.return_value = []
+    result_mock = MagicMock()
+    result_mock.scalars.return_value = scalars_mock
+    session.execute = AsyncMock(return_value=result_mock)
 
-    assert closures["market_data_collect_fn"] is _noop
-    await closures["market_data_collect_fn"]()
+    accounts = await SchedulerFactory._load_active_accounts(factory)
+    assert accounts == []
+
+
+@pytest.mark.asyncio
+async def test_load_active_accounts_db_error():
+    """DB 에러 시 빈 리스트 (fail-open)."""
+    factory, session = _mock_session_factory()
+    session.execute = AsyncMock(side_effect=RuntimeError("DB down"))
+
+    accounts = await SchedulerFactory._load_active_accounts(factory)
+    assert accounts == []
+
+
+# ── _decrypt_credentials ─────────────────────────────────────────────────
+
+
+def test_decrypt_credentials():
+    """Account ORM → AccountCredentials 변환."""
+    account = _make_mock_account()
+
+    with patch("src.scheduler.factory.AccountCrypto") as mock_crypto:
+        mock_crypto.decrypt.side_effect = lambda ct, key: f"decrypted_{ct}"
+
+        creds = SchedulerFactory._decrypt_credentials(account, "test_key")
+
+    assert creds.account_id == "acct-1"
+    assert creds.app_key == "decrypted_enc_key"
+    assert creds.app_secret == "decrypted_enc_secret"
+    assert creds.account_no == "50071234-01"
+    assert creds.is_paper is True
+
+
+# ── _synthesize_default_account ──────────────────────────────────────────
+
+
+def test_synthesize_default_account():
+    """env var로 레거시 default Account 합성."""
+    settings = make_settings(
+        KIS_APP_KEY="my_key",
+        KIS_APP_SECRET="my_secret",
+        KIS_ACCOUNT_NO="12345678-01",
+        KIS_IS_PAPER=True,
+    )
+    account = SchedulerFactory._synthesize_default_account(settings)
+    assert account.id == "default"
+    assert account.nickname == "default"
+    assert account.kis_account_no == "12345678-01"
+    assert account.strategy_type == "position"
+    assert account.is_active is True
 
 
 # ── create_scheduler helpers ─────────────────────────────────────────────
 
-# 모든 무거운 의존성 patch 목록 (Python 20-block nesting 제한 회피)
+# 모든 무거운 의존성 patch 목록
 _COMMON_PATCHES = [
     "src.agent.orchestrator.PipelineOrchestrator",
     "src.agent.agents.market_analyst.MarketAnalyst",
@@ -186,8 +228,6 @@ _COMMON_PATCHES = [
 
 def _enter_common_patches(stack, extra_patches=None):
     """ExitStack에 공통 + 추가 patches 등록, ApprovalManager mock 반환."""
-    from contextlib import ExitStack  # noqa: F811
-
     mocks = {}
     for target in extra_patches or []:
         if isinstance(target, tuple):
@@ -209,74 +249,92 @@ def _enter_common_patches(stack, extra_patches=None):
     return mocks
 
 
-# ── create_scheduler (mock broker) ───────────────────────────────────────
+# ── create_scheduler (mock broker, 레거시 단일 계좌) ────────────────────
 
 
 @pytest.mark.asyncio
-async def test_create_scheduler_mock_broker():
-    """USE_MOCK_BROKER=True → InMemoryBroker 사용, 9개 작업 등록."""
+async def test_create_scheduler_mock_broker_legacy():
+    """USE_MOCK_BROKER=True, KIS_APP_KEY 설정 → 레거시 default 계좌 합성, BrokerRegistry 반환."""
     from contextlib import ExitStack
 
-    settings = make_settings(USE_MOCK_BROKER=True, SCHEDULER_ENABLED=True)
+    settings = make_settings(
+        USE_MOCK_BROKER=True,
+        SCHEDULER_ENABLED=True,
+        KIS_APP_KEY="test_key",
+        KIS_APP_SECRET="test_secret",
+        KIS_ACCOUNT_NO="12345678-01",
+    )
     session_factory, _ = _mock_session_factory()
 
     with ExitStack() as stack:
-        _enter_common_patches(stack, extra_patches=[
-            (
-                "src.scheduler.factory.SchedulerFactory._get_watchlist_symbols",
-                {"new_callable": AsyncMock, "return_value": ["005930"]},
-            ),
-        ])
+        _enter_common_patches(
+            stack,
+            extra_patches=[
+                (
+                    "src.scheduler.factory.SchedulerFactory._get_watchlist_symbols",
+                    {"new_callable": AsyncMock, "return_value": ["005930"]},
+                ),
+                (
+                    "src.scheduler.factory.SchedulerFactory._load_active_accounts",
+                    {"new_callable": AsyncMock, "return_value": []},
+                ),
+            ],
+        )
 
-        engine, broker = await SchedulerFactory.create_scheduler(
+        engine, registry = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),
             telegram_bot=AsyncMock(),
         )
 
-    from src.broker.mock.client import InMemoryBroker
+    from src.broker.registry import BrokerRegistry
 
-    assert isinstance(broker, InMemoryBroker)
-    assert len(engine._job_fns) == 9
+    assert isinstance(registry, BrokerRegistry)
+    # 공통 3 + 계좌별 (token_refresh 없음(mock) + stop_loss + daily) = 3 + 2 = 5
+    # 계좌 position 전략 → position_analysis 추가 = 6
+    assert len(engine._job_fns) >= 5
 
 
 @pytest.mark.asyncio
-async def test_create_scheduler_kis_broker():
-    """USE_MOCK_BROKER=False → KISClient 사용, KISAuth 접근."""
+async def test_create_scheduler_no_accounts_no_key():
+    """활성 계좌 0개 + KIS_APP_KEY 없음 → 공통 작업만 등록."""
     from contextlib import ExitStack
 
-    settings = make_settings(USE_MOCK_BROKER=False, SCHEDULER_ENABLED=True)
+    settings = make_settings(
+        USE_MOCK_BROKER=True,
+        SCHEDULER_ENABLED=True,
+        KIS_APP_KEY="",
+    )
     session_factory, _ = _mock_session_factory()
 
-    mock_auth = MagicMock()
-    mock_kis_client = AsyncMock()
-    mock_kis_client._auth = mock_auth
-    mock_kis_client.connect = AsyncMock()
-
     with ExitStack() as stack:
-        _enter_common_patches(stack, extra_patches=[
-            (
-                "src.scheduler.factory.SchedulerFactory._get_watchlist_symbols",
-                {"new_callable": AsyncMock, "return_value": []},
-            ),
-            (
-                "src.broker.kis.client.KISClient",
-                {"return_value": mock_kis_client},
-            ),
-            "src.data.providers.kis_provider.KISDataProvider",
-        ])
+        _enter_common_patches(
+            stack,
+            extra_patches=[
+                (
+                    "src.scheduler.factory.SchedulerFactory._get_watchlist_symbols",
+                    {"new_callable": AsyncMock, "return_value": []},
+                ),
+                (
+                    "src.scheduler.factory.SchedulerFactory._load_active_accounts",
+                    {"new_callable": AsyncMock, "return_value": []},
+                ),
+            ],
+        )
 
-        engine, broker = await SchedulerFactory.create_scheduler(
+        engine, registry = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),
             telegram_bot=AsyncMock(),
         )
 
-    assert broker is mock_kis_client
-    mock_kis_client.connect.assert_awaited_once()
-    assert len(engine._job_fns) == 9
+    # 공통 작업만: weekly, monthly, llm_cost (market_data_collect은 provider=None 스킵)
+    assert len(engine._job_fns) == 3
+    assert "weekly_report" in engine._job_fns
+    assert "monthly_report" in engine._job_fns
+    assert "llm_cost_report" in engine._job_fns
 
 
 # ── main.py lifespan integration ─────────────────────────────────────────

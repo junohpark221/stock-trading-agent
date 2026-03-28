@@ -1,7 +1,7 @@
 """Backoffice web UI routes."""
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,4 +114,30 @@ async def dashboard(
         "accounts": account_cards,
         "recent_orders": recent_orders,
         "order_summary": order_summary,
+    })
+
+
+# ── Account Detail ───────────────────────────────────────────────────────
+
+
+@router.get("/accounts/{account_id}", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def account_detail(
+    request: Request,
+    account_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """GET /admin/accounts/{account_id} — 계좌 상세: 정보 + 잔고 + 포지션."""
+    account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    fetcher = ReportDataFetcher(get_session_factory())
+    snapshot = await fetcher.get_latest_snapshot(account_id=account_id)
+    positions = await fetcher.get_open_positions(account_id=account_id)
+
+    return templates.TemplateResponse("account_detail.html", {
+        "request": request,
+        "account": account,
+        "snapshot": snapshot,
+        "positions": positions,
     })

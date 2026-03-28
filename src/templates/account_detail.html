@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}{{ account.nickname }} - Trading Agent{% endblock %}
+
+{% block content %}
+<!-- 계좌 정보 -->
+<section>
+    <h2>
+        {{ account.nickname }}
+        {% if account.kis_is_paper %}<small>(모의)</small>{% else %}<small>(실전)</small>{% endif %}
+    </h2>
+    <div class="grid">
+        <article>
+            <header>기본 정보</header>
+            <p>전략: {{ account.strategy_type }}</p>
+            <p>계좌 ID: {{ account.id }}</p>
+        </article>
+        <article>
+            <header>투자 철학</header>
+            {% if account.investment_prompt %}
+            <p>{{ account.investment_prompt[:200] }}{% if account.investment_prompt|length > 200 %}…{% endif %}</p>
+            {% else %}
+            <p>설정 없음</p>
+            {% endif %}
+        </article>
+        <article>
+            <header>리스크 오버라이드</header>
+            {% if account.risk_overrides %}
+            <dl>
+                {% for key, value in account.risk_overrides.items() %}
+                <dt>{{ key }}</dt>
+                <dd>{{ value }}</dd>
+                {% endfor %}
+            </dl>
+            {% else %}
+            <p>기본값</p>
+            {% endif %}
+        </article>
+    </div>
+</section>
+
+<!-- 잔고 요약 -->
+<section>
+    <h2>잔고 요약</h2>
+    {% if snapshot %}
+    <div class="grid">
+        <article>
+            <header>총 자산</header>
+            <p>{{ "{:,.0f}".format(snapshot.total_value) }}원</p>
+        </article>
+        <article>
+            <header>현금</header>
+            <p>{{ "{:,.0f}".format(snapshot.cash) }}원</p>
+        </article>
+        <article>
+            <header>투자금</header>
+            <p>{{ "{:,.0f}".format(snapshot.invested) }}원</p>
+        </article>
+        <article>
+            <header>미실현 손익</header>
+            <p class="{{ 'pnl-positive' if snapshot.unrealized_pnl >= 0 else 'pnl-negative' }}">
+                {{ "{:+,.0f}".format(snapshot.unrealized_pnl) }}원
+            </p>
+        </article>
+        <article>
+            <header>일일 실현 손익</header>
+            <p class="{{ 'pnl-positive' if snapshot.realized_pnl_daily >= 0 else 'pnl-negative' }}">
+                {{ "{:+,.0f}".format(snapshot.realized_pnl_daily) }}원
+            </p>
+        </article>
+        <article>
+            <header>MDD</header>
+            <p class="pnl-negative">{{ "{:.2f}".format(snapshot.drawdown_pct) }}%</p>
+        </article>
+    </div>
+    <small>기준일: {{ snapshot.snapshot_date }} · 포지션: {{ snapshot.positions_count }}개 · 일일 거래: {{ snapshot.trade_count_daily }}건</small>
+    {% else %}
+    <p>포트폴리오 데이터 없음</p>
+    {% endif %}
+</section>
+
+<!-- 보유 포지션 -->
+<section>
+    <h2>보유 포지션 ({{ positions|length }}개)</h2>
+    {% if positions %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>종목</th>
+                    <th>전략</th>
+                    <th>수량</th>
+                    <th>평균단가</th>
+                    <th>손절가</th>
+                    <th>익절가</th>
+                    <th>진입일</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pos in positions %}
+                <tr>
+                    <td>{{ pos.symbol }}</td>
+                    <td>{{ pos.strategy_type }}</td>
+                    <td>{{ "{:,}".format(pos.quantity) }}</td>
+                    <td>{{ "{:,.0f}".format(pos.entry_price) }}원</td>
+                    <td>{{ "{:,.0f}".format(pos.stop_loss_price) }}원</td>
+                    <td>{{ "{:,.0f}".format(pos.take_profit_price) if pos.take_profit_price else "-" }}원</td>
+                    <td>{{ pos.entry_date }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>보유 포지션이 없습니다.</p>
+    {% endif %}
+</section>
+
+<p><a href="/admin/">&larr; 대시보드로 돌아가기</a></p>
+{% endblock %}

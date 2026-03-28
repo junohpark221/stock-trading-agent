@@ -44,6 +44,8 @@ class PipelineRunRequest(BaseModel):
     session_id: UUID | None = Field(
         None, description="세션 ID (미지정 시 자동 생성)"
     )
+    account_id: str = Field("default", description="계좌 ID")
+    investment_prompt: str = Field("", description="투자 철학 프롬프트")
 
 
 # ── Orchestrator Factory ─────────────────────────────────────────────────
@@ -85,7 +87,10 @@ async def run_pipeline(req: PipelineRunRequest) -> JSONResponse:
     try:
         orchestrator = _build_orchestrator()
         result = await orchestrator.execute(
-            req.symbols, session_id=req.session_id
+            req.symbols,
+            session_id=req.session_id,
+            investment_prompt=req.investment_prompt or None,
+            account_id=req.account_id,
         )
         return JSONResponse(content=result.model_dump(mode="json"))
 

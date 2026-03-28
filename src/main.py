@@ -178,6 +178,7 @@ app = create_app()
 
 # ── Router registration ──────────────────────────────────────────────────
 from src.api.admin.llm_config import router as admin_llm_router  # noqa: E402
+from src.api.routes.accounts import router as accounts_router  # noqa: E402
 from src.api.routes.analysis import router as analysis_router  # noqa: E402
 from src.api.routes.backtest import router as backtest_router  # noqa: E402
 from src.api.routes.control import router as control_router  # noqa: E402
@@ -200,6 +201,7 @@ app.include_router(orders_router)
 app.include_router(control_router)
 app.include_router(trades_router)
 app.include_router(backtest_router)
+app.include_router(accounts_router)
 
 
 @app.get("/health", response_model=HealthStatus)

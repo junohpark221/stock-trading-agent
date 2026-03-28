@@ -44,10 +44,13 @@ def _get_scheduler():
 
 
 @router.get("/scheduler/status")
-async def scheduler_status() -> JSONResponse:
+async def scheduler_status(
+    account_id: str | None = Query(None, description="계좌 ID (미지정 시 전체)"),
+) -> JSONResponse:
     """스케줄러 상태 + 전체 작업 다음 실행 시간.
 
     SCHEDULER_ENABLED=False → {"status": "disabled"} 200 응답.
+    account_id 지정 시 해당 계좌 관련 작업만 표시.
     """
     settings = get_settings()
     if not settings.SCHEDULER_ENABLED:
@@ -58,11 +61,16 @@ async def scheduler_status() -> JSONResponse:
         return JSONResponse({"status": "disabled"})
 
     status = engine.get_status()
+    jobs = status["jobs"]
+
+    if account_id is not None:
+        jobs = [j for j in jobs if account_id in j.get("name", "")]
+
     return JSONResponse({
         "status": "ok",
         "is_running": status["is_running"],
         "is_paused": status["is_paused"],
-        "jobs": status["jobs"],
+        "jobs": jobs,
     })
 
 
@@ -158,6 +166,7 @@ async def scheduler_run_job(job_name: str) -> JSONResponse:
 async def job_history(
     job_name: str | None = Query(None),
     status: str | None = Query(None),
+    account_id: str | None = Query(None, description="계좌 ID"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
@@ -178,6 +187,9 @@ async def job_history(
     if status is not None:
         stmt = stmt.where(JobExecution.status == status)
         count_stmt = count_stmt.where(JobExecution.status == status)
+    if account_id is not None:
+        stmt = stmt.where(JobExecution.account_id == account_id)
+        count_stmt = count_stmt.where(JobExecution.account_id == account_id)
 
     # Total count
     total_result = await session.execute(count_stmt)

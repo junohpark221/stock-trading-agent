@@ -168,6 +168,7 @@ async def get_portfolio_state() -> JSONResponse:
 async def list_positions(
     status: str | None = Query(None, description="open 또는 closed"),
     strategy_type: str | None = Query(None, description="position 또는 swing"),
+    account_id: str = Query("default", description="계좌 ID"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
@@ -176,6 +177,9 @@ async def list_positions(
     try:
         stmt = select(PositionRecord)
         count_stmt = select(func.count()).select_from(PositionRecord)
+
+        stmt = stmt.where(PositionRecord.account_id == account_id)
+        count_stmt = count_stmt.where(PositionRecord.account_id == account_id)
 
         if status:
             stmt = stmt.where(PositionRecord.status == status)
@@ -205,6 +209,7 @@ async def list_positions(
 async def list_snapshots(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    account_id: str = Query("default", description="계좌 ID"),
     limit: int = Query(30, ge=1, le=365),
     session: AsyncSession = Depends(get_db_session),
 ) -> JSONResponse:
@@ -212,6 +217,9 @@ async def list_snapshots(
     try:
         stmt = select(PortfolioSnapshot)
         count_stmt = select(func.count()).select_from(PortfolioSnapshot)
+
+        stmt = stmt.where(PortfolioSnapshot.account_id == account_id)
+        count_stmt = count_stmt.where(PortfolioSnapshot.account_id == account_id)
 
         if from_date:
             stmt = stmt.where(PortfolioSnapshot.snapshot_date >= from_date)

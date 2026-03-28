@@ -139,6 +139,7 @@ async def list_orders(
     status: str | None = Query(None, description="주문 상태 필터"),
     from_date: date | None = Query(None, description="시작일 (YYYY-MM-DD)"),
     to_date: date | None = Query(None, description="종료일 (YYYY-MM-DD)"),
+    account_id: str = Query("default", description="계좌 ID"),
     limit: int = Query(50, ge=1, le=500, description="조회 건수"),
     session: AsyncSession = Depends(get_db_session),
 ) -> JSONResponse:
@@ -146,6 +147,9 @@ async def list_orders(
     try:
         stmt = select(Order)
         count_stmt = select(func.count()).select_from(Order)
+
+        stmt = stmt.where(Order.account_id == account_id)
+        count_stmt = count_stmt.where(Order.account_id == account_id)
 
         if symbol:
             stmt = stmt.where(Order.symbol == symbol)
@@ -289,6 +293,7 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
 
 @router.get("/approvals/pending")
 async def list_pending_approvals(
+    account_id: str = Query("default", description="계좌 ID"),
     session: AsyncSession = Depends(get_db_session),
 ) -> JSONResponse:
     """대기 중 승인 요청 목록 — Order 정보와 함께 반환."""
@@ -296,6 +301,7 @@ async def list_pending_approvals(
         stmt = (
             select(ApprovalRequestDB)
             .where(ApprovalRequestDB.status == "pending")
+            .where(ApprovalRequestDB.account_id == account_id)
             .order_by(ApprovalRequestDB.requested_at.desc())
         )
         rows = (await session.execute(stmt)).scalars().all()

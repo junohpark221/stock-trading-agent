@@ -219,6 +219,7 @@ async def run_strategy(req: StrategyRunRequest) -> JSONResponse:
 async def list_signals(
     strategy_type: str | None = Query(None, description="position 또는 swing"),
     symbol: str | None = Query(None),
+    account_id: str = Query("default", description="계좌 ID"),
     limit: int = Query(50, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
 ) -> JSONResponse:
@@ -226,6 +227,9 @@ async def list_signals(
     try:
         stmt = select(PositionRecord)
         count_stmt = select(func.count()).select_from(PositionRecord)
+
+        stmt = stmt.where(PositionRecord.account_id == account_id)
+        count_stmt = count_stmt.where(PositionRecord.account_id == account_id)
 
         if strategy_type:
             stmt = stmt.where(PositionRecord.strategy_type == strategy_type)

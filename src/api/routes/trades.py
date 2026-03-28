@@ -36,6 +36,7 @@ async def list_trades(
     strategy_type: str | None = Query(None),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    account_id: str = Query("default", description="계좌 ID"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
@@ -49,10 +50,12 @@ async def list_trades(
     stmt = (
         select(PositionRecord)
         .where(PositionRecord.status == "closed")
+        .where(PositionRecord.account_id == account_id)
         .order_by(PositionRecord.exit_date.desc())
     )
     count_stmt = select(func.count(PositionRecord.id)).where(
-        PositionRecord.status == "closed"
+        PositionRecord.status == "closed",
+        PositionRecord.account_id == account_id,
     )
 
     if symbol is not None:
@@ -103,6 +106,7 @@ async def trades_summary(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     strategy_type: str | None = Query(None),
+    account_id: str = Query("default", description="계좌 ID"),
     session: AsyncSession = Depends(get_db_session),
 ) -> JSONResponse:
     """거래 요약 + PerformanceMetrics.
@@ -119,10 +123,12 @@ async def trades_summary(
         start_date=period_start,
         end_date=period_end,
         strategy_type=strategy_type,
+        account_id=account_id,
     )
     snapshots = await fetcher.get_portfolio_snapshots(
         start_date=period_start,
         end_date=period_end,
+        account_id=account_id,
     )
 
     metrics = PerformanceCalculator.calculate(

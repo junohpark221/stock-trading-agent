@@ -79,12 +79,13 @@ async def get_decision_stats(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     symbol: str | None = Query(None),
+    account_id: str = Query("default", description="계좌 ID"),
     session: AsyncSession = Depends(get_db_session),
 ) -> JSONResponse:
     """의사결정 통계 조회. 날짜/종목 필터링 지원."""
     try:
         # Base filter
-        filters = []
+        filters = [DecisionLog.account_id == account_id]
         if from_date:
             filters.append(DecisionLog.created_at >= from_date)
         if to_date:
@@ -206,6 +207,7 @@ async def list_decisions(
     agent_type: str | None = Query(None),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    account_id: str = Query("default", description="계좌 ID"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db_session),
@@ -214,6 +216,9 @@ async def list_decisions(
     try:
         stmt = select(DecisionLog)
         count_stmt = select(func.count()).select_from(DecisionLog)
+
+        stmt = stmt.where(DecisionLog.account_id == account_id)
+        count_stmt = count_stmt.where(DecisionLog.account_id == account_id)
 
         if symbol:
             stmt = stmt.where(DecisionLog.symbol == symbol)

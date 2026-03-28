@@ -11,10 +11,12 @@ Usage::
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
 from sqlalchemy import text
 
@@ -176,6 +178,11 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+# ── Static files (admin web UI) ──────────────────────────────────────────
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
 # ── Router registration ──────────────────────────────────────────────────
 from src.api.admin.llm_config import router as admin_llm_router  # noqa: E402
 from src.api.routes.accounts import router as accounts_router  # noqa: E402
@@ -202,6 +209,12 @@ app.include_router(control_router)
 app.include_router(trades_router)
 app.include_router(backtest_router)
 app.include_router(accounts_router)
+
+# ── Admin web UI (conditional on ADMIN_PASSWORD) ─────────────────────────
+if get_settings().ADMIN_PASSWORD:
+    from src.api.routes.admin_web import router as admin_web_router  # noqa: E402
+
+    app.include_router(admin_web_router)
 
 
 @app.get("/health", response_model=HealthStatus)

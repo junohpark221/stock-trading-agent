@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Trading Agent{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
+</head>
+<body>
+    {% if request.url.path != '/admin/login' %}
+    <nav class="container">
+        <ul>
+            <li><strong>Trading Agent</strong></li>
+        </ul>
+        <ul>
+            <li><a href="/admin/"{% if request.url.path == '/admin/' %} aria-current="page"{% endif %}>대시보드</a></li>
+            <li><a href="/admin/trades"{% if '/admin/trades' in request.url.path %} aria-current="page"{% endif %}>매매이력</a></li>
+            <li><a href="/admin/performance"{% if '/admin/performance' in request.url.path %} aria-current="page"{% endif %}>성과</a></li>
+            <li><a href="/admin/backtest"{% if '/admin/backtest' in request.url.path %} aria-current="page"{% endif %}>백테스트</a></li>
+            <li><a href="/admin/scheduler"{% if '/admin/scheduler' in request.url.path %} aria-current="page"{% endif %}>스케줄러</a></li>
+            <li><a href="/admin/logout">로그아웃</a></li>
+        </ul>
+    </nav>
+    {% endif %}
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

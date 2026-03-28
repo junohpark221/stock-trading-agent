@@ -1,0 +1,34 @@
+/* Pico CSS 보완 커스텀 스타일 */
+
+/* 로그인 폼 중앙 정렬 */
+.login-container {
+    max-width: 400px;
+    margin: 4rem auto;
+}
+
+/* 에러/알림 메시지 */
+.alert {
+    padding: 1rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+}
+
+.alert-error {
+    background: var(--pico-del-color, #c62828);
+    color: #fff;
+}
+
+/* 네비게이션 현재 페이지 강조 */
+nav a[aria-current="page"] {
+    font-weight: bold;
+    text-decoration: underline;
+}
+
+/* HTMX 로딩 인디케이터 */
+.htmx-indicator {
+    display: none;
+}
+
+.htmx-request .htmx-indicator {
+    display: inline-block;
+}

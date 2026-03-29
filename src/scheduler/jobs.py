@@ -8,12 +8,14 @@ Step 8 SchedulerFactory에서 functools.partial로 바인딩하여
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import structlog
 
+from src.core.enums import DecisionAction
 from src.data.collector import collect_daily_ohlcv
 from src.notification.templates import MessageTemplates
 
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
     from src.broker.base import BrokerInterface
     from src.broker.kis.auth import KISAuth
     from src.data.providers.base import DataProvider
+    from src.execution.executor import OrderExecutor
     from src.execution.exit_executor import ExitExecutionService
     from src.notification.telegram import TelegramBot
     from src.report.generator import ReportGenerator
@@ -35,6 +38,7 @@ logger = structlog.get_logger(__name__)
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
 _Q2 = Decimal("0.01")
+_KST = ZoneInfo("Asia/Seoul")
 
 
 # ── Token / Data Collection ────────────────────────────────────────────
@@ -69,14 +73,97 @@ async def job_market_data_collect(
 # ── Analysis ────────────────────────────────────────────────────────────
 
 
+def _is_market_open(
+    market_open: str = "09:00",
+    market_close: str = "15:30",
+) -> bool:
+    """현재 시각이 한국 장 운영 시간(KST) 내인지 확인."""
+    now_kst = datetime.now(_KST).time()
+    h_open, m_open = map(int, market_open.split(":"))
+    h_close, m_close = map(int, market_close.split(":"))
+    return time(h_open, m_open) <= now_kst <= time(h_close, m_close)
+
+
+async def _execute_buy_decisions(
+    *,
+    result: object,
+    order_executor: OrderExecutor,
+    strategy_type: str,
+    account_id: str,
+    account_label: str,
+    market_open: str,
+    market_close: str,
+) -> int:
+    """PipelineResult의 BUY 결정을 실제 주문으로 실행. 장중에만 동작.
+
+    Returns:
+        실행된 매수 주문 수.
+    """
+    from src.core.models import PipelineResult
+
+    pipeline_result: PipelineResult = result  # type: ignore[assignment]
+    buy_decisions = [
+        td for td in pipeline_result.trade_decisions
+        if td.action == DecisionAction.BUY
+    ]
+    if not buy_decisions:
+        return 0
+
+    if not _is_market_open(market_open, market_close):
+        logger.info(
+            "job.buy_execution.skip_market_closed",
+            buy_count=len(buy_decisions),
+            account_id=account_id,
+        )
+        return 0
+
+    executed = 0
+    for td in buy_decisions:
+        try:
+            exec_result = await order_executor.execute_entry(
+                trade_decision=td,
+                session_id=pipeline_result.session_id,
+                strategy_type=strategy_type,
+                account_id=account_id,
+                account_label=account_label,
+            )
+            if exec_result.success:
+                executed += 1
+                logger.info(
+                    "job.buy_execution.success",
+                    symbol=td.symbol,
+                    quantity=td.quantity,
+                    price=str(td.price),
+                    order_id=exec_result.order_id,
+                    account_id=account_id,
+                )
+            else:
+                logger.warning(
+                    "job.buy_execution.failed",
+                    symbol=td.symbol,
+                    account_id=account_id,
+                )
+        except Exception:
+            logger.exception(
+                "job.buy_execution.error",
+                symbol=td.symbol,
+                account_id=account_id,
+            )
+    return executed
+
+
 async def job_swing_analysis(
     *,
     orchestrator: PipelineOrchestrator,
     symbols: list[str],
     account_id: str = "default",
     investment_prompt: str = "",
+    order_executor: OrderExecutor | None = None,
+    account_label: str = "",
+    market_open: str = "09:00",
+    market_close: str = "15:30",
 ) -> None:
-    """스윙 전략 시그널 스캔. Daily 16:00. 계좌별 실행."""
+    """스윙 전략 시그널 스캔 + BUY 자동 실행. Daily 01:00 UTC (10:00 KST). 계좌별."""
     result = await orchestrator.execute(
         symbols,
         investment_prompt=investment_prompt,
@@ -86,8 +173,22 @@ async def job_swing_analysis(
         "job.swing_analysis.done",
         session_id=str(result.session_id),
         symbols_count=len(symbols),
+        buy_decisions=len([td for td in result.trade_decisions if td.action == DecisionAction.BUY]),
         account_id=account_id,
     )
+
+    if order_executor is not None:
+        executed = await _execute_buy_decisions(
+            result=result,
+            order_executor=order_executor,
+            strategy_type="swing",
+            account_id=account_id,
+            account_label=account_label,
+            market_open=market_open,
+            market_close=market_close,
+        )
+        if executed:
+            logger.info("job.swing_analysis.orders_executed", count=executed, account_id=account_id)
 
 
 async def job_position_analysis(
@@ -96,8 +197,12 @@ async def job_position_analysis(
     position_manager: PositionManager,
     account_id: str = "default",
     investment_prompt: str = "",
+    order_executor: OrderExecutor | None = None,
+    account_label: str = "",
+    market_open: str = "09:00",
+    market_close: str = "15:30",
 ) -> None:
-    """보유 포지션 심층 분석. Wed & Sat 16:30. 계좌별 실행."""
+    """보유 포지션 심층 분석 + BUY 자동 실행. Wed & Sat 01:30 UTC (10:30 KST). 계좌별."""
     positions = await position_manager.get_open(account_id=account_id)
     if not positions:
         logger.info("job.position_analysis.skip", reason="no_open_positions", account_id=account_id)
@@ -114,8 +219,22 @@ async def job_position_analysis(
         session_id=str(result.session_id),
         positions_count=len(positions),
         symbols_count=len(symbols),
+        buy_decisions=len([td for td in result.trade_decisions if td.action == DecisionAction.BUY]),
         account_id=account_id,
     )
+
+    if order_executor is not None:
+        executed = await _execute_buy_decisions(
+            result=result,
+            order_executor=order_executor,
+            strategy_type="position",
+            account_id=account_id,
+            account_label=account_label,
+            market_open=market_open,
+            market_close=market_close,
+        )
+        if executed:
+            logger.info("job.position_analysis.orders_executed", count=executed, account_id=account_id)
 
 
 # ── Stop-Loss Check ────────────────────────────────────────────────────

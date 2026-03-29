@@ -1,0 +1,110 @@
+# =============================================================================
+# Stock Trading Agent - CI/CD Pipeline
+# production 브랜치 push → 테스트 → 수동 승인 → EC2 배포
+# =============================================================================
+
+name: Deploy to Production
+
+on:
+  push:
+    branches: [production]
+
+jobs:
+  # ── Job 1: 테스트 ──────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trading_agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check src/
+
+      - name: Run tests
+        run: |
+          uv run pytest tests/ \
+            --ignore=tests/test_phase5_e2e.py \
+            --ignore=tests/test_phase6_integration.py \
+            --ignore=tests/test_phase8_e2e.py \
+            -x -q
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/trading_agent
+          REDIS_URL: redis://localhost:6379/0
+          ENV: development
+
+  # ── Job 2: 수동 승인 게이트 ─────────────────────────────────────────────────
+  approve:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deployment approved
+        run: echo "Deployment approved by reviewer"
+
+  # ── Job 3: EC2 배포 ────────────────────────────────────────────────────────
+  deploy:
+    needs: approve
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /home/ec2-user/stock-trading-agent
+
+            echo "=== Pulling latest code ==="
+            git fetch origin production
+            git reset --hard origin/production
+
+            echo "=== Building and deploying ==="
+            docker compose -f docker-compose.prod.yml build app --no-cache
+            docker compose -f docker-compose.prod.yml up -d
+
+            echo "=== Waiting for health check ==="
+            sleep 15
+            curl -sf http://localhost:8000/health || \
+              (echo "=== HEALTH CHECK FAILED ===" && \
+               docker compose -f docker-compose.prod.yml logs app --tail 50 && \
+               exit 1)
+
+            echo "=== Deployment successful ==="

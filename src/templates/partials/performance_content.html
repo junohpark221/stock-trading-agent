@@ -1,0 +1,142 @@
+<!-- 핵심 지표 -->
+<section>
+    <h3>핵심 지표</h3>
+    <div class="grid">
+        <article>
+            <header>총 수익률</header>
+            <p class="{{ 'pnl-positive' if metrics.total_return_pct >= 0 else 'pnl-negative' }}">
+                {{ "{:+.2f}".format(metrics.total_return_pct) }}%
+            </p>
+        </article>
+        <article>
+            <header>연환산 수익률</header>
+            {% if metrics.annualized_return_pct is not none %}
+            <p class="{{ 'pnl-positive' if metrics.annualized_return_pct >= 0 else 'pnl-negative' }}">
+                {{ "{:+.2f}".format(metrics.annualized_return_pct) }}%
+            </p>
+            {% else %}
+            <p>-</p>
+            {% endif %}
+        </article>
+        <article>
+            <header>최대 낙폭 (MDD)</header>
+            <p class="{{ 'pnl-negative' if metrics.max_drawdown_pct > 0 else '' }}">
+                {{ "{:.2f}".format(metrics.max_drawdown_pct) }}%
+            </p>
+        </article>
+        <article>
+            <header>Sharpe Ratio</header>
+            {% if metrics.sharpe_ratio is not none %}
+            <p>{{ "{:.4f}".format(metrics.sharpe_ratio) }}</p>
+            {% else %}
+            <p>-</p>
+            {% endif %}
+        </article>
+    </div>
+    <div class="grid">
+        <article>
+            <header>승률</header>
+            <p>{{ "{:.1f}".format(metrics.win_rate_pct) }}%</p>
+        </article>
+        <article>
+            <header>총 거래</header>
+            <p>{{ metrics.total_trades }}건 ({{ metrics.winning_trades }}승 {{ metrics.losing_trades }}패)</p>
+        </article>
+        <article>
+            <header>Profit Factor</header>
+            {% if metrics.profit_factor is not none %}
+            <p>{{ "{:.2f}".format(metrics.profit_factor) }}</p>
+            {% else %}
+            <p>-</p>
+            {% endif %}
+        </article>
+        <article>
+            <header>Sortino Ratio</header>
+            {% if metrics.sortino_ratio is not none %}
+            <p>{{ "{:.4f}".format(metrics.sortino_ratio) }}</p>
+            {% else %}
+            <p>-</p>
+            {% endif %}
+        </article>
+    </div>
+    <div class="grid">
+        <article>
+            <header>평균 수익률 (승)</header>
+            <p class="pnl-positive">{{ "{:+.2f}".format(metrics.avg_win_pct) }}%</p>
+        </article>
+        <article>
+            <header>평균 손실률 (패)</header>
+            <p class="pnl-negative">{{ "{:.2f}".format(metrics.avg_loss_pct) }}%</p>
+        </article>
+    </div>
+</section>
+
+<!-- 전략별 성과 -->
+<section>
+    <h3>전략별 성과</h3>
+    {% if strategy_breakdown %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>전략</th>
+                    <th>거래수</th>
+                    <th>승률</th>
+                    <th>평균 손익률</th>
+                    <th>총 손익</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for strategy, data in strategy_breakdown.items() %}
+                <tr>
+                    <td>{{ strategy }}</td>
+                    <td>{{ data.trade_count }}건</td>
+                    <td>{{ "{:.1f}".format(data.win_rate_pct) }}%</td>
+                    <td class="{{ 'pnl-positive' if data.avg_pnl_pct >= 0 else 'pnl-negative' }}">
+                        {{ "{:+.2f}".format(data.avg_pnl_pct) }}%
+                    </td>
+                    <td class="{{ 'pnl-positive' if data.total_pnl >= 0 else 'pnl-negative' }}">
+                        {{ "{:+,.0f}".format(data.total_pnl) }}원
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>전략별 데이터가 없습니다.</p>
+    {% endif %}
+</section>
+
+<!-- 월별 성과 -->
+<section>
+    <h3>월별 성과</h3>
+    {% if monthly_breakdown %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>월</th>
+                    <th>거래수</th>
+                    <th>승률</th>
+                    <th>총 손익</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for month, data in monthly_breakdown.items() %}
+                <tr>
+                    <td>{{ month }}</td>
+                    <td>{{ data.trade_count }}건</td>
+                    <td>{{ "{:.1f}".format(data.win_rate_pct) }}%</td>
+                    <td class="{{ 'pnl-positive' if data.total_pnl >= 0 else 'pnl-negative' }}">
+                        {{ "{:+,.0f}".format(data.total_pnl) }}원
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>월별 데이터가 없습니다.</p>
+    {% endif %}
+</section>

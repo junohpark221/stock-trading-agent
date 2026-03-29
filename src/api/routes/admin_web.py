@@ -1,7 +1,7 @@
 """Backoffice web UI routes."""
 
 import math
-from datetime import date
+from datetime import date, timedelta
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -15,6 +15,7 @@ from src.db.models.account import Account
 from src.db.models.strategy import PositionRecord
 from src.db.session import get_db_session, get_session_factory
 from src.report.data_fetcher import ReportDataFetcher
+from src.report.metrics import PerformanceCalculator
 
 logger = structlog.get_logger(__name__)
 
@@ -219,3 +220,62 @@ async def trades_history(
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse("partials/trade_rows.html", context)
     return templates.TemplateResponse("trades.html", context)
+
+
+# ── Performance Analysis ────────────────────────────────────────────────
+
+
+@router.get("/performance", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def performance_analysis(
+    request: Request,
+    account_id: str | None = Query(None),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """GET /admin/performance — 성과 분석: 핵심 지표 + 전략별 + 월별."""
+    # 날짜 기본값
+    if to_date is None:
+        to_date = date.today()
+    if from_date is None:
+        from_date = to_date - timedelta(days=30)
+
+    # 계좌 목록 (필터 드롭다운용)
+    acct_result = await session.execute(
+        select(Account).where(Account.is_active.is_(True)).order_by(Account.created_at)
+    )
+    accounts = list(acct_result.scalars().all())
+
+    # 데이터 조회
+    fetcher = ReportDataFetcher(get_session_factory())
+    closed_positions = await fetcher.get_closed_positions(
+        start_date=from_date, end_date=to_date, account_id=account_id,
+    )
+    snapshots = await fetcher.get_portfolio_snapshots(
+        start_date=from_date, end_date=to_date, account_id=account_id,
+    )
+
+    # 성과 계산
+    metrics = PerformanceCalculator.calculate(
+        closed_positions=closed_positions,
+        snapshots=snapshots,
+        period_start=from_date,
+        period_end=to_date,
+    )
+    strategy_breakdown = PerformanceCalculator.breakdown_by_strategy(closed_positions)
+    monthly_breakdown = PerformanceCalculator.breakdown_by_month(closed_positions)
+
+    context = {
+        "request": request,
+        "metrics": metrics,
+        "strategy_breakdown": strategy_breakdown,
+        "monthly_breakdown": monthly_breakdown,
+        "accounts": accounts,
+        "account_id": account_id,
+        "from_date": from_date,
+        "to_date": to_date,
+    }
+
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse("partials/performance_content.html", context)
+    return templates.TemplateResponse("performance.html", context)

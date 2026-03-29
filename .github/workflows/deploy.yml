@@ -86,28 +86,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
       - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /home/ec2-user/stock-trading-agent
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'DEPLOY_SCRIPT'
+          cd /home/ec2-user/stock-trading-agent
 
-            echo "=== Pulling latest code ==="
-            git fetch origin production
-            git reset --hard origin/production
+          echo "=== Pulling latest code ==="
+          git fetch origin production
+          git reset --hard origin/production
 
-            echo "=== Building and deploying ==="
-            docker compose -f docker-compose.prod.yml build app --no-cache
-            docker compose -f docker-compose.prod.yml up -d
+          echo "=== Building and deploying ==="
+          docker compose -f docker-compose.prod.yml build app --no-cache
+          docker compose -f docker-compose.prod.yml up -d
 
-            echo "=== Waiting for health check ==="
-            sleep 15
-            curl -sf http://localhost:8000/health || \
-              (echo "=== HEALTH CHECK FAILED ===" && \
-               docker compose -f docker-compose.prod.yml logs app --tail 50 && \
-               exit 1)
+          echo "=== Waiting for health check ==="
+          sleep 15
+          curl -sf http://localhost:8000/health || \
+            (echo "=== HEALTH CHECK FAILED ===" && \
+             docker compose -f docker-compose.prod.yml logs app --tail 50 && \
+             exit 1)
 
-            echo "=== Deployment successful ==="
+          echo "=== Deployment successful ==="
+          DEPLOY_SCRIPT

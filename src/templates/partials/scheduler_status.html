@@ -1,0 +1,167 @@
+<!-- 스케줄러 상태 -->
+<section>
+    <h3>스케줄러 상태</h3>
+    <div class="grid">
+        <article>
+            <header>상태</header>
+            {% if scheduler.get("disabled") %}
+            <p><span class="status-dot status-disconnected"></span>비활성</p>
+            {% elif scheduler.is_paused %}
+            <p><span class="status-dot" style="background: orange;"></span>일시정지</p>
+            {% elif scheduler.is_running %}
+            <p><span class="status-dot status-connected"></span>실행중</p>
+            {% else %}
+            <p><span class="status-dot status-disconnected"></span>중지됨</p>
+            {% endif %}
+        </article>
+        <article>
+            <header>등록 작업</header>
+            <p>{{ scheduler.get("jobs", []) | length }}개</p>
+        </article>
+        <article>
+            <header>제어</header>
+            {% if not scheduler.get("disabled") %}
+                {% if scheduler.is_paused %}
+                <button hx-post="/admin/scheduler/resume"
+                        hx-target="#scheduler-content"
+                        hx-swap="innerHTML">재개</button>
+                {% else %}
+                <button hx-post="/admin/scheduler/pause"
+                        hx-target="#scheduler-content"
+                        hx-swap="innerHTML"
+                        class="secondary">일시정지</button>
+                {% endif %}
+            {% else %}
+            <p>스케줄러 비활성</p>
+            {% endif %}
+        </article>
+    </div>
+</section>
+
+<!-- 작업 목록 -->
+<section>
+    <h3>작업 목록</h3>
+    {% if scheduler.get("jobs") %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>작업명</th>
+                    <th>트리거</th>
+                    <th>다음 실행</th>
+                    <th>상태</th>
+                    <th>수동 실행</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in scheduler.jobs %}
+                <tr>
+                    <td>{{ job.name }}</td>
+                    <td><small>{{ job.trigger }}</small></td>
+                    <td>{{ job.next_run_time or "-" }}</td>
+                    <td>
+                        {% if job.next_run_time %}
+                        <span class="badge badge-running">활성</span>
+                        {% else %}
+                        <span class="badge badge-pending">정지</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button hx-post="/admin/scheduler/run/{{ job.name }}"
+                                hx-target="#scheduler-content"
+                                hx-swap="innerHTML"
+                                hx-confirm="'{{ job.name }}' 작업을 즉시 실행하시겠습니까?"
+                                class="outline"
+                                style="padding: 0.25rem 0.5rem; font-size: 0.85rem;">
+                            실행
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>등록된 작업이 없습니다.</p>
+    {% endif %}
+</section>
+
+<!-- 최근 작업 이력 -->
+<section>
+    <h3>최근 작업 이력</h3>
+
+    <form hx-get="/admin/scheduler" hx-target="#scheduler-content" hx-trigger="change" hx-push-url="true">
+        <div class="grid">
+            <label>
+                작업명
+                <select name="job_name">
+                    <option value="">전체</option>
+                    {% for name in job_names %}
+                    <option value="{{ name }}" {% if job_name == name %}selected{% endif %}>{{ name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                상태
+                <select name="status">
+                    <option value="">전체</option>
+                    <option value="running" {% if status == "running" %}selected{% endif %}>실행중</option>
+                    <option value="success" {% if status == "success" %}selected{% endif %}>성공</option>
+                    <option value="failed" {% if status == "failed" %}selected{% endif %}>실패</option>
+                </select>
+            </label>
+        </div>
+    </form>
+
+    {% if history %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>작업명</th>
+                    <th>시작 시각</th>
+                    <th>종료 시각</th>
+                    <th>상태</th>
+                    <th>소요시간</th>
+                    <th>비고</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for h in history %}
+                <tr>
+                    <td>{{ h.job_name }}</td>
+                    <td>{{ h.started_at.strftime("%m-%d %H:%M:%S") if h.started_at else "-" }}</td>
+                    <td>{{ h.finished_at.strftime("%m-%d %H:%M:%S") if h.finished_at else "-" }}</td>
+                    <td>
+                        <span class="badge badge-{{ 'completed' if h.status == 'success' else h.status }}">
+                            {{ h.status }}
+                        </span>
+                    </td>
+                    <td>{{ "{:.1f}s".format(h.duration_sec) if h.duration_sec is not none else "-" }}</td>
+                    <td>{{ h.error_message[:50] if h.error_message else (h.result_summary[:50] if h.result_summary else "-") }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+
+    {% if total_pages > 1 %}
+    <nav>
+        <ul>
+            {% if page > 1 %}
+            <li><a hx-get="/admin/scheduler?page={{ page - 1 }}&job_name={{ job_name or '' }}&status={{ status or '' }}"
+                   hx-target="#scheduler-content">&laquo; 이전</a></li>
+            {% endif %}
+            <li><small>{{ page }} / {{ total_pages }} (총 {{ total }}건)</small></li>
+            {% if page < total_pages %}
+            <li><a hx-get="/admin/scheduler?page={{ page + 1 }}&job_name={{ job_name or '' }}&status={{ status or '' }}"
+                   hx-target="#scheduler-content">다음 &raquo;</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+    {% endif %}
+
+    {% else %}
+    <p>작업 이력이 없습니다.</p>
+    {% endif %}
+</section>

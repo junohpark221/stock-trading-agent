@@ -103,24 +103,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_cache(_redis_client)
     log.info("cache_initialized")
 
+    # 커맨드 핸들러 DI를 위해 session_factory/cache 준비
+    from src.data.cache import get_cache
+    from src.db.session import get_session_factory
+
+    session_factory = get_session_factory()
+    cache = get_cache()
+
     # Telegram 봇 싱글톤 — polling 시작하여 콜백 수신 가능
     _telegram_bot = TelegramBot(
         bot_token=settings.TELEGRAM_BOT_TOKEN,
         chat_id=settings.TELEGRAM_CHAT_ID,
+        session_factory=session_factory,
+        cache=cache,
+        settings=settings,
     )
     await _telegram_bot.start()
     log.info("telegram_bot_initialized")
 
     # Scheduler — TelegramBot 초기화 후 조립 (job들이 telegram_bot 사용)
     if settings.SCHEDULER_ENABLED:
-        from src.data.cache import get_cache
-        from src.db.session import get_session_factory
         from src.scheduler.factory import SchedulerFactory
 
         _scheduler_engine, _broker_registry = await SchedulerFactory.create_scheduler(
             settings=settings,
-            session_factory=get_session_factory(),
-            cache=get_cache(),
+            session_factory=session_factory,
+            cache=cache,
             telegram_bot=_telegram_bot,
         )
         await _scheduler_engine.start()

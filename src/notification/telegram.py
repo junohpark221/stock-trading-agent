@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 import structlog
@@ -36,12 +37,24 @@ class TelegramBot:
         4. lifespan shutdown에서 bot.stop() 호출
     """
 
-    def __init__(self, *, bot_token: str, chat_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        bot_token: str,
+        chat_id: str,
+        session_factory: Any | None = None,
+        cache: Any | None = None,
+        settings: Any | None = None,
+    ) -> None:
         """aiogram Bot + Dispatcher 초기화.
 
         bot_token이 빈 문자열이면 경고만 로깅하고, 모든 메서드는 None 반환.
+        session_factory/cache/settings는 커맨드 핸들러 DI에 사용.
         """
         self._chat_id = chat_id
+        self._session_factory = session_factory
+        self._cache = cache
+        self._settings = settings
         self._polling_task: asyncio.Task[None] | None = None
         self._callback_handler: Callable[[str, UUID], Awaitable[None]] | None = None
         self._pending_modify: dict[str, UUID] = {}
@@ -71,7 +84,15 @@ class TelegramBot:
         assert self._bot is not None
         assert self._dp is not None
 
-        # 핸들러 등록
+        # 커맨드 라우터 등록 (catch-all 핸들러보다 먼저 등록해야 우선 매칭)
+        if self._session_factory is not None:
+            from src.notification.commands import register_commands
+
+            register_commands(
+                self._dp, self._session_factory, self._cache, self._settings
+            )
+
+        # catch-all 핸들러 등록 (커맨드에 매칭되지 않은 메시지만 받음)
         self._dp.callback_query.register(self._on_callback_query)
         self._dp.message.register(self._on_text_message)
 

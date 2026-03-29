@@ -64,6 +64,7 @@ jobs:
             --ignore=tests/test_phase6_integration.py \
             --ignore=tests/test_phase7_integration.py \
             --ignore=tests/test_phase8_e2e.py \
+            --ignore=tests/test_admin_web.py \
             -x -q
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/trading_agent

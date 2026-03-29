@@ -230,8 +230,8 @@ class TestLifecycle:
         await telegram_bot.start()
 
         assert telegram_bot.is_running is True
-        mock_dp_instance.callback_query.register.assert_called_once()
-        mock_dp_instance.message.register.assert_called_once()
+        # catch_all_router가 dp에 include됨을 확인
+        mock_dp_instance.include_router.assert_called()
 
     @pytest.mark.asyncio
     async def test_stop_cancels_task(self, telegram_bot, mock_dp_instance):

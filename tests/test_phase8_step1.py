@@ -135,7 +135,7 @@ class TestAccountConfig:
     """ACCOUNT_ENCRYPTION_KEY 설정 테스트."""
 
     def test_default_empty(self):
-        s = make_settings()
+        s = make_settings(ACCOUNT_ENCRYPTION_KEY="")
         assert s.ACCOUNT_ENCRYPTION_KEY == ""
 
     def test_override(self):

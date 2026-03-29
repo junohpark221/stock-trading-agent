@@ -636,3 +636,77 @@ class MessageTemplates:
         ])
 
         return "\n".join(lines)
+
+    # -- telegram command templates ------------------------------------------
+
+    @staticmethod
+    def portfolio_summary_command(
+        snapshot: object,
+        positions_count: int,
+        account_label: str = "",
+    ) -> str:
+        """텔레그램 /portfolio 커맨드 응답 포맷.
+
+        Args:
+            snapshot: PortfolioSnapshot ORM 객체 (total_value, cash, invested,
+                      unrealized_pnl, realized_pnl_daily 필드 사용).
+            positions_count: 보유 종목 수.
+            account_label: 계좌 표시명.
+        """
+        fmt = MessageTemplates
+
+        lines = fmt._account_header(account_label)
+        lines.append(_DIVIDER)
+
+        unrealized_pct = (
+            snapshot.unrealized_pnl / snapshot.invested * 100
+            if snapshot.invested
+            else Decimal(0)
+        )
+
+        lines.extend([
+            f"💰 총 자산: {fmt._fmt_krw(snapshot.total_value)}",
+            f"💵 현금: {fmt._fmt_krw(snapshot.cash)}",
+            f"📈 투자금: {fmt._fmt_krw(snapshot.invested)}",
+            f"📊 미실현 손익: {fmt._pnl_sign(snapshot.unrealized_pnl)}"
+            f"{fmt._fmt_krw(snapshot.unrealized_pnl)}"
+            f" ({fmt._pnl_sign(unrealized_pct)}{fmt._fmt_pct(unrealized_pct)})",
+            f"📉 일일 손익: {fmt._pnl_sign(snapshot.realized_pnl_daily)}"
+            f"{fmt._fmt_krw(snapshot.realized_pnl_daily)}",
+            f"🔢 보유 종목: {positions_count}개",
+        ])
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def positions_list_command(
+        positions: list,
+        account_label: str = "",
+    ) -> str:
+        """텔레그램 /positions 커맨드 응답 포맷.
+
+        Args:
+            positions: PositionRecord ORM 객체 리스트
+                       (symbol, quantity, avg_cost, stop_loss_price,
+                        take_profit_price 필드 사용).
+            account_label: 계좌 표시명.
+        """
+        fmt = MessageTemplates
+
+        lines = fmt._account_header(account_label)
+        lines.append(_DIVIDER)
+
+        for pos in positions:
+            lines.extend([
+                f"📌 <b>{fmt._escape(pos.symbol)}</b>",
+                f"  수량: {pos.quantity}주 | 평균: {fmt._fmt_price(pos.avg_cost)}원",
+                f"  손절: {fmt._fmt_optional_price(pos.stop_loss_price)}"
+                f" | 익절: {fmt._fmt_optional_price(pos.take_profit_price)}",
+                "",
+            ])
+
+        # 마지막 빈 줄 제거
+        if lines and lines[-1] == "":
+            lines.pop()
+
+        return "\n".join(lines)

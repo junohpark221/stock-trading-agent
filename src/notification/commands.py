@@ -204,3 +204,93 @@ async def resolve_account(
 
     label = account.nickname or account.id
     return account.id, html.escape(label)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_args(text: str | None, command: str) -> str:
+    """메시지 텍스트에서 커맨드를 제거하고 인자만 반환.
+
+    예: _extract_args("/portfolio 모던투자", "portfolio") → "모던투자"
+    """
+    if not text:
+        return ""
+    # /command 또는 /command@botname 제거
+    parts = text.split(maxsplit=1)
+    return parts[1] if len(parts) > 1 else ""
+
+
+# ---------------------------------------------------------------------------
+# /portfolio
+# ---------------------------------------------------------------------------
+
+
+@command_router.message(Command("portfolio"))
+async def cmd_portfolio(message: Message) -> None:
+    """포트폴리오 요약 조회."""
+    from src.notification.templates import MessageTemplates
+    from src.report.data_fetcher import ReportDataFetcher
+
+    session_factory = _deps["session_factory"]
+    args = _extract_args(message.text, "portfolio")
+
+    account = await resolve_account(args, session_factory)
+    if account is None:
+        await message.answer("⚠️ 계좌를 찾을 수 없습니다.", parse_mode="HTML")
+        return
+
+    account_id, account_label = account
+    fetcher = ReportDataFetcher(session_factory)
+
+    snapshot = await fetcher.get_latest_snapshot(account_id=account_id)
+    if snapshot is None:
+        await message.answer(
+            f"📭 <b>{account_label}</b> 포트폴리오 데이터가 없습니다.",
+            parse_mode="HTML",
+        )
+        return
+
+    positions = await fetcher.get_open_positions(account_id=account_id)
+    text = MessageTemplates.portfolio_summary_command(
+        snapshot, len(positions), account_label=account_label,
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# /positions
+# ---------------------------------------------------------------------------
+
+
+@command_router.message(Command("positions"))
+async def cmd_positions(message: Message) -> None:
+    """보유 종목 목록 조회."""
+    from src.notification.templates import MessageTemplates
+    from src.report.data_fetcher import ReportDataFetcher
+
+    session_factory = _deps["session_factory"]
+    args = _extract_args(message.text, "positions")
+
+    account = await resolve_account(args, session_factory)
+    if account is None:
+        await message.answer("⚠️ 계좌를 찾을 수 없습니다.", parse_mode="HTML")
+        return
+
+    account_id, account_label = account
+    fetcher = ReportDataFetcher(session_factory)
+
+    positions = await fetcher.get_open_positions(account_id=account_id)
+    if not positions:
+        await message.answer(
+            f"📭 <b>{account_label}</b> 보유 종목이 없습니다.",
+            parse_mode="HTML",
+        )
+        return
+
+    text = MessageTemplates.positions_list_command(
+        positions, account_label=account_label,
+    )
+    await message.answer(text, parse_mode="HTML")

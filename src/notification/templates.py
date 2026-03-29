@@ -710,3 +710,81 @@ class MessageTemplates:
             lines.pop()
 
         return "\n".join(lines)
+
+    @staticmethod
+    def trade_history_command(
+        positions: list,
+        count: int,
+        account_label: str = "",
+    ) -> str:
+        """텔레그램 /history 커맨드 응답 포맷.
+
+        Args:
+            positions: 청산된 PositionRecord ORM 객체 리스트 (최신순).
+            count: 표시 건수 (헤더용).
+            account_label: 계좌 표시명.
+        """
+        fmt = MessageTemplates
+
+        lines = fmt._account_header(account_label)
+        lines.append(f"최근 {count}건")
+        lines.append(_DIVIDER)
+
+        for pos in positions:
+            is_profit = pos.realized_pnl is not None and pos.realized_pnl > 0
+            icon = "✅" if is_profit else "❌"
+            exit_dt = pos.exit_date.strftime("%m/%d") if pos.exit_date else "?"
+            reason = pos.exit_reason or ""
+
+            pnl = pos.realized_pnl or Decimal(0)
+            cost_basis = pos.avg_cost * pos.quantity
+            pnl_pct = pnl / cost_basis * 100 if cost_basis else Decimal(0)
+
+            lines.extend([
+                f"{icon} {fmt._escape(pos.symbol)} 매도 ({exit_dt})",
+                f"  {fmt._pnl_sign(pnl)}{fmt._fmt_krw(pnl)}"
+                f" ({fmt._pnl_sign(pnl_pct)}{fmt._fmt_pct(pnl_pct)})"
+                + (f" | {reason}" if reason else ""),
+                "",
+            ])
+
+        if lines and lines[-1] == "":
+            lines.pop()
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def performance_summary_command(
+        metrics: object,
+        account_label: str = "",
+    ) -> str:
+        """텔레그램 /performance 커맨드 응답 포맷.
+
+        Args:
+            metrics: PerformanceMetrics 객체.
+            account_label: 계좌 표시명.
+        """
+        fmt = MessageTemplates
+
+        def _val(v: Decimal | None, formatter=fmt._fmt_pct) -> str:
+            return formatter(v) if v is not None else "N/A"
+
+        def _ratio(v: Decimal | None) -> str:
+            return f"{v:.2f}" if v is not None else "N/A"
+
+        lines = fmt._account_header(account_label)
+        lines.append(f"최근 {metrics.period_start} ~ {metrics.period_end}")
+        lines.append(_DIVIDER)
+
+        lines.extend([
+            f"📊 총 수익률: {fmt._pnl_sign(metrics.total_return_pct)}"
+            f"{fmt._fmt_pct(metrics.total_return_pct)}",
+            f"📈 연환산 수익률: {_val(metrics.annualized_return_pct)}",
+            f"⚡ Sharpe Ratio: {_ratio(metrics.sharpe_ratio)}",
+            f"📉 Max Drawdown: {fmt._fmt_pct(metrics.max_drawdown_pct)}",
+            f"🎯 승률: {fmt._fmt_pct(metrics.win_rate_pct)}"
+            f" ({metrics.winning_trades}승 {metrics.losing_trades}패)",
+            f"💰 Profit Factor: {_ratio(metrics.profit_factor)}",
+        ])
+
+        return "\n".join(lines)

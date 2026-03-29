@@ -294,3 +294,128 @@ async def cmd_positions(message: Message) -> None:
         positions, account_label=account_label,
     )
     await message.answer(text, parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# /history
+# ---------------------------------------------------------------------------
+
+_DEFAULT_HISTORY_LIMIT = 5
+_HISTORY_LOOKBACK_DAYS = 90
+
+
+def _parse_history_args(text: str) -> tuple[str, int]:
+    """'/history [계좌명] [N]' 인자 파싱.
+
+    Returns:
+        (account_text, limit) — account_text는 resolve_account()에 전달.
+    """
+    args = _extract_args(text, "history")
+    if not args:
+        return "", _DEFAULT_HISTORY_LIMIT
+
+    parts = args.split()
+    # 숫자 하나만 → limit
+    if len(parts) == 1 and parts[0].isdigit():
+        return "", int(parts[0])
+    # 마지막이 숫자 → 계좌명 + limit
+    if len(parts) >= 2 and parts[-1].isdigit():
+        return " ".join(parts[:-1]), int(parts[-1])
+    # 전부 계좌명
+    return args, _DEFAULT_HISTORY_LIMIT
+
+
+@command_router.message(Command("history"))
+async def cmd_history(message: Message) -> None:
+    """최근 매매 이력 조회."""
+    from datetime import date, timedelta
+
+    from src.notification.templates import MessageTemplates
+    from src.report.data_fetcher import ReportDataFetcher
+
+    session_factory = _deps["session_factory"]
+    account_text, limit = _parse_history_args(message.text)
+
+    account = await resolve_account(account_text, session_factory)
+    if account is None:
+        await message.answer("⚠️ 계좌를 찾을 수 없습니다.", parse_mode="HTML")
+        return
+
+    account_id, account_label = account
+    fetcher = ReportDataFetcher(session_factory)
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=_HISTORY_LOOKBACK_DAYS)
+
+    closed = await fetcher.get_closed_positions(
+        start_date=start_date, end_date=end_date, account_id=account_id,
+    )
+    if not closed:
+        await message.answer(
+            f"📭 <b>{account_label}</b> 매매 이력이 없습니다.",
+            parse_mode="HTML",
+        )
+        return
+
+    # exit_date ASC → 최신순으로 뒤집어서 limit 적용
+    recent = list(reversed(closed))[:limit]
+    text = MessageTemplates.trade_history_command(
+        recent, len(recent), account_label=account_label,
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# /performance
+# ---------------------------------------------------------------------------
+
+_PERFORMANCE_DAYS = 30
+
+
+@command_router.message(Command("performance"))
+async def cmd_performance(message: Message) -> None:
+    """성과 지표 조회."""
+    from datetime import date, timedelta
+
+    from src.notification.templates import MessageTemplates
+    from src.report.data_fetcher import ReportDataFetcher
+    from src.report.metrics import PerformanceCalculator
+
+    session_factory = _deps["session_factory"]
+    args = _extract_args(message.text, "performance")
+
+    account = await resolve_account(args, session_factory)
+    if account is None:
+        await message.answer("⚠️ 계좌를 찾을 수 없습니다.", parse_mode="HTML")
+        return
+
+    account_id, account_label = account
+    fetcher = ReportDataFetcher(session_factory)
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=_PERFORMANCE_DAYS)
+
+    closed = await fetcher.get_closed_positions(
+        start_date=start_date, end_date=end_date, account_id=account_id,
+    )
+    snapshots = await fetcher.get_portfolio_snapshots(
+        start_date=start_date, end_date=end_date, account_id=account_id,
+    )
+
+    if not closed and not snapshots:
+        await message.answer(
+            f"📭 <b>{account_label}</b> 성과 데이터가 없습니다.",
+            parse_mode="HTML",
+        )
+        return
+
+    metrics = PerformanceCalculator.calculate(
+        closed_positions=closed,
+        snapshots=snapshots,
+        period_start=start_date,
+        period_end=end_date,
+    )
+    text = MessageTemplates.performance_summary_command(
+        metrics, account_label=account_label,
+    )
+    await message.answer(text, parse_mode="HTML")

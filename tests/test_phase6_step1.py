@@ -308,9 +308,9 @@ class TestPhase6Config:
             REDIS_URL="redis://localhost:6379/0",
         )
         assert s.MARKET_DATA_COLLECTION_TIME == "15:40"
-        assert s.SWING_ANALYSIS_TIME == "16:00"
+        assert s.SWING_ANALYSIS_TIME == "01:00"
         assert s.POSITION_ANALYSIS_DAYS == "wed,sat"
-        assert s.POSITION_ANALYSIS_TIME == "16:30"
+        assert s.POSITION_ANALYSIS_TIME == "01:30"
         assert s.STOP_LOSS_CHECK_INTERVAL_MIN == 5
         assert s.DAILY_REPORT_TIME == "20:00"
         assert s.WEEKLY_REPORT_DAY == "sat"

@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}백테스트 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>백테스트</h2>
+
+<!-- 새 백테스트 실행 폼 -->
+<details>
+    <summary>새 백테스트 실행</summary>
+    <form method="post" action="/admin/backtest/run">
+        <div class="grid">
+            <label>
+                전략
+                <select name="strategy_type">
+                    {% for st in strategy_types %}
+                    <option value="{{ st }}">{{ st }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                모드
+                <select name="mode">
+                    {% for m in backtest_modes %}
+                    <option value="{{ m }}">{{ m }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+        <div class="grid">
+            <label>
+                시작일
+                <input type="date" name="start_date" required>
+            </label>
+            <label>
+                종료일
+                <input type="date" name="end_date" required>
+            </label>
+            <label>
+                초기자본
+                <input type="number" name="initial_capital" value="10000000" min="1000000" step="1000000">
+            </label>
+        </div>
+        <label>
+            종목 (쉼표 구분)
+            <input type="text" name="symbols" placeholder="005930,000660">
+        </label>
+        <button type="submit">실행</button>
+    </form>
+</details>
+
+<!-- 필터 -->
+<form hx-get="/admin/backtest" hx-target="#backtest-runs" hx-trigger="change" hx-push-url="true">
+    <div class="grid">
+        <label>
+            전략
+            <select name="strategy_type">
+                <option value="">전체</option>
+                {% for st in strategy_types %}
+                <option value="{{ st }}" {% if strategy_type == st %}selected{% endif %}>{{ st }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            상태
+            <select name="status">
+                <option value="">전체</option>
+                {% for s in backtest_statuses %}
+                <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </label>
+    </div>
+</form>
+
+<!-- 실행 목록 -->
+<div id="backtest-runs">
+    {% include "partials/backtest_runs.html" %}
+</div>
+
+<!-- 상세 결과 (HTMX 로드) -->
+<div id="backtest-detail"></div>
+{% endblock %}

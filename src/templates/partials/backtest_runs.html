@@ -1,0 +1,64 @@
+{% if runs %}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>전략</th>
+                <th>모드</th>
+                <th>기간</th>
+                <th>상태</th>
+                <th>거래수</th>
+                <th>수익률</th>
+                <th>Sharpe</th>
+                <th>MDD</th>
+                <th>실행일</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in runs %}
+            <tr hx-get="/admin/backtest/{{ run.run_id }}" hx-target="#backtest-detail">
+                <td>{{ run.strategy_type }}</td>
+                <td>{{ run.mode }}</td>
+                <td>{{ run.start_date }} ~ {{ run.end_date }}</td>
+                <td><span class="badge badge-{{ run.status }}">{{ run.status }}</span></td>
+                <td>{{ run.total_trades }}건</td>
+                {% if run.result_metrics %}
+                <td class="{{ 'pnl-positive' if run.result_metrics.total_return_pct >= 0 else 'pnl-negative' }}">
+                    {{ "{:+.2f}".format(run.result_metrics.total_return_pct) }}%
+                </td>
+                <td>{{ "{:.4f}".format(run.result_metrics.sharpe_ratio) if run.result_metrics.sharpe_ratio is not none else "-" }}</td>
+                <td class="{{ 'pnl-negative' if run.result_metrics.max_drawdown_pct > 0 else '' }}">
+                    {{ "{:.2f}".format(run.result_metrics.max_drawdown_pct) }}%
+                </td>
+                {% else %}
+                <td>-</td>
+                <td>-</td>
+                <td>-</td>
+                {% endif %}
+                <td>{{ run.started_at.strftime("%m-%d %H:%M") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</figure>
+
+<!-- 페이지네이션 -->
+{% if total_pages > 1 %}
+<nav>
+    <ul>
+        {% if page > 1 %}
+        <li><a hx-get="/admin/backtest?page={{ page - 1 }}&strategy_type={{ strategy_type or '' }}&status={{ status or '' }}"
+               hx-target="#backtest-runs">&laquo; 이전</a></li>
+        {% endif %}
+        <li><small>{{ page }} / {{ total_pages }} (총 {{ total }}건)</small></li>
+        {% if page < total_pages %}
+        <li><a hx-get="/admin/backtest?page={{ page + 1 }}&strategy_type={{ strategy_type or '' }}&status={{ status or '' }}"
+               hx-target="#backtest-runs">다음 &raquo;</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<p>백테스트 실행 이력이 없습니다.</p>
+{% endif %}

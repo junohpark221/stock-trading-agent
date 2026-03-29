@@ -1,0 +1,119 @@
+<hr>
+<section>
+    <h3>백테스트 상세</h3>
+
+    <!-- 실행 정보 -->
+    <div class="grid">
+        <article>
+            <header>실행 정보</header>
+            <p>전략: {{ run.strategy_type }} | 모드: {{ run.mode }}</p>
+            <p>기간: {{ run.start_date }} ~ {{ run.end_date }}</p>
+            <p>초기자본: {{ "{:,.0f}".format(run.initial_capital) }}원</p>
+            {% if run.symbols %}
+            <p>종목: {{ run.symbols | join(", ") }}</p>
+            {% endif %}
+            <p>상태: <span class="badge badge-{{ run.status }}">{{ run.status }}</span></p>
+        </article>
+    </div>
+
+    {% if run.status == "failed" %}
+    <!-- 실패 -->
+    <div class="alert alert-error">{{ run.error_message or "알 수 없는 오류" }}</div>
+
+    {% elif run.status in ("pending", "running") %}
+    <!-- 실행 중 — 자동 갱신 -->
+    <p hx-get="/admin/backtest/{{ run.run_id }}" hx-trigger="every 3s" hx-target="#backtest-detail">
+        실행 중입니다... <span class="htmx-indicator" aria-busy="true"></span>
+    </p>
+
+    {% elif run.status == "completed" and run.result_metrics %}
+    <!-- 성과 지표 -->
+    {% set m = run.result_metrics %}
+    <div class="grid">
+        <article>
+            <header>총 수익률</header>
+            <p class="{{ 'pnl-positive' if m.total_return_pct >= 0 else 'pnl-negative' }}">
+                {{ "{:+.2f}".format(m.total_return_pct) }}%
+            </p>
+        </article>
+        <article>
+            <header>연환산 수익률</header>
+            <p>{{ "{:+.2f}".format(m.annualized_return_pct) + "%" if m.annualized_return_pct is not none else "-" }}</p>
+        </article>
+        <article>
+            <header>최대 낙폭 (MDD)</header>
+            <p class="{{ 'pnl-negative' if m.max_drawdown_pct > 0 else '' }}">
+                {{ "{:.2f}".format(m.max_drawdown_pct) }}%
+            </p>
+        </article>
+        <article>
+            <header>Sharpe Ratio</header>
+            <p>{{ "{:.4f}".format(m.sharpe_ratio) if m.sharpe_ratio is not none else "-" }}</p>
+        </article>
+    </div>
+    <div class="grid">
+        <article>
+            <header>승률</header>
+            <p>{{ "{:.1f}".format(m.win_rate_pct) }}%</p>
+        </article>
+        <article>
+            <header>총 거래</header>
+            <p>{{ m.total_trades }}건 ({{ m.winning_trades }}승 {{ m.losing_trades }}패)</p>
+        </article>
+        <article>
+            <header>Profit Factor</header>
+            <p>{{ "{:.2f}".format(m.profit_factor) if m.profit_factor is not none else "-" }}</p>
+        </article>
+        <article>
+            <header>Sortino Ratio</header>
+            <p>{{ "{:.4f}".format(m.sortino_ratio) if m.sortino_ratio is not none else "-" }}</p>
+        </article>
+    </div>
+
+    <!-- 거래 내역 -->
+    <h4>거래 내역 ({{ trades | length }}건)</h4>
+    {% if trades %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>날짜</th>
+                    <th>종목</th>
+                    <th>매매</th>
+                    <th>수량</th>
+                    <th>가격</th>
+                    <th>수수료</th>
+                    <th>슬리피지</th>
+                    <th>손익</th>
+                    <th>청산사유</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in trades %}
+                <tr>
+                    <td>{{ t.trade_date }}</td>
+                    <td>{{ t.symbol }}</td>
+                    <td>{{ "매수" if t.side == "buy" else "매도" }}</td>
+                    <td>{{ "{:,}".format(t.quantity) }}</td>
+                    <td>{{ "{:,.0f}".format(t.price) }}원</td>
+                    <td>{{ "{:,.0f}".format(t.commission) }}원</td>
+                    <td>{{ "{:,.0f}".format(t.slippage) }}원</td>
+                    {% if t.pnl is not none %}
+                    <td class="{{ 'pnl-positive' if t.pnl >= 0 else 'pnl-negative' }}">
+                        {{ "{:+,.0f}".format(t.pnl) }}원
+                    </td>
+                    {% else %}
+                    <td>-</td>
+                    {% endif %}
+                    <td>{{ t.exit_reason or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>거래 내역이 없습니다.</p>
+    {% endif %}
+
+    {% endif %}
+</section>

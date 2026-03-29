@@ -419,3 +419,80 @@ async def cmd_performance(message: Message) -> None:
         metrics, account_label=account_label,
     )
     await message.answer(text, parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# /status
+# ---------------------------------------------------------------------------
+
+_DIVIDER = "━━━━━━━━━━━━━━━━"
+
+
+@command_router.message(Command("status"))
+async def cmd_status(message: Message) -> None:
+    """시스템 상태 조회."""
+    from datetime import datetime
+
+    from sqlalchemy import text
+
+    session_factory = _deps["session_factory"]
+
+    lines = ["🤖 <b>Trading Agent Status</b>", _DIVIDER]
+
+    # Database
+    try:
+        async with session_factory() as session:
+            await session.execute(text("SELECT 1"))
+        lines.append("🟢 Database: OK")
+    except Exception:
+        lines.append("🔴 Database: Error")
+
+    # Redis
+    try:
+        from src.main import get_redis
+
+        await get_redis().ping()
+        lines.append("🟢 Redis: OK")
+    except Exception:
+        lines.append("🔴 Redis: Error")
+
+    # Scheduler
+    try:
+        from src.main import get_scheduler
+
+        status = get_scheduler().get_status()
+        if status["is_running"]:
+            job_count = len(status["jobs"])
+            state = f"Running ({job_count} jobs)"
+            if status["is_paused"]:
+                state = f"Paused ({job_count} jobs)"
+            lines.append(f"🟢 Scheduler: {state}")
+        else:
+            lines.append("🟡 Scheduler: Stopped")
+    except RuntimeError:
+        lines.append("🟡 Scheduler: Disabled")
+
+    # Telegram Bot — 커맨드가 도착했으므로 항상 정상
+    lines.append("🟢 Telegram Bot: Active")
+
+    lines.append(_DIVIDER)
+
+    # 다음 작업
+    try:
+        from src.main import get_scheduler
+
+        status = get_scheduler().get_status()
+        next_jobs = [
+            j for j in status["jobs"] if j.get("next_run_time")
+        ]
+        if next_jobs:
+            next_job = min(next_jobs, key=lambda j: j["next_run_time"])
+            next_time = next_job["next_run_time"][:16].replace("T", " ")
+            lines.append(f"📅 다음 작업: {next_job['name']} ({next_time})")
+    except (RuntimeError, Exception):
+        pass
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines.append(f"⏰ 서버 시간: {now}")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")

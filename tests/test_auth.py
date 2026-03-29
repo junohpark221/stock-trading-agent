@@ -1,14 +1,18 @@
 """Unit tests for backoffice authentication module."""
 
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.api.auth import (
+    SESSION_COOKIE_NAME,
     SESSION_MAX_AGE,
     _get_secret_key,
     create_session_token,
+    login_handler,
+    logout_handler,
+    require_admin,
     verify_session_token,
 )
 
@@ -62,3 +66,66 @@ class TestGetSecretKey:
             mock.return_value.ACCOUNT_ENCRYPTION_KEY = ""
             with pytest.raises(RuntimeError):
                 _get_secret_key()
+
+
+class TestAuthHandlers:
+    """HTTP 핸들러 테스트: require_admin, login_handler, logout_handler."""
+
+    @pytest.mark.asyncio
+    async def test_require_admin_missing_cookie(self):
+        request = MagicMock()
+        request.cookies = {}
+        with pytest.raises(Exception) as exc_info:
+            await require_admin(request)
+        assert exc_info.value.status_code == 303
+
+    @pytest.mark.asyncio
+    async def test_require_admin_invalid_cookie(self):
+        request = MagicMock()
+        request.cookies = {SESSION_COOKIE_NAME: "invalid.token"}
+        with patch("src.api.auth._get_secret_key", return_value=SECRET):
+            with pytest.raises(Exception) as exc_info:
+                await require_admin(request)
+            assert exc_info.value.status_code == 303
+
+    @pytest.mark.asyncio
+    async def test_require_admin_valid_cookie(self):
+        token = create_session_token(SECRET)
+        request = MagicMock()
+        request.cookies = {SESSION_COOKIE_NAME: token}
+        with patch("src.api.auth._get_secret_key", return_value=SECRET):
+            result = await require_admin(request)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_login_handler_correct_password(self):
+        request = AsyncMock()
+        request.form.return_value = {"password": "correct-pw"}
+        with patch("src.api.auth.get_settings") as mock_settings:
+            mock_settings.return_value.ADMIN_PASSWORD = "correct-pw"
+            mock_settings.return_value.SESSION_SECRET_KEY = SECRET
+            mock_settings.return_value.ACCOUNT_ENCRYPTION_KEY = ""
+            response = await login_handler(request)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/admin/"
+        cookie_header = response.headers.get("set-cookie", "")
+        assert SESSION_COOKIE_NAME in cookie_header
+
+    @pytest.mark.asyncio
+    async def test_login_handler_wrong_password(self):
+        request = AsyncMock()
+        request.form.return_value = {"password": "wrong"}
+        with patch("src.api.auth.get_settings") as mock_settings:
+            mock_settings.return_value.ADMIN_PASSWORD = "correct-pw"
+            response = await login_handler(request)
+        assert response.status_code == 303
+        assert "error=1" in response.headers["location"]
+
+    @pytest.mark.asyncio
+    async def test_logout_handler(self):
+        request = MagicMock()
+        response = await logout_handler(request)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/admin/login"
+        cookie_header = response.headers.get("set-cookie", "")
+        assert SESSION_COOKIE_NAME in cookie_header

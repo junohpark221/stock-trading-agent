@@ -92,9 +92,13 @@ class TelegramBot:
                 self._dp, self._session_factory, self._cache, self._settings
             )
 
-        # catch-all 핸들러 등록 (커맨드에 매칭되지 않은 메시지만 받음)
-        self._dp.callback_query.register(self._on_callback_query)
-        self._dp.message.register(self._on_text_message)
+        # catch-all 핸들러 — 커맨드 라우터 이후 처리되도록 별도 라우터 사용
+        from aiogram import Router
+
+        catch_all_router = Router(name="catch_all")
+        catch_all_router.callback_query.register(self._on_callback_query)
+        catch_all_router.message.register(self._on_text_message)
+        self._dp.include_router(catch_all_router)
 
         # 연결 확인
         try:
@@ -106,10 +110,17 @@ class TelegramBot:
             return
 
         # 백그라운드 polling 시작
+        # handle_signals=False: uvicorn 시그널 핸들러와 충돌 방지
+        # close_bot_session=False: polling 종료 시 세션 유지 (stop()에서 직접 정리)
         self._polling_task = asyncio.create_task(
-            self._dp.start_polling(self._bot),
+            self._dp.start_polling(
+                self._bot,
+                handle_signals=False,
+                close_bot_session=False,
+            ),
             name="telegram_polling",
         )
+
 
     async def stop(self) -> None:
         """봇 polling 중지 및 세션 정리."""
@@ -117,7 +128,10 @@ class TelegramBot:
             return
 
         if self._dp:
-            await self._dp.stop_polling()
+            try:
+                await self._dp.stop_polling()
+            except RuntimeError:
+                pass
 
         if self._polling_task and not self._polling_task.done():
             self._polling_task.cancel()

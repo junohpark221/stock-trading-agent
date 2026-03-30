@@ -204,18 +204,29 @@ class SchedulerEngine:
     # ── Status ──────────────────────────────────────────────────────────
 
     def get_status(self) -> dict[str, Any]:
-        """스케줄러 상태 + 등록된 작업 목록 반환."""
+        """스케줄러 상태 + 등록된 작업 목록 반환.
+
+        ``_job_fns``에 등록된 모든 작업을 반환한다.
+        APScheduler에 등록된 작업은 trigger/next_run_time 포함,
+        미등록 작업(SCHEDULER_ENABLED=False 등)은 "수동 전용"으로 표시.
+        """
+        scheduler_jobs = {
+            job.name: job for job in self._scheduler.get_jobs()
+        }
+
         jobs_info: list[dict[str, Any]] = []
-        for job in self._scheduler.get_jobs():
+        for name in sorted(self._job_fns):
+            sj = scheduler_jobs.get(name)
             jobs_info.append(
                 {
-                    "name": job.name,
+                    "name": name,
                     "next_run_time": (
-                        job.next_run_time.isoformat()
-                        if getattr(job, "next_run_time", None)
+                        sj.next_run_time.isoformat()
+                        if sj and getattr(sj, "next_run_time", None)
                         else None
                     ),
-                    "trigger": str(job.trigger),
+                    "trigger": str(sj.trigger) if sj else "수동 전용",
+                    "scheduled": sj is not None,
                 }
             )
 

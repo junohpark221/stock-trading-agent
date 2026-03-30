@@ -60,10 +60,12 @@
                     <td><small>{{ job.trigger }}</small></td>
                     <td>{{ job.next_run_time or "-" }}</td>
                     <td>
-                        {% if job.next_run_time %}
+                        {% if job.get("scheduled", true) and job.next_run_time %}
                         <span class="badge badge-running">활성</span>
-                        {% else %}
+                        {% elif job.get("scheduled", true) %}
                         <span class="badge badge-pending">정지</span>
+                        {% else %}
+                        <span class="badge" style="background: #6c757d; color: #fff;">수동</span>
                         {% endif %}
                     </td>
                     <td>

@@ -503,13 +503,17 @@ class ApprovalManager:
 
         action: "approve", "reject", "modify:{qty}"
         """
-        if request_id not in self._pending_events:
+        # 경합 방지: _pending_events 키 없으면 이미 타임아웃 처리됨
+        event = self._pending_events.get(request_id)
+        if event is None:
             logger.warning(
                 "approval_callback_ignored",
                 request_id=str(request_id),
-                reason="not_pending",
+                reason="not_pending_or_already_timed_out",
             )
             return
+        # 경합 방지: account_id를 즉시 로컬에 저장 (타임아웃 cleanup 전에)
+        cb_account_id = self._pending_account_ids.get(request_id, "default")
 
         # action 파싱
         if action == "approve":
@@ -592,9 +596,8 @@ class ApprovalManager:
                 request_id=str(request_id),
             )
 
-        # Redis 업데이트
+        # Redis 업데이트 (cb_account_id는 콜백 시작 시 이미 로컬에 저장됨)
         try:
-            cb_account_id = self._pending_account_ids.get(request_id, "default")
             await self._cache.set_json(
                 _REDIS_NAMESPACE,
                 f"{cb_account_id}:{request_id}",

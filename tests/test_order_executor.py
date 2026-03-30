@@ -602,7 +602,7 @@ async def test_execute_entry_unexpected_exception(executor, mock_web_verifier):
 
 @pytest.mark.asyncio
 async def test_execute_entry_position_create_fails(executor, mock_position_manager):
-    """브로커 성공 + 포지션 생성 실패 → success=True, position_id=None."""
+    """브로커 성공 + 포지션 생성 실패 → success=False, 긴급 알림."""
     mock_position_manager.create = AsyncMock(side_effect=Exception("DB error"))
     td = _make_trade_decision()
 
@@ -611,9 +611,9 @@ async def test_execute_entry_position_create_fails(executor, mock_position_manag
         strategy_type=StrategyType.POSITION.value,
     )
 
-    assert result.success is True
+    assert result.success is False
     assert result.position_id is None
-    assert result.broker_order_id == "KIS123"
+    assert "포지션 생성 실패" in result.error
 
 
 @pytest.mark.asyncio
@@ -836,7 +836,7 @@ async def test_execute_exit_decision_ids(executor, mock_recorder):
 
 @pytest.mark.asyncio
 async def test_execute_entry_no_price(executor):
-    """price=None → Decimal(0) 사용."""
+    """price=None → 입력 검증 실패로 조기 반환."""
     td = _make_trade_decision(price=None)
 
     result = await executor.execute_entry(
@@ -844,8 +844,8 @@ async def test_execute_entry_no_price(executor):
         strategy_type=StrategyType.POSITION.value,
     )
 
-    # 브로커가 성공 반환하므로 체결
-    assert result.success is True
+    assert result.success is False
+    assert "유효하지 않은 가격" in result.error
 
 
 @pytest.mark.asyncio

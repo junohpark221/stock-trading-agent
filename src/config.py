@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     SCHEDULER_ENABLED: bool = True
     PRE_MARKET_ANALYSIS_TIME: str = "08:30"
     TRADING_SCAN_INTERVAL_MIN: int = 30
+    KR_HOLIDAYS: str = ""  # 쉼표 구분 공휴일 (예: "2026-01-01,2026-01-27")
 
     # 작업 스케줄 12개 — DESIGN.md 488~505행과 동일
     MARKET_DATA_COLLECTION_TIME: str = "15:40"

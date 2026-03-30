@@ -37,6 +37,7 @@ from src.core.models import (
     WebVerification,
 )
 from src.db.models.execution import Execution, Order
+from src.db.models.market_data import StockMaster
 from src.notification.templates import MessageTemplates
 
 if TYPE_CHECKING:
@@ -146,6 +147,20 @@ class OrderExecutor:
         order: Order | None = None
         effective_broker = broker or self._broker
 
+        # 입력 검증 — 주문 생성 전에 조기 반환
+        if quantity <= 0:
+            logger.warning("executor.invalid_quantity", symbol=symbol, quantity=quantity)
+            return self._fail_result(
+                symbol=symbol, side=side, quantity=quantity,
+                error=f"유효하지 않은 수량: {quantity}",
+            )
+        if price <= 0:
+            logger.warning("executor.invalid_price", symbol=symbol, price=str(price))
+            return self._fail_result(
+                symbol=symbol, side=side, quantity=quantity,
+                error=f"유효하지 않은 가격: {price}",
+            )
+
         try:
             # 1. 주문 생성 (PENDING)
             order = await self._create_order(
@@ -166,18 +181,17 @@ class OrderExecutor:
                 parent_decision_id=parent_decision_id,
                 is_stop_loss=False,
             )
-            await self._update_order(
-                order.id,
-                web_verify_result=verification.result.value,
-                web_verify_summary=verification.summary,
-            )
+            # web_verify 결과 + BLOCKED 시 status를 한 번에 업데이트
+            web_update: dict = {
+                "web_verify_result": verification.result.value,
+                "web_verify_summary": verification.summary,
+            }
+            if verification.result == WebVerifyResult.BLOCKED:
+                web_update["status"] = OrderStatus.CANCELLED.value
+                web_update["rejection_reason"] = f"Web 검증 차단: {verification.summary}"
+            await self._update_order(order.id, **web_update)
 
             if verification.result == WebVerifyResult.BLOCKED:
-                await self._update_order(
-                    order.id,
-                    status=OrderStatus.CANCELLED,
-                    rejection_reason=f"Web 검증 차단: {verification.summary}",
-                )
                 await self._notify_safe(MessageTemplates.rejection_notification(
                     account_label=account_label,
                     symbol=symbol, name=symbol, side=side,
@@ -243,6 +257,22 @@ class OrderExecutor:
             if refreshed_order and refreshed_order.modified_quantity is not None:
                 modified_qty = refreshed_order.modified_quantity
 
+                # 포트폴리오 상태 갱신 (승인 대기 중 변경 반영)
+                portfolio_state = await self._portfolio_service.get_current_state()
+
+                # sector 조회 (리스크 재검증에 필요)
+                sector = ""
+                try:
+                    async with self._session_factory() as _sess:
+                        _row = await _sess.execute(
+                            select(StockMaster.sector).where(
+                                StockMaster.symbol == symbol
+                            )
+                        )
+                        sector = _row.scalar() or ""
+                except Exception:
+                    logger.warning("executor.sector_lookup_failed", symbol=symbol)
+
                 # 리스크 재검증
                 risk_result = await self._risk_manager.check(
                     symbol=symbol,
@@ -250,7 +280,7 @@ class OrderExecutor:
                     quantity=modified_qty,
                     price=price,
                     stop_loss_price=trade_decision.stop_loss_price,
-                    sector="",
+                    sector=sector,
                 )
 
                 if not risk_result.passed:
@@ -327,6 +357,16 @@ class OrderExecutor:
             )
 
             # 8. 포지션 생성
+            # 손절가: 명시적 값 > 설정 기반 기본값
+            stop_loss = trade_decision.stop_loss_price
+            if not stop_loss or stop_loss <= 0:
+                default_sl_pct = Decimal(str(self._settings.STOP_LOSS_PERCENT))
+                stop_loss = fill_price * (Decimal("1") - default_sl_pct / Decimal("100"))
+                logger.info(
+                    "executor.default_stop_loss",
+                    symbol=symbol, stop_loss=str(stop_loss), pct=str(default_sl_pct),
+                )
+
             position_id: int | None = None
             try:
                 pos = await self._position_manager.create(
@@ -334,7 +374,7 @@ class OrderExecutor:
                     strategy_type=strategy_type,
                     quantity=fill_quantity,
                     entry_price=fill_price,
-                    stop_loss_price=trade_decision.stop_loss_price or Decimal("0"),
+                    stop_loss_price=stop_loss,
                     take_profit_price=trade_decision.take_profit_price,
                     entry_session_id=session_id,
                     account_id=account_id,
@@ -346,6 +386,29 @@ class OrderExecutor:
                     order_id=order.id,
                     symbol=symbol,
                     exc_info=True,
+                )
+                # 긴급 알림 — 브로커 체결됨, DB 포지션 미기록
+                await self._notify_safe(
+                    f"<b>[긴급] 포지션 생성 실패</b>\n"
+                    f"종목: {symbol}\n수량: {fill_quantity}주 @ {fill_price:,}원\n"
+                    f"브로커 체결 완료, DB 포지션 미기록\n"
+                    f"즉시 수동 확인 필요"
+                )
+                await self._update_order(
+                    order.id,
+                    status=OrderStatus.FILLED,
+                    broker_order_id=order_result.order_id,
+                    filled_quantity=fill_quantity,
+                    filled_price=fill_price,
+                    commission=commission,
+                    executed_at=now,
+                    rejection_reason="포지션 생성 실패 — 수동 확인 필요",
+                )
+                return self._fail_result(
+                    order=order, symbol=symbol, side=side, quantity=fill_quantity,
+                    approval_status=approval_status,
+                    web_verify_result=verification.result, decision_ids=decision_ids,
+                    error="포지션 생성 실패 — 브로커 체결됨, DB 미기록",
                 )
 
             # 9. 주문 상태 업데이트

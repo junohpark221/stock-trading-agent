@@ -191,6 +191,7 @@ class SchedulerFactory:
             llm_router=llm_router,
             recorder=recorder,
             settings=settings,
+            cache=cache,
         )
         approval_manager = ApprovalManager(
             telegram_bot=telegram_bot,
@@ -582,6 +583,7 @@ class SchedulerFactory:
                     account_label=ctx.account_label,
                     market_open=s.MARKET_OPEN_TIME,
                     market_close=s.MARKET_CLOSE_TIME,
+                    holidays=s.KR_HOLIDAYS,
                     investment_prompt=ctx.investment_prompt,
                 ),
                 CronTrigger(hour=sw_h, minute=sw_m, timezone="UTC"),
@@ -603,6 +605,7 @@ class SchedulerFactory:
                     account_label=ctx.account_label,
                     market_open=s.MARKET_OPEN_TIME,
                     market_close=s.MARKET_CLOSE_TIME,
+                    holidays=s.KR_HOLIDAYS,
                 ),
                 CronTrigger(
                     day_of_week=pa_days,

@@ -28,6 +28,7 @@ from src.core.models import LLMMessage, WebVerification
 if TYPE_CHECKING:
     from src.agent.decision_recorder import DecisionRecorder
     from src.config import Settings
+    from src.data.cache import RedisCache
     from src.llm.router import LLMRouter
 
 logger = structlog.get_logger(__name__)
@@ -84,16 +85,20 @@ class WebSearchVerifier:
     ``agent_model_config``에 ``web_verifier`` 에이전트 타입이 등록되어야 한다.
     """
 
+    _WEB_VERIFY_CACHE_TTL = 300  # 5분
+
     def __init__(
         self,
         *,
         llm_router: LLMRouter,
         recorder: DecisionRecorder,
         settings: Settings,
+        cache: RedisCache | None = None,
     ) -> None:
         self._llm_router = llm_router
         self._recorder = recorder
         self._settings = settings
+        self._cache = cache
 
     async def verify(
         self,
@@ -126,7 +131,18 @@ class WebSearchVerifier:
             logger.info("web_verify.skipped", reason="stop_loss", symbol=symbol)
             return self._safe_default(symbol, summary="손절 주문 — 웹 검증 생략")
 
-        # 3. LLM 웹검색 호출
+        # 3. 캐시 체크 (같은 종목+방향의 최근 검증 결과 재사용)
+        cache_key = f"{symbol}:{side.value}"
+        if self._cache is not None:
+            try:
+                cached = await self._cache.get_json("web_verify", cache_key)
+                if cached is not None:
+                    logger.info("web_verify.cache_hit", symbol=symbol, side=side.value)
+                    return WebVerification.model_validate(cached)
+            except Exception:
+                pass  # 캐시 실패 시 무시, LLM 호출로 진행
+
+        # 4. LLM 웹검색 호출
         try:
             messages = self._build_messages(symbol, side)
             parsed, routing_result = await self._llm_router.route_structured(
@@ -176,11 +192,36 @@ class WebSearchVerifier:
                 result=result_enum.value,
                 issues_count=len(parsed.issues),
             )
+
+            # 캐시 저장
+            if self._cache is not None:
+                try:
+                    await self._cache.set_json(
+                        "web_verify", cache_key,
+                        verification.model_dump(mode="json"),
+                        ttl=self._WEB_VERIFY_CACHE_TTL,
+                    )
+                except Exception:
+                    pass  # 캐시 실패 시 무시
+
             return verification
 
         except Exception:
-            # Fail-open: LLM 실패 시 SAFE 반환
+            # Fail-open: LLM 실패 시 SAFE 반환, 감사 기록은 남긴다
             logger.exception("web_verify.failed", symbol=symbol)
+            try:
+                await self._recorder.record(
+                    session_id=session_id,
+                    stage=DecisionStage.EXECUTION,
+                    decision="safe",
+                    reasoning="웹 검증 실패 — fail-open 기본값 적용 (인프라 장애)",
+                    parent_id=parent_decision_id,
+                    agent_type=AgentType.WEB_VERIFIER,
+                    symbol=symbol,
+                    data_snapshot={"error": "infrastructure_failure", "fail_open": True},
+                )
+            except Exception:
+                logger.exception("web_verify.audit_record_failed", symbol=symbol)
             return self._safe_default(
                 symbol, summary="웹 검증 실패 — fail-open 기본값 적용"
             )

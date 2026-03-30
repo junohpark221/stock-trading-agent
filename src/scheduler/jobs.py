@@ -77,12 +77,25 @@ async def job_market_data_collect(
 def _is_market_open(
     market_open: str = "09:00",
     market_close: str = "15:30",
+    holidays: str = "",
 ) -> bool:
-    """현재 시각이 한국 장 운영 시간(KST) 내인지 확인."""
-    now_kst = datetime.now(_KST).time()
+    """현재 시각이 한국 장 운영 시간(KST) 내인지 확인.
+
+    주말(토/일) 및 공휴일(KR_HOLIDAYS 설정)에는 False를 반환한다.
+    """
+    now_kst = datetime.now(_KST)
+    # 주말 체크 (0=월 ~ 4=금, 5=토, 6=일)
+    if now_kst.weekday() >= 5:
+        return False
+    # 공휴일 체크
+    if holidays:
+        holiday_dates = {d.strip() for d in holidays.split(",") if d.strip()}
+        if now_kst.strftime("%Y-%m-%d") in holiday_dates:
+            return False
+    now_time = now_kst.time()
     h_open, m_open = map(int, market_open.split(":"))
     h_close, m_close = map(int, market_close.split(":"))
-    return time(h_open, m_open) <= now_kst <= time(h_close, m_close)
+    return time(h_open, m_open) <= now_time <= time(h_close, m_close)
 
 
 async def _execute_buy_decisions(
@@ -94,6 +107,7 @@ async def _execute_buy_decisions(
     account_label: str,
     market_open: str,
     market_close: str,
+    holidays: str = "",
 ) -> int:
     """PipelineResult의 BUY 결정을 실제 주문으로 실행. 장중에만 동작.
 
@@ -110,7 +124,7 @@ async def _execute_buy_decisions(
     if not buy_decisions:
         return 0
 
-    if not _is_market_open(market_open, market_close):
+    if not _is_market_open(market_open, market_close, holidays):
         logger.info(
             "job.buy_execution.skip_market_closed",
             buy_count=len(buy_decisions),
@@ -164,6 +178,7 @@ async def job_swing_analysis(
     account_label: str = "",
     market_open: str = "09:00",
     market_close: str = "15:30",
+    holidays: str = "",
 ) -> None:
     """스윙 전략 시그널 스캔 + BUY 자동 실행. Daily 01:00 UTC (10:00 KST). 계좌별."""
     # scan_universe()로 필터링, 없으면 전체 watchlist fallback
@@ -204,6 +219,7 @@ async def job_swing_analysis(
             account_label=account_label,
             market_open=market_open,
             market_close=market_close,
+            holidays=holidays,
         )
         if executed:
             logger.info("job.swing_analysis.orders_executed", count=executed, account_id=account_id)
@@ -219,6 +235,7 @@ async def job_position_analysis(
     account_label: str = "",
     market_open: str = "09:00",
     market_close: str = "15:30",
+    holidays: str = "",
 ) -> None:
     """보유 포지션 심층 분석 + BUY 자동 실행. Wed & Sat 01:30 UTC (10:30 KST). 계좌별."""
     positions = await position_manager.get_open(account_id=account_id)
@@ -250,6 +267,7 @@ async def job_position_analysis(
             account_label=account_label,
             market_open=market_open,
             market_close=market_close,
+            holidays=holidays,
         )
         if executed:
             logger.info("job.position_analysis.orders_executed", count=executed, account_id=account_id)

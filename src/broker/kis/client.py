@@ -100,6 +100,8 @@ class KISClient(BrokerInterface):
         # Rate limiting
         self._semaphore = asyncio.Semaphore(1)
         self._rate_limit_interval = settings.KIS_RATE_LIMIT_INTERVAL
+        self._max_rate_limit_retries = settings.KIS_RATE_LIMIT_MAX_RETRIES
+        self._rate_limit_backoff_base = settings.KIS_RATE_LIMIT_BACKOFF_BASE
 
         # Base URL
         if settings.KIS_BASE_URL:
@@ -148,6 +150,8 @@ class KISClient(BrokerInterface):
             instance._rate_limit_interval = rate_limit_interval
         else:
             instance._rate_limit_interval = 0.5 if credentials.is_paper else 0.05
+        instance._max_rate_limit_retries = 3
+        instance._rate_limit_backoff_base = 1.0
 
         # Base URL
         instance._base_url = (
@@ -227,6 +231,7 @@ class KISClient(BrokerInterface):
         body: dict[str, str] | None = None,
         tr_cont: str = "",
         is_retry: bool = False,
+        rate_limit_retry: int = 0,
     ) -> dict[str, Any]:
         """Execute a single KIS API call inside the rate-limit semaphore."""
         if not self._session or not self._auth:
@@ -267,7 +272,8 @@ class KISClient(BrokerInterface):
         # Error handling
         return await self._handle_error(
             base, data, method, path, tr_id,
-            params=params, body=body, tr_cont=tr_cont, is_retry=is_retry,
+            params=params, body=body, tr_cont=tr_cont,
+            is_retry=is_retry, rate_limit_retry=rate_limit_retry,
         )
 
     async def _handle_error(
@@ -282,6 +288,7 @@ class KISClient(BrokerInterface):
         body: dict[str, str] | None,
         tr_cont: str,
         is_retry: bool,
+        rate_limit_retry: int = 0,
     ) -> dict[str, Any]:
         """Map KIS error codes to exceptions or retry on token expiry."""
         msg_cd = base.msg_cd
@@ -296,12 +303,29 @@ class KISClient(BrokerInterface):
             await self._auth.refresh_token()
             return await self._do_request(
                 method, path, tr_id,
-                params=params, body=body, tr_cont=tr_cont, is_retry=True,
+                params=params, body=body, tr_cont=tr_cont,
+                is_retry=True, rate_limit_retry=rate_limit_retry,
             )
 
-        # Rate limit
+        # Rate limit — exponential backoff retry
         if msg_cd == "EGW00201":
-            raise RateLimitError(f"KIS rate limit: {msg1}")
+            if rate_limit_retry >= self._max_rate_limit_retries:
+                raise RateLimitError(
+                    f"KIS rate limit after {rate_limit_retry} retries: {msg1}"
+                )
+            wait = self._rate_limit_backoff_base * (2 ** rate_limit_retry)
+            logger.warning(
+                "kis_rate_limit_retry",
+                retry=rate_limit_retry + 1,
+                max_retries=self._max_rate_limit_retries,
+                wait_seconds=wait,
+            )
+            await asyncio.sleep(wait)
+            return await self._do_request(
+                method, path, tr_id,
+                params=params, body=body, tr_cont=tr_cont,
+                is_retry=is_retry, rate_limit_retry=rate_limit_retry + 1,
+            )
 
         # Insufficient funds
         if msg_cd == "APBK0013":

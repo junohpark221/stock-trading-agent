@@ -624,7 +624,9 @@ class SchedulerFactory:
         try:
             async with session_factory() as session:
                 result = await session.execute(
-                    select(StockMaster.symbol).order_by(StockMaster.symbol),
+                    select(StockMaster.symbol)
+                    .where(StockMaster.is_active.is_(True))
+                    .order_by(StockMaster.symbol),
                 )
                 symbols = [row[0] for row in result.all()]
                 logger.info(

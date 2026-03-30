@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     KIS_HTS_ID: str = ""
     KIS_BASE_URL: str = ""                 # 빈 값이면 KIS_IS_PAPER로 자동 결정
     KIS_RATE_LIMIT_INTERVAL: float = 0.5   # paper=0.5s, prod=0.05s
+    KIS_RATE_LIMIT_MAX_RETRIES: int = 3        # rate limit 최대 재시도 횟수
+    KIS_RATE_LIMIT_BACKOFF_BASE: float = 1.0   # 백오프 기본 대기 시간(초)
     KIS_TOKEN_REDIS_TTL: int = 82800       # 23시간 (토큰 유효 24시간, 1시간 여유)
     KIS_OHLCV_CACHE_TTL: int = 300         # 5분
     KIS_PRICE_CACHE_TTL: int = 10          # 10초

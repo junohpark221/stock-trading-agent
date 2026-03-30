@@ -426,15 +426,55 @@ class TestKISClientHandleError:
             await client._request("GET", "/test", "TEST")
 
     @pytest.mark.asyncio
-    async def test_rate_limit_egw00201(self):
+    async def test_rate_limit_egw00201_exhausts_retries(self):
+        """max_retries(3)회 재시도 후에도 rate limit이면 RateLimitError 발생."""
         client = _make_kis_client()
         resp = mock_aiohttp_response(
             json_data={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate limit"},
             headers={"tr_cont": ""},
         )
         client._session.get = AsyncMock(return_value=resp)
-        with pytest.raises(RateLimitError):
-            await client._request("GET", "/test", "TEST")
+        with patch("src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(RateLimitError, match="after 3 retries"):
+                await client._request("GET", "/test", "TEST")
+        # 최초 1회 + 재시도 3회 = 총 4회 호출
+        assert client._session.get.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_retry_then_success(self):
+        """1회 rate limit 후 2회째 성공하면 정상 반환."""
+        client = _make_kis_client()
+        err_resp = mock_aiohttp_response(
+            json_data={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate limit"},
+            headers={"tr_cont": ""},
+        )
+        ok_resp = _make_ok_response(output={"result": "ok"})
+        client._session.get = AsyncMock(side_effect=[err_resp, ok_resp])
+        with patch("src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock):
+            data = await client._request("GET", "/test", "TEST")
+        assert data["output"]["result"] == "ok"
+        assert client._session.get.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_backoff_sleep(self):
+        """재시도 시 지수 백오프로 sleep이 호출되는지 확인."""
+        client = _make_kis_client()
+        client._rate_limit_backoff_base = 1.0
+        client._max_rate_limit_retries = 3
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate limit"},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+        with patch("src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with pytest.raises(RateLimitError):
+                await client._request("GET", "/test", "TEST")
+        # 일반 rate limit sleep(semaphore 내) 4회 + backoff sleep 3회
+        backoff_calls = [c.args[0] for c in mock_sleep.await_args_list]
+        # backoff: 1.0, 2.0, 4.0 이 포함되어야 함
+        assert 1.0 in backoff_calls
+        assert 2.0 in backoff_calls
+        assert 4.0 in backoff_calls
 
     @pytest.mark.asyncio
     async def test_insufficient_funds_apbk0013(self):

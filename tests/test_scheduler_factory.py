@@ -92,6 +92,25 @@ async def test_get_watchlist_symbols_with_data():
 
 
 @pytest.mark.asyncio
+async def test_get_watchlist_symbols_filters_active_only():
+    """is_active 필터가 SQL 쿼리에 포함되는지 확인."""
+    factory, session = _mock_session_factory()
+    result_mock = MagicMock()
+    # is_active=True인 종목만 반환된다고 가정
+    result_mock.all.return_value = [("005930",), ("035720",)]
+    session.execute = AsyncMock(return_value=result_mock)
+
+    symbols = await SchedulerFactory._get_watchlist_symbols(factory)
+
+    assert symbols == ["005930", "035720"]
+    # execute에 전달된 SQL에 is_active 조건이 포함되어야 함
+    call_args = session.execute.call_args
+    stmt = call_args[0][0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "is_active" in compiled
+
+
+@pytest.mark.asyncio
 async def test_get_watchlist_symbols_db_error():
     """DB 에러 시 빈 리스트 반환 (fail-open)."""
     factory, session = _mock_session_factory()

@@ -82,6 +82,13 @@ def get_scheduler():
     return _scheduler_engine
 
 
+def get_broker_registry():
+    """현재 BrokerRegistry 싱글톤 반환. 미초기화 시 RuntimeError."""
+    if _broker_registry is None:
+        raise RuntimeError("BrokerRegistry not initialized. App lifespan not started.")
+    return _broker_registry
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}종목 마스터 — Trading Agent{% endblock %}
+{% block content %}
+<h2>종목 마스터 관리</h2>
+
+<!-- 통계 카드 -->
+<div class="grid">
+    <article>
+        <header>전체 종목</header>
+        <p style="font-size:2rem;font-weight:bold">{{ stats.total }}</p>
+    </article>
+    <article>
+        <header>KOSPI</header>
+        <p style="font-size:2rem;font-weight:bold">{{ stats.kospi }}</p>
+    </article>
+    <article>
+        <header>KOSDAQ</header>
+        <p style="font-size:2rem;font-weight:bold">{{ stats.kosdaq }}</p>
+    </article>
+    <article>
+        <header>비활성 (상장폐지)</header>
+        <p style="font-size:2rem;font-weight:bold">{{ stats.inactive }}</p>
+    </article>
+</div>
+
+<!-- 마지막 업데이트 + 동기화 버튼 -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+    <small>마지막 업데이트: {{ stats.last_updated or '없음' }}</small>
+    <div id="sync-status">
+        <button
+            hx-post="/admin/stock-master/sync"
+            hx-target="#sync-status"
+            hx-swap="innerHTML"
+            hx-indicator="#sync-spinner"
+        >
+            종목 마스터 동기화
+        </button>
+        <span id="sync-spinner" class="htmx-indicator" aria-busy="true" style="display:none"></span>
+    </div>
+</div>
+
+<!-- 최근 업데이트 종목 테이블 -->
+<h3>최근 업데이트 상위 10건</h3>
+<figure>
+<table>
+    <thead>
+        <tr>
+            <th>종목코드</th>
+            <th>종목명</th>
+            <th>시장</th>
+            <th>활성</th>
+            <th>업데이트</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for stock in stocks %}
+        <tr>
+            <td>{{ stock.symbol }}</td>
+            <td>{{ stock.name }}</td>
+            <td>{{ stock.market_type|upper }}</td>
+            <td>{{ '활성' if stock.is_active else '비활성' }}</td>
+            <td>{{ stock.updated_at.strftime('%Y-%m-%d %H:%M') if stock.updated_at else '-' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">데이터가 없습니다. 동기화를 실행해 주세요.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+</figure>
+{% endblock %}

@@ -1,0 +1,10 @@
+<mark>동기화가 시작되었습니다. 완료까지 수 분이 소요될 수 있습니다.</mark>
+<button
+    hx-post="/admin/stock-master/sync"
+    hx-target="#sync-status"
+    hx-swap="innerHTML"
+    hx-indicator="#sync-spinner"
+    disabled
+>
+    동기화 중...
+</button>

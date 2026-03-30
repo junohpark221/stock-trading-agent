@@ -326,3 +326,55 @@ class TestScheduler:
                 r = await c.post("/admin/scheduler/pause")
         assert r.status_code == 200
         mock_sched.return_value.pause_all.assert_called_once()
+
+
+# ── Stock Master ────────────────────────────────────────────────────
+
+
+def _mock_stock(**kwargs):
+    """StockMaster ORM mock."""
+    s = MagicMock()
+    s.symbol = kwargs.get("symbol", "005930")
+    s.name = kwargs.get("name", "삼성전자")
+    s.market_type = kwargs.get("market_type", "kospi")
+    s.is_active = kwargs.get("is_active", True)
+    s.updated_at = MagicMock()
+    s.updated_at.strftime = MagicMock(return_value="2026-03-30 10:00")
+    return s
+
+
+class TestStockMaster:
+    @pytest.mark.asyncio
+    async def test_stock_master_page(self, mock_session):
+        mock_session.execute.side_effect = _make_execute_results(
+            100,   # total
+            50,    # kospi
+            50,    # kosdaq
+            0,     # inactive
+            MagicMock(scalar_one=MagicMock(return_value=None)),  # last_updated
+            [_mock_stock()],  # stocks top 10
+        )
+        async with _client() as c:
+            r = await c.get("/admin/stock-master")
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_stock_master_page_empty(self, mock_session):
+        mock_session.execute.side_effect = _make_execute_results(
+            0,     # total
+            0,     # kospi
+            0,     # kosdaq
+            0,     # inactive
+            MagicMock(scalar_one=MagicMock(return_value=None)),  # last_updated
+            [],    # stocks
+        )
+        async with _client() as c:
+            r = await c.get("/admin/stock-master")
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_stock_master_sync_trigger(self, mock_session):
+        with patch("src.api.routes.admin_web.get_session_factory"):
+            async with _client() as c:
+                r = await c.post("/admin/stock-master/sync")
+        assert r.status_code == 200

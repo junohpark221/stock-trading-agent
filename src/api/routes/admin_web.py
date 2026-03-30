@@ -18,6 +18,7 @@ from src.core.enums import BacktestMode, BacktestStatus, StrategyType
 from src.core.models import BacktestConfig
 from src.db.models.account import Account
 from src.db.models.backtest import BacktestRun, BacktestTrade
+from src.db.models.market_data import StockMaster
 from src.db.models.scheduler import JobExecution
 from src.db.models.strategy import PositionRecord
 from src.db.session import get_db_session, get_session_factory
@@ -529,3 +530,107 @@ async def scheduler_run_job(
     background_tasks.add_task(scheduler.run_job_now, job_name)
     context = await _build_scheduler_context(request, session)
     return templates.TemplateResponse("partials/scheduler_status.html", context)
+
+
+# ── Stock Master ───────────────────────────────────────────────────────
+
+
+async def _get_stock_master_stats(session: AsyncSession) -> dict:
+    """stock_master 테이블 통계 조회."""
+    total = (await session.execute(
+        select(func.count(StockMaster.symbol))
+    )).scalar_one()
+    kospi = (await session.execute(
+        select(func.count(StockMaster.symbol)).where(
+            StockMaster.market_type == "kospi", StockMaster.is_active.is_(True),
+        )
+    )).scalar_one()
+    kosdaq = (await session.execute(
+        select(func.count(StockMaster.symbol)).where(
+            StockMaster.market_type == "kosdaq", StockMaster.is_active.is_(True),
+        )
+    )).scalar_one()
+    inactive = (await session.execute(
+        select(func.count(StockMaster.symbol)).where(StockMaster.is_active.is_(False))
+    )).scalar_one()
+    last_updated = (await session.execute(
+        select(func.max(StockMaster.updated_at))
+    )).scalar_one()
+
+    return {
+        "total": total,
+        "kospi": kospi,
+        "kosdaq": kosdaq,
+        "inactive": inactive,
+        "last_updated": last_updated.strftime("%Y-%m-%d %H:%M") if last_updated else None,
+    }
+
+
+async def _sync_stock_master_background(session_factory) -> None:
+    """BackgroundTasks에서 실행되는 stock_master 동기화."""
+    from src.config import get_settings
+    from src.data.cache import get_cache
+
+    from src.main import get_broker_registry
+
+    settings = get_settings()
+    if settings.USE_MOCK_BROKER:
+        logger.warning("stock_master_sync_skipped_mock_broker")
+        return
+
+    try:
+        registry = get_broker_registry()
+    except RuntimeError:
+        logger.error("stock_master_sync_no_broker_registry")
+        return
+
+    all_brokers = registry.get_all()
+    if not all_brokers:
+        logger.error("stock_master_sync_no_accounts")
+        return
+
+    from src.data.providers.kis_provider import KISDataProvider
+
+    first_account_id = next(iter(all_brokers))
+    broker = registry.get(first_account_id)
+    provider = KISDataProvider(
+        client=broker,
+        cache=get_cache(),
+        session_factory=session_factory,
+        settings=settings,
+    )
+    count = await provider.sync_stock_master()
+    logger.info("stock_master_sync_manual_done", upserted=count)
+
+
+@router.get("/stock-master", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def stock_master_page(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """GET /admin/stock-master — 종목 마스터 관리: 통계 + 최근 업데이트 10건."""
+    stats = await _get_stock_master_stats(session)
+
+    result = await session.execute(
+        select(StockMaster).order_by(StockMaster.updated_at.desc()).limit(10)
+    )
+    stocks = list(result.scalars().all())
+
+    return templates.TemplateResponse("stock_master.html", {
+        "request": request,
+        "stats": stats,
+        "stocks": stocks,
+    })
+
+
+@router.post("/stock-master/sync", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def stock_master_sync(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """POST /admin/stock-master/sync — 종목 마스터 동기화 (비동기)."""
+    session_factory = get_session_factory()
+    background_tasks.add_task(_sync_stock_master_background, session_factory)
+    return templates.TemplateResponse("partials/stock_master_sync_status.html", {
+        "request": request,
+    })

@@ -219,6 +219,14 @@ class SchedulerFactory:
                 settings=settings,
             )
 
+        # ── 4-1. 서버 시작 시 stock_master 동기화 ─────────────────────
+        if provider is not None:
+            try:
+                count = await provider.sync_stock_master()
+                logger.info("stock_master_sync_on_startup", upserted=count)
+            except Exception:
+                logger.exception("stock_master_sync_on_startup_failed")
+
         # ── 5. 계좌별 AccountContext 생성 ─────────────────────────────
         contexts: list[AccountContext] = []
         for account in registered_accounts:

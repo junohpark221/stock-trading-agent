@@ -1,10 +1,52 @@
-<mark>동기화가 시작되었습니다. 완료까지 수 분이 소요될 수 있습니다.</mark>
+{% if sync_status == "running" %}
+<div hx-get="/admin/stock-master/sync/status"
+     hx-trigger="every 3s"
+     hx-target="#sync-status"
+     hx-swap="innerHTML">
+    <mark>동기화 진행 중... 완료까지 수 분이 소요될 수 있습니다.</mark>
+    <button disabled aria-busy="true">동기화 중...</button>
+</div>
+
+{% elif sync_status == "completed" %}
+<div>
+    <mark>동기화 완료 — {{ sync_count }}건 업데이트</mark>
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem">
+        <button
+            hx-post="/admin/stock-master/sync"
+            hx-target="#sync-status"
+            hx-swap="innerHTML"
+        >
+            종목 마스터 동기화
+        </button>
+        <a href="/admin/stock-master" role="button" class="outline">
+            새로고침
+        </a>
+    </div>
+</div>
+
+{% elif sync_status == "failed" %}
+<div>
+    <mark style="background:var(--pico-del-color);color:#fff">
+        동기화 실패: {{ sync_error or "알 수 없는 오류" }}
+    </mark>
+    <button
+        hx-post="/admin/stock-master/sync"
+        hx-target="#sync-status"
+        hx-swap="innerHTML"
+        style="margin-top:0.5rem"
+    >
+        재시도
+    </button>
+</div>
+
+{% else %}
 <button
     hx-post="/admin/stock-master/sync"
     hx-target="#sync-status"
     hx-swap="innerHTML"
     hx-indicator="#sync-spinner"
-    disabled
 >
-    동기화 중...
+    종목 마스터 동기화
 </button>
+<span id="sync-spinner" class="htmx-indicator" aria-busy="true" style="display:none"></span>
+{% endif %}

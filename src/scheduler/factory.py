@@ -256,6 +256,7 @@ class SchedulerFactory:
         engine = SchedulerEngine(
             session_factory=session_factory,
             settings=settings,
+            telegram_bot=telegram_bot,
         )
 
         watchlist_symbols = await SchedulerFactory._get_watchlist_symbols(

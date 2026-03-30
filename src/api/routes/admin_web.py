@@ -566,41 +566,91 @@ async def _get_stock_master_stats(session: AsyncSession) -> dict:
     }
 
 
+_SYNC_NS = "stock_master_sync"
+_SYNC_KEY = "status"
+_SYNC_TTL = 300  # 5분
+
+
+async def _set_sync_status(cache, data: dict) -> None:
+    """Redis에 동기화 상태 저장 (실패 시 로그만)."""
+    try:
+        await cache.set_json(_SYNC_NS, _SYNC_KEY, data, ttl=_SYNC_TTL)
+    except Exception:
+        logger.warning("stock_master_sync_status_write_failed", data=data)
+
+
+async def _send_sync_failure_telegram(error_msg: str) -> None:
+    """동기화 실패 시 텔레그램 알림 발송 (실패 시 로그만)."""
+    try:
+        from src.main import get_telegram_bot
+
+        bot = get_telegram_bot()
+        await bot.send_message(
+            f"<b>종목 마스터 동기화 실패</b>\n에러: {error_msg}"
+        )
+    except Exception:
+        logger.warning("stock_master_sync_telegram_failed", error=error_msg)
+
+
 async def _sync_stock_master_background(session_factory) -> None:
     """BackgroundTasks에서 실행되는 stock_master 동기화."""
     from src.config import get_settings
     from src.data.cache import get_cache
 
-    from src.main import get_broker_registry
+    cache = get_cache()
 
-    settings = get_settings()
-    if settings.USE_MOCK_BROKER:
-        logger.warning("stock_master_sync_skipped_mock_broker")
-        return
+    await _set_sync_status(cache, {
+        "status": "running",
+        "started_at": datetime.now(UTC).isoformat(),
+    })
 
     try:
-        registry = get_broker_registry()
-    except RuntimeError:
-        logger.error("stock_master_sync_no_broker_registry")
-        return
+        from src.main import get_broker_registry
 
-    all_brokers = registry.get_all()
-    if not all_brokers:
-        logger.error("stock_master_sync_no_accounts")
-        return
+        settings = get_settings()
+        if settings.USE_MOCK_BROKER:
+            logger.warning("stock_master_sync_skipped_mock_broker")
+            error = "Mock 브로커 사용 중 — 동기화 불가"
+            await _set_sync_status(cache, {"status": "failed", "error": error})
+            await _send_sync_failure_telegram(error)
+            return
 
-    from src.data.providers.kis_provider import KISDataProvider
+        try:
+            registry = get_broker_registry()
+        except RuntimeError:
+            logger.error("stock_master_sync_no_broker_registry")
+            error = "브로커 레지스트리가 초기화되지 않았습니다"
+            await _set_sync_status(cache, {"status": "failed", "error": error})
+            await _send_sync_failure_telegram(error)
+            return
 
-    first_account_id = next(iter(all_brokers))
-    broker = registry.get(first_account_id)
-    provider = KISDataProvider(
-        client=broker,
-        cache=get_cache(),
-        session_factory=session_factory,
-        settings=settings,
-    )
-    count = await provider.sync_stock_master()
-    logger.info("stock_master_sync_manual_done", upserted=count)
+        all_brokers = registry.get_all()
+        if not all_brokers:
+            logger.error("stock_master_sync_no_accounts")
+            error = "등록된 계좌가 없습니다"
+            await _set_sync_status(cache, {"status": "failed", "error": error})
+            await _send_sync_failure_telegram(error)
+            return
+
+        from src.data.providers.kis_provider import KISDataProvider
+
+        first_account_id = next(iter(all_brokers))
+        broker = registry.get(first_account_id)
+        provider = KISDataProvider(
+            client=broker,
+            cache=cache,
+            session_factory=session_factory,
+            settings=settings,
+        )
+        count = await provider.sync_stock_master()
+        logger.info("stock_master_sync_manual_done", upserted=count)
+        await _set_sync_status(cache, {"status": "completed", "count": count})
+
+    except Exception as exc:
+        error = str(exc)
+        logger.exception("stock_master_sync_failed", error=error)
+        await _set_sync_status(cache, {"status": "failed", "error": error})
+        await _send_sync_failure_telegram(error)
 
 
 @router.get("/stock-master", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
@@ -629,8 +679,55 @@ async def stock_master_sync(
     background_tasks: BackgroundTasks,
 ):
     """POST /admin/stock-master/sync — 종목 마스터 동기화 (비동기)."""
+    from src.data.cache import get_cache
+
+    cache = get_cache()
+
+    # 이미 실행 중이면 중복 방지
+    try:
+        existing = await cache.get_json(_SYNC_NS, _SYNC_KEY)
+        if existing and existing.get("status") == "running":
+            return templates.TemplateResponse("partials/stock_master_sync_status.html", {
+                "request": request,
+                "sync_status": "running",
+                "sync_count": 0,
+                "sync_error": None,
+            })
+    except Exception:
+        pass
+
     session_factory = get_session_factory()
     background_tasks.add_task(_sync_stock_master_background, session_factory)
     return templates.TemplateResponse("partials/stock_master_sync_status.html", {
         "request": request,
+        "sync_status": "running",
+        "sync_count": 0,
+        "sync_error": None,
+    })
+
+
+@router.get("/stock-master/sync/status", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def stock_master_sync_status(request: Request):
+    """GET /admin/stock-master/sync/status — 동기화 상태 폴링."""
+    from src.data.cache import get_cache
+
+    cache = get_cache()
+    status = "idle"
+    count = 0
+    error = None
+
+    try:
+        data = await cache.get_json(_SYNC_NS, _SYNC_KEY)
+        if data:
+            status = data.get("status", "idle")
+            count = data.get("count", 0)
+            error = data.get("error")
+    except Exception:
+        pass
+
+    return templates.TemplateResponse("partials/stock_master_sync_status.html", {
+        "request": request,
+        "sync_status": status,
+        "sync_count": count,
+        "sync_error": error,
     })

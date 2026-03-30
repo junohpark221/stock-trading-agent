@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.config import Settings
+    from src.notification.telegram import TelegramBot
 
 logger = structlog.get_logger(__name__)
 
@@ -44,9 +45,11 @@ class SchedulerEngine:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
+        telegram_bot: TelegramBot | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
+        self._telegram_bot = telegram_bot
         self._scheduler = AsyncIOScheduler(timezone="UTC")
         self._job_fns: dict[str, _AsyncFn] = {}
         self._paused: bool = False
@@ -267,6 +270,16 @@ class SchedulerEngine:
                 error=error_message,
                 exc_info=True,
             )
+            # 텔레그램 에러 알림
+            if self._telegram_bot is not None:
+                try:
+                    await self._telegram_bot.send_message(
+                        f"<b>배치 작업 실패</b>\n"
+                        f"작업: <code>{job_name}</code>\n"
+                        f"에러: {error_message}"
+                    )
+                except Exception:
+                    logger.warning("scheduler.job_failed_telegram_send_failed", job_name=job_name)
 
         # Step 3: UPDATE record
         finished_at = datetime.now(UTC)

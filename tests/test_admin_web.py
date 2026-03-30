@@ -374,7 +374,68 @@ class TestStockMaster:
 
     @pytest.mark.asyncio
     async def test_stock_master_sync_trigger(self, mock_session):
-        with patch("src.api.routes.admin_web.get_session_factory"):
+        mock_cache = AsyncMock()
+        mock_cache.get_json = AsyncMock(return_value=None)
+        with (
+            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.data.cache.get_cache", return_value=mock_cache),
+        ):
             async with _client() as c:
                 r = await c.post("/admin/stock-master/sync")
         assert r.status_code == 200
+        assert "동기화 진행 중" in r.text
+
+    @pytest.mark.asyncio
+    async def test_stock_master_sync_duplicate_blocked(self, mock_session):
+        mock_cache = AsyncMock()
+        mock_cache.get_json = AsyncMock(return_value={"status": "running"})
+        with (
+            patch("src.api.routes.admin_web.get_session_factory") as mock_factory,
+            patch("src.data.cache.get_cache", return_value=mock_cache),
+        ):
+            async with _client() as c:
+                r = await c.post("/admin/stock-master/sync")
+        assert r.status_code == 200
+        assert "동기화 진행 중" in r.text
+
+    @pytest.mark.asyncio
+    async def test_stock_master_sync_status_running(self, mock_session):
+        mock_cache = AsyncMock()
+        mock_cache.get_json = AsyncMock(return_value={"status": "running"})
+        with patch("src.data.cache.get_cache", return_value=mock_cache):
+            async with _client() as c:
+                r = await c.get("/admin/stock-master/sync/status")
+        assert r.status_code == 200
+        assert "동기화 진행 중" in r.text
+
+    @pytest.mark.asyncio
+    async def test_stock_master_sync_status_completed(self, mock_session):
+        mock_cache = AsyncMock()
+        mock_cache.get_json = AsyncMock(return_value={"status": "completed", "count": 2500})
+        with patch("src.data.cache.get_cache", return_value=mock_cache):
+            async with _client() as c:
+                r = await c.get("/admin/stock-master/sync/status")
+        assert r.status_code == 200
+        assert "2500" in r.text
+        assert "동기화 완료" in r.text
+
+    @pytest.mark.asyncio
+    async def test_stock_master_sync_status_failed(self, mock_session):
+        mock_cache = AsyncMock()
+        mock_cache.get_json = AsyncMock(return_value={"status": "failed", "error": "API timeout"})
+        with patch("src.data.cache.get_cache", return_value=mock_cache):
+            async with _client() as c:
+                r = await c.get("/admin/stock-master/sync/status")
+        assert r.status_code == 200
+        assert "동기화 실패" in r.text
+        assert "API timeout" in r.text
+
+    @pytest.mark.asyncio
+    async def test_stock_master_sync_status_idle(self, mock_session):
+        mock_cache = AsyncMock()
+        mock_cache.get_json = AsyncMock(return_value=None)
+        with patch("src.data.cache.get_cache", return_value=mock_cache):
+            async with _client() as c:
+                r = await c.get("/admin/stock-master/sync/status")
+        assert r.status_code == 200
+        assert "종목 마스터 동기화" in r.text

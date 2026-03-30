@@ -338,6 +338,58 @@ class TestWrapJob:
         assert "test error" in exec_record.error_message
 
     @pytest.mark.asyncio
+    async def test_failure_sends_telegram(self, mock_session_factory, settings_enabled):
+        """실패 실행 → 텔레그램 에러 알림 발송."""
+        telegram_bot = AsyncMock()
+        engine = SchedulerEngine(
+            session_factory=mock_session_factory,
+            settings=settings_enabled,
+            telegram_bot=telegram_bot,
+        )
+
+        mock_session = _make_mock_session()
+
+        async def _set_id(obj):
+            obj.id = 44
+
+        mock_session.refresh = AsyncMock(side_effect=_set_id)
+        mock_session.get = AsyncMock(return_value=MagicMock())
+        mock_session_factory.return_value = mock_session
+
+        fn = AsyncMock(side_effect=RuntimeError("connection timeout"))
+        await engine._wrap_job("market_data_collect", fn)
+
+        telegram_bot.send_message.assert_awaited_once()
+        msg = telegram_bot.send_message.call_args[0][0]
+        assert "배치 작업 실패" in msg
+        assert "market_data_collect" in msg
+        assert "connection timeout" in msg
+
+    @pytest.mark.asyncio
+    async def test_failure_telegram_error_ignored(self, mock_session_factory, settings_enabled):
+        """텔레그램 발송 실패 시 예외가 전파되지 않음."""
+        telegram_bot = AsyncMock()
+        telegram_bot.send_message = AsyncMock(side_effect=Exception("Telegram down"))
+        engine = SchedulerEngine(
+            session_factory=mock_session_factory,
+            settings=settings_enabled,
+            telegram_bot=telegram_bot,
+        )
+
+        mock_session = _make_mock_session()
+
+        async def _set_id(obj):
+            obj.id = 45
+
+        mock_session.refresh = AsyncMock(side_effect=_set_id)
+        mock_session.get = AsyncMock(return_value=MagicMock())
+        mock_session_factory.return_value = mock_session
+
+        fn = AsyncMock(side_effect=RuntimeError("some error"))
+        # 예외 없이 정상 완료되어야 함
+        await engine._wrap_job("test_job", fn)
+
+    @pytest.mark.asyncio
     async def test_db_insert_failure_still_runs_job(self, engine, mock_session_factory):
         """DB INSERT 실패해도 작업은 실행된다 (fail-open)."""
         # session factory가 에러를 일으키도록

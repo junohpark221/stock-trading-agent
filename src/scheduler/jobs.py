@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from src.agent.orchestrator import PipelineOrchestrator
     from src.broker.base import BrokerInterface
     from src.broker.kis.auth import KISAuth
+    from src.strategy.base import Strategy
     from src.data.providers.base import DataProvider
     from src.execution.executor import OrderExecutor
     from src.execution.exit_executor import ExitExecutionService
@@ -156,6 +157,7 @@ async def job_swing_analysis(
     *,
     orchestrator: PipelineOrchestrator,
     symbols: list[str],
+    strategy: Strategy | None = None,
     account_id: str = "default",
     investment_prompt: str = "",
     order_executor: OrderExecutor | None = None,
@@ -164,15 +166,31 @@ async def job_swing_analysis(
     market_close: str = "15:30",
 ) -> None:
     """스윙 전략 시그널 스캔 + BUY 자동 실행. Daily 01:00 UTC (10:00 KST). 계좌별."""
+    # scan_universe()로 필터링, 없으면 전체 watchlist fallback
+    if strategy is not None:
+        target_symbols = await strategy.scan_universe()
+        logger.info(
+            "job.swing_analysis.filtered",
+            total=len(symbols),
+            filtered=len(target_symbols),
+            account_id=account_id,
+        )
+    else:
+        target_symbols = symbols
+
+    if not target_symbols:
+        logger.info("job.swing_analysis.skip", reason="no_target_symbols", account_id=account_id)
+        return
+
     result = await orchestrator.execute(
-        symbols,
+        target_symbols,
         investment_prompt=investment_prompt,
         account_id=account_id,
     )
     logger.info(
         "job.swing_analysis.done",
         session_id=str(result.session_id),
-        symbols_count=len(symbols),
+        symbols_count=len(target_symbols),
         buy_decisions=len([td for td in result.trade_decisions if td.action == DecisionAction.BUY]),
         account_id=account_id,
     )

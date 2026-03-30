@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from src.notification.telegram import TelegramBot
     from src.report.generator import ReportGenerator
     from src.scheduler.monitor import TradingMonitor
+    from src.strategy.base import Strategy
     from src.strategy.exit_checker import ExitConditionChecker
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
@@ -79,6 +80,7 @@ class AccountContext:
     monitor: TradingMonitor
     investment_prompt: str
     account_label: str  # "닉네임 (뒤4자리)"
+    strategy: Strategy | None = None
 
 
 # ── SchedulerFactory ──────────────────────────────────────────────────
@@ -445,6 +447,34 @@ class SchedulerFactory:
         if not settings.USE_MOCK_BROKER and hasattr(broker, "_auth"):
             auth = broker._auth  # type: ignore[attr-defined]
 
+        # scan_universe() 용 Strategy 인스턴스
+        from src.strategy.registry import StrategyFactory, StrategyCommonDeps
+
+        strategy: Strategy | None = None
+        try:
+            deps = StrategyCommonDeps(
+                orchestrator=orchestrator,
+                recorder=recorder,
+                broker=broker,
+                session_factory=session_factory,
+                settings=acct_settings,
+                cache=cache,
+            )
+            strategy = StrategyFactory.create(
+                strategy_type,
+                deps,
+                account_id=account_id,
+                investment_prompt=account.investment_prompt,
+                risk_overrides=account.risk_overrides,
+            )
+        except Exception:
+            logger.warning(
+                "scheduler_factory.strategy_create_failed",
+                account_id=account_id,
+                strategy_type=strategy_type.value,
+                exc_info=True,
+            )
+
         return AccountContext(
             account_id=account_id,
             nickname=account.nickname,
@@ -460,6 +490,7 @@ class SchedulerFactory:
             monitor=monitor,
             investment_prompt=account.investment_prompt,
             account_label=account_label,
+            strategy=strategy,
         )
 
     # ── Job Registration ─────────────────────────────────────────────
@@ -545,6 +576,7 @@ class SchedulerFactory:
                     job_swing_analysis,
                     orchestrator=orchestrator,
                     symbols=watchlist_symbols,
+                    strategy=ctx.strategy,
                     account_id=aid,
                     order_executor=ctx.order_executor,
                     account_label=ctx.account_label,

@@ -605,46 +605,26 @@ async def _sync_stock_master_background(session_factory) -> None:
     })
 
     try:
-        from src.main import get_broker_registry
-
-        settings = get_settings()
-        if settings.USE_MOCK_BROKER:
-            logger.warning("stock_master_sync_skipped_mock_broker")
-            error = "Mock 브로커 사용 중 — 동기화 불가"
-            await _set_sync_status(cache, {"status": "failed", "error": error})
-            await _send_sync_failure_telegram(error)
-            return
-
-        try:
-            registry = get_broker_registry()
-        except RuntimeError:
-            logger.error("stock_master_sync_no_broker_registry")
-            error = "브로커 레지스트리가 초기화되지 않았습니다"
-            await _set_sync_status(cache, {"status": "failed", "error": error})
-            await _send_sync_failure_telegram(error)
-            return
-
-        all_brokers = registry.get_all()
-        if not all_brokers:
-            logger.error("stock_master_sync_no_accounts")
-            error = "등록된 계좌가 없습니다"
-            await _set_sync_status(cache, {"status": "failed", "error": error})
-            await _send_sync_failure_telegram(error)
-            return
-
+        from src.broker.kis.client import KISClient
         from src.data.providers.kis_provider import KISDataProvider
 
-        first_account_id = next(iter(all_brokers))
-        broker = registry.get(first_account_id)
-        provider = KISDataProvider(
-            client=broker,
-            cache=cache,
-            session_factory=session_factory,
-            settings=settings,
-        )
-        count = await provider.sync_stock_master()
-        logger.info("stock_master_sync_manual_done", upserted=count)
-        await _set_sync_status(cache, {"status": "completed", "count": count})
+        settings = get_settings()
+
+        # stock_master는 공개 .mst.zip 다운로드라 인증 불필요 — 임시 KISClient 사용
+        client = KISClient(settings=settings, cache=cache)
+        await client.connect()
+        try:
+            provider = KISDataProvider(
+                client=client,
+                cache=cache,
+                session_factory=session_factory,
+                settings=settings,
+            )
+            count = await provider.sync_stock_master()
+            logger.info("stock_master_sync_manual_done", upserted=count)
+            await _set_sync_status(cache, {"status": "completed", "count": count})
+        finally:
+            await client.disconnect()
 
     except Exception as exc:
         error = str(exc)

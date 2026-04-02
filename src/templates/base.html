@@ -16,6 +16,7 @@
         </ul>
         <ul>
             <li><a href="/admin/"{% if request.url.path == '/admin/' %} aria-current="page"{% endif %}>대시보드</a></li>
+            <li><a href="/admin/accounts"{% if request.url.path == '/admin/accounts' or '/admin/accounts/' in request.url.path %} aria-current="page"{% endif %}>계좌관리</a></li>
             <li><a href="/admin/trades"{% if '/admin/trades' in request.url.path %} aria-current="page"{% endif %}>매매이력</a></li>
             <li><a href="/admin/performance"{% if '/admin/performance' in request.url.path %} aria-current="page"{% endif %}>성과</a></li>
             <li><a href="/admin/backtest"{% if '/admin/backtest' in request.url.path %} aria-current="page"{% endif %}>백테스트</a></li>

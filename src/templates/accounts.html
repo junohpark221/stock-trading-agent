@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}계좌 관리 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>계좌 관리</h2>
+
+<!-- 새 계좌 등록 폼 -->
+<details>
+    <summary role="button" class="outline">새 계좌 등록</summary>
+    <form method="post" action="/admin/accounts/create" style="margin-top: 1rem;">
+        {% if error %}
+        <article style="background: #dc3545; color: #fff; padding: 0.5rem 1rem;">
+            {{ error }}
+        </article>
+        {% endif %}
+
+        <div class="grid">
+            <label>
+                계좌 ID (선택, 미입력 시 닉네임 기반 자동생성)
+                <input type="text" name="id" placeholder="my-account" maxlength="50">
+            </label>
+            <label>
+                닉네임 *
+                <input type="text" name="nickname" required maxlength="50" placeholder="내 계좌">
+            </label>
+        </div>
+
+        <div class="grid">
+            <label>
+                KIS App Key *
+                <input type="password" name="kis_app_key" required placeholder="발급받은 App Key">
+            </label>
+            <label>
+                KIS App Secret *
+                <input type="password" name="kis_app_secret" required placeholder="발급받은 App Secret">
+            </label>
+        </div>
+
+        <div class="grid">
+            <label>
+                계좌번호 *
+                <input type="text" name="kis_account_no" required maxlength="20" placeholder="12345678">
+            </label>
+            <label>
+                계좌 상품코드
+                <input type="text" name="kis_account_prod" value="01" maxlength="5">
+            </label>
+            <label>
+                HTS ID
+                <input type="text" name="kis_hts_id" maxlength="50" placeholder="HTS ID">
+            </label>
+        </div>
+
+        <div class="grid">
+            <label>
+                전략
+                <select name="strategy_type">
+                    {% for st in strategy_types %}
+                    <option value="{{ st }}">{{ st }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <input type="checkbox" name="kis_is_paper" checked>
+                모의투자
+            </label>
+        </div>
+
+        <label>
+            투자 철학 프롬프트
+            <textarea name="investment_prompt" rows="3" placeholder="투자 철학이나 전략 지침을 입력하세요"></textarea>
+        </label>
+
+        <label>
+            리스크 오버라이드 (JSON)
+            <textarea name="risk_overrides" rows="2" placeholder='{"MAX_POSITION_SIZE_PCT": 15}'></textarea>
+        </label>
+
+        <button type="submit">등록</button>
+    </form>
+</details>
+
+<!-- 계좌 목록 -->
+<section>
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>닉네임</th>
+                    <th>전략</th>
+                    <th>모의/실전</th>
+                    <th>계좌번호</th>
+                    <th>상태</th>
+                    <th>생성일</th>
+                    <th>액션</th>
+                </tr>
+            </thead>
+            <tbody id="accounts-tbody">
+                {% for acct in accounts %}
+                <tr id="account-row-{{ acct.id }}">
+                    <td><a href="/admin/accounts/{{ acct.id }}">{{ acct.id }}</a></td>
+                    <td>{{ acct.nickname }}</td>
+                    <td>{{ acct.strategy_type }}</td>
+                    <td>{% if acct.kis_is_paper %}모의{% else %}실전{% endif %}</td>
+                    <td><code>{{ acct.account_no_masked }}</code></td>
+                    <td>
+                        {% if acct.is_active %}
+                        <span class="badge badge-running">활성</span>
+                        {% else %}
+                        <span class="badge" style="background: #6c757d; color: #fff;">비활성</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ acct.created_at.strftime("%Y-%m-%d") if acct.created_at else "-" }}</td>
+                    <td>
+                        <a href="/admin/accounts/{{ acct.id }}/edit"
+                           role="button" class="outline"
+                           style="padding: 0.25rem 0.5rem; font-size: 0.85rem;">수정</a>
+                        <button hx-post="/admin/accounts/{{ acct.id }}/toggle"
+                                hx-target="#account-row-{{ acct.id }}"
+                                hx-swap="outerHTML"
+                                hx-confirm="{% if acct.is_active %}'{{ acct.nickname }}' 계좌를 비활성화하시겠습니까?{% else %}'{{ acct.nickname }}' 계좌를 활성화하시겠습니까?{% endif %}"
+                                class="outline {% if acct.is_active %}secondary{% endif %}"
+                                style="padding: 0.25rem 0.5rem; font-size: 0.85rem;">
+                            {% if acct.is_active %}비활성화{% else %}활성화{% endif %}
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% if not accounts %}
+    <p>등록된 계좌가 없습니다.</p>
+    {% endif %}
+</section>
+{% endblock %}

@@ -1,5 +1,6 @@
 """Backoffice web UI routes."""
 
+import json
 import math
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -12,11 +13,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import login_handler, logout_handler, require_admin
+from src.api.routes.accounts import _mask_account_no, _slugify
 from src.api.routes.backtest import _execute_backtest
 from src.api.templates import templates
 from src.core.enums import BacktestMode, BacktestStatus, StrategyType
 from src.core.models import BacktestConfig
-from src.db.models.account import Account
+from src.db.models.account import Account, AccountCrypto
 from src.db.models.backtest import BacktestRun, BacktestTrade
 from src.db.models.market_data import StockMaster
 from src.db.models.scheduler import JobExecution
@@ -127,6 +129,203 @@ async def dashboard(
         "accounts": account_cards,
         "recent_orders": recent_orders,
         "order_summary": order_summary,
+    })
+
+
+# ── Account Management ───────────────────────────────────────────────────
+
+
+@router.get("/accounts", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def accounts_list(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """GET /admin/accounts — 계좌 목록 (활성 우선 정렬)."""
+    result = await session.execute(
+        select(Account).order_by(Account.is_active.desc(), Account.created_at),
+    )
+    accounts_orm = list(result.scalars().all())
+
+    accounts = []
+    for acct in accounts_orm:
+        acct.account_no_masked = _mask_account_no(acct.kis_account_no)
+        accounts.append(acct)
+
+    return templates.TemplateResponse("accounts.html", {
+        "request": request,
+        "accounts": accounts,
+        "strategy_types": [e.value for e in StrategyType],
+        "error": None,
+    })
+
+
+@router.post("/accounts/create", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def accounts_create(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """POST /admin/accounts/create — 새 계좌 등록."""
+    from src.config import get_settings
+
+    form = await request.form()
+    settings = get_settings()
+
+    # 에러 시 폼 다시 렌더링하기 위한 헬퍼
+    async def _render_error(error: str):
+        result = await session.execute(
+            select(Account).order_by(Account.is_active.desc(), Account.created_at),
+        )
+        accts = list(result.scalars().all())
+        for a in accts:
+            a.account_no_masked = _mask_account_no(a.kis_account_no)
+        return templates.TemplateResponse("accounts.html", {
+            "request": request,
+            "accounts": accts,
+            "strategy_types": [e.value for e in StrategyType],
+            "error": error,
+        })
+
+    if not settings.ACCOUNT_ENCRYPTION_KEY:
+        return await _render_error("ACCOUNT_ENCRYPTION_KEY가 설정되지 않았습니다.")
+
+    nickname = str(form.get("nickname", "")).strip()
+    if not nickname:
+        return await _render_error("닉네임은 필수입니다.")
+
+    account_id = str(form.get("id", "")).strip() or _slugify(nickname)
+
+    # 중복 확인
+    existing = (
+        await session.execute(select(Account).where(Account.id == account_id))
+    ).scalar_one_or_none()
+    if existing is not None:
+        return await _render_error(f"계좌 ID '{account_id}'가 이미 존재합니다.")
+
+    kis_app_key = str(form.get("kis_app_key", "")).strip()
+    kis_app_secret = str(form.get("kis_app_secret", "")).strip()
+    kis_account_no = str(form.get("kis_account_no", "")).strip()
+
+    if not kis_app_key or not kis_app_secret or not kis_account_no:
+        return await _render_error("KIS App Key, App Secret, 계좌번호는 필수입니다.")
+
+    # risk_overrides JSON 파싱
+    risk_overrides = None
+    risk_raw = str(form.get("risk_overrides", "")).strip()
+    if risk_raw:
+        try:
+            risk_overrides = json.loads(risk_raw)
+        except (json.JSONDecodeError, ValueError):
+            return await _render_error("리스크 오버라이드가 올바른 JSON 형식이 아닙니다.")
+
+    enc_key = settings.ACCOUNT_ENCRYPTION_KEY
+    account = Account(
+        id=account_id,
+        nickname=nickname,
+        kis_app_key_enc=AccountCrypto.encrypt(kis_app_key, enc_key),
+        kis_app_secret_enc=AccountCrypto.encrypt(kis_app_secret, enc_key),
+        kis_account_no=kis_account_no,
+        kis_account_prod=str(form.get("kis_account_prod", "01")).strip() or "01",
+        kis_is_paper="kis_is_paper" in form,
+        kis_hts_id=str(form.get("kis_hts_id", "")).strip(),
+        strategy_type=str(form.get("strategy_type", "position")),
+        investment_prompt=str(form.get("investment_prompt", "")).strip(),
+        risk_overrides=risk_overrides,
+        is_active=True,
+    )
+    session.add(account)
+    await session.commit()
+
+    logger.info("account_created_via_web", account_id=account_id)
+    return RedirectResponse(url="/admin/accounts", status_code=303)
+
+
+@router.get("/accounts/{account_id}/edit", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def accounts_edit_form(
+    request: Request,
+    account_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """GET /admin/accounts/{account_id}/edit — 계좌 수정 폼."""
+    account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return templates.TemplateResponse("account_edit.html", {
+        "request": request,
+        "account": account,
+        "strategy_types": [e.value for e in StrategyType],
+        "error": None,
+    })
+
+
+@router.post("/accounts/{account_id}/edit", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def accounts_edit(
+    request: Request,
+    account_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """POST /admin/accounts/{account_id}/edit — 계좌 수정 처리."""
+    account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    form = await request.form()
+
+    # risk_overrides JSON 파싱
+    risk_overrides = account.risk_overrides
+    risk_raw = str(form.get("risk_overrides", "")).strip()
+    if risk_raw:
+        try:
+            risk_overrides = json.loads(risk_raw)
+        except (json.JSONDecodeError, ValueError):
+            return templates.TemplateResponse("account_edit.html", {
+                "request": request,
+                "account": account,
+                "strategy_types": [e.value for e in StrategyType],
+                "error": "리스크 오버라이드가 올바른 JSON 형식이 아닙니다.",
+            })
+    elif not risk_raw:
+        risk_overrides = None
+
+    account.nickname = str(form.get("nickname", account.nickname)).strip()
+    account.strategy_type = str(form.get("strategy_type", account.strategy_type))
+    account.kis_is_paper = "kis_is_paper" in form
+    account.kis_account_prod = str(form.get("kis_account_prod", account.kis_account_prod)).strip()
+    account.kis_hts_id = str(form.get("kis_hts_id", account.kis_hts_id or "")).strip()
+    account.investment_prompt = str(form.get("investment_prompt", account.investment_prompt or "")).strip()
+    account.risk_overrides = risk_overrides
+
+    await session.commit()
+
+    logger.info("account_updated_via_web", account_id=account_id)
+    return RedirectResponse(url="/admin/accounts", status_code=303)
+
+
+@router.post("/accounts/{account_id}/toggle", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+async def accounts_toggle(
+    request: Request,
+    account_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """POST /admin/accounts/{account_id}/toggle — 활성/비활성 토글."""
+    account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    account.is_active = not account.is_active
+    await session.commit()
+
+    logger.info(
+        "account_toggled_via_web",
+        account_id=account_id,
+        is_active=account.is_active,
+    )
+
+    # HTMX: 단일 행 교체
+    account.account_no_masked = _mask_account_no(account.kis_account_no)
+    return templates.TemplateResponse("partials/account_row.html", {
+        "request": request,
+        "acct": account,
     })
 
 

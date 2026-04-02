@@ -324,6 +324,18 @@ class SchedulerEngine:
                 except Exception:
                     logger.warning("scheduler.job_failed_telegram_send_failed", job_name=job_name)
 
+        # 텔레그램 성공 알림
+        if status == JobStatus.SUCCESS and self._telegram_bot is not None:
+            try:
+                elapsed = Decimal(str((datetime.now(UTC) - started_at).total_seconds()))
+                await self._telegram_bot.send_message(
+                    f"<b>배치 작업 완료</b>\n"
+                    f"작업: <code>{job_name}</code>\n"
+                    f"소요: {elapsed}초"
+                )
+            except Exception:
+                logger.warning("scheduler.job_success_telegram_send_failed", job_name=job_name)
+
         # Step 3: UPDATE record
         finished_at = datetime.now(UTC)
         duration_sec = Decimal(str((finished_at - started_at).total_seconds()))

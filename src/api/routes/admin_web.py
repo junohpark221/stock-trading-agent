@@ -822,6 +822,15 @@ async def _sync_stock_master_background(session_factory) -> None:
             count = await provider.sync_stock_master()
             logger.info("stock_master_sync_manual_done", upserted=count)
             await _set_sync_status(cache, {"status": "completed", "count": count})
+            # 텔레그램 성공 알림
+            try:
+                from src.main import get_telegram_bot
+                bot = get_telegram_bot()
+                await bot.send_message(
+                    f"<b>종목 마스터 동기화 완료</b>\n갱신: {count}건"
+                )
+            except Exception:
+                logger.warning("stock_master_sync_success_telegram_failed", count=count)
         finally:
             await client.disconnect()
 

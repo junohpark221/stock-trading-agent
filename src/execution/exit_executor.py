@@ -183,6 +183,20 @@ class ExitExecutionService:
                 reason=signal.reason.value,
                 urgency=signal.urgency,
             )
+            # 텔레그램 에러 알림
+            try:
+                await self._bot.send_message(
+                    f"<b>청산 실행 실패</b>\n"
+                    f"종목: {signal.symbol}\n"
+                    f"사유: {signal.reason.value}\n"
+                    f"긴급도: {signal.urgency}\n"
+                    f"에러: {exc!s}"
+                )
+            except Exception:
+                logger.warning(
+                    "exit_executor.execute_failed_telegram_send_failed",
+                    symbol=signal.symbol,
+                )
             return ExecutionResult(
                 success=False,
                 symbol=signal.symbol,

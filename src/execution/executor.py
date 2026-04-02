@@ -665,6 +665,13 @@ class OrderExecutor:
                     symbol=symbol,
                     exc_info=True,
                 )
+                # 긴급 알림 — 브로커 매도 체결됨, DB 포지션 미청산
+                await self._notify_safe(
+                    f"<b>[긴급] 포지션 청산 DB 실패</b>\n"
+                    f"종목: {symbol}\n수량: {fill_quantity}주 @ {fill_price:,}원\n"
+                    f"브로커 매도 체결 완료, DB 포지션 미청산\n"
+                    f"즉시 수동 확인 필요"
+                )
                 position_id = None
 
             # 8. 주문 상태 업데이트

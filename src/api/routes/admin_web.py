@@ -295,6 +295,22 @@ async def accounts_edit(
     account.investment_prompt = str(form.get("investment_prompt", account.investment_prompt or "")).strip()
     account.risk_overrides = risk_overrides
 
+    # KIS 인증정보 업데이트 (비어있으면 기존값 유지)
+    from src.config import get_settings
+    settings = get_settings()
+
+    kis_app_key = str(form.get("kis_app_key", "")).strip()
+    kis_app_secret = str(form.get("kis_app_secret", "")).strip()
+    kis_account_no = str(form.get("kis_account_no", "")).strip()
+
+    enc_key = settings.ACCOUNT_ENCRYPTION_KEY
+    if kis_app_key:
+        account.kis_app_key_enc = AccountCrypto.encrypt(kis_app_key, enc_key)
+    if kis_app_secret:
+        account.kis_app_secret_enc = AccountCrypto.encrypt(kis_app_secret, enc_key)
+    if kis_account_no:
+        account.kis_account_no = kis_account_no
+
     await session.commit()
 
     logger.info("account_updated_via_web", account_id=account_id)

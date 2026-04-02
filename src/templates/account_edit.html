@@ -40,6 +40,21 @@
 
     <div class="grid">
         <label>
+            KIS App Key
+            <input type="password" name="kis_app_key" placeholder="변경 시에만 입력">
+        </label>
+        <label>
+            KIS App Secret
+            <input type="password" name="kis_app_secret" placeholder="변경 시에만 입력">
+        </label>
+    </div>
+
+    <div class="grid">
+        <label>
+            계좌번호
+            <input type="text" name="kis_account_no" value="{{ account.kis_account_no }}" maxlength="20">
+        </label>
+        <label>
             계좌 상품코드
             <input type="text" name="kis_account_prod" value="{{ account.kis_account_prod }}" maxlength="5">
         </label>

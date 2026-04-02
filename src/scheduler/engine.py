@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -39,6 +39,19 @@ class SchedulerEngine:
     register_job()으로 개별 작업을 동적 등록하고, start()/stop()으로 생명주기를 관리.
     _wrap_job()이 모든 실행을 감싸서 job_executions 테이블에 이력을 기록한다.
     """
+
+    # 모든 알려진 작업 타입. 미등록 작업의 사유 표시용.
+    ALL_KNOWN_JOB_TYPES: ClassVar[dict[str, str]] = {
+        "market_data_collect": "데이터 제공자 없음",
+        "weekly_report": "주간 리포트",
+        "monthly_report": "월간 리포트",
+        "llm_cost_report": "LLM 비용 리포트",
+        "token_refresh": "활성 계좌 없음",
+        "swing_analysis": "활성 계좌 없음",
+        "position_analysis": "활성 계좌 없음",
+        "stop_loss_check": "활성 계좌 없음",
+        "daily_report": "활성 계좌 없음",
+    }
 
     def __init__(
         self,
@@ -209,14 +222,19 @@ class SchedulerEngine:
         ``_job_fns``에 등록된 모든 작업을 반환한다.
         APScheduler에 등록된 작업은 trigger/next_run_time 포함,
         미등록 작업(SCHEDULER_ENABLED=False 등)은 "수동 전용"으로 표시.
+        ``ALL_KNOWN_JOB_TYPES``에 있지만 등록되지 않은 작업은 "미등록"으로 표시.
         """
         scheduler_jobs = {
             job.name: job for job in self._scheduler.get_jobs()
         }
 
         jobs_info: list[dict[str, Any]] = []
+        registered_base_types: set[str] = set()
+
         for name in sorted(self._job_fns):
             sj = scheduler_jobs.get(name)
+            base_type = name.split(":")[0]
+            registered_base_types.add(base_type)
             jobs_info.append(
                 {
                     "name": name,
@@ -227,8 +245,22 @@ class SchedulerEngine:
                     ),
                     "trigger": str(sj.trigger) if sj else "수동 전용",
                     "scheduled": sj is not None,
+                    "registered": True,
                 }
             )
+
+        # 미등록 작업 타입 추가
+        for job_type, reason in self.ALL_KNOWN_JOB_TYPES.items():
+            if job_type not in registered_base_types:
+                jobs_info.append(
+                    {
+                        "name": job_type,
+                        "next_run_time": None,
+                        "trigger": reason,
+                        "scheduled": False,
+                        "registered": False,
+                    }
+                )
 
         return {
             "is_running": self.is_running,

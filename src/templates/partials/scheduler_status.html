@@ -60,7 +60,9 @@
                     <td><small>{{ job.trigger }}</small></td>
                     <td>{{ job.next_run_time or "-" }}</td>
                     <td>
-                        {% if job.get("scheduled", true) and job.next_run_time %}
+                        {% if not job.get("registered", true) %}
+                        <span class="badge" style="background: #dc3545; color: #fff;">미등록</span>
+                        {% elif job.get("scheduled", true) and job.next_run_time %}
                         <span class="badge badge-running">활성</span>
                         {% elif job.get("scheduled", true) %}
                         <span class="badge badge-pending">정지</span>
@@ -69,6 +71,7 @@
                         {% endif %}
                     </td>
                     <td>
+                        {% if job.get("registered", true) %}
                         <button hx-post="/admin/scheduler/run/{{ job.name }}"
                                 hx-target="#scheduler-content"
                                 hx-swap="innerHTML"
@@ -77,6 +80,9 @@
                                 style="padding: 0.25rem 0.5rem; font-size: 0.85rem;">
                             실행
                         </button>
+                        {% else %}
+                        <small style="color: #6c757d;">-</small>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

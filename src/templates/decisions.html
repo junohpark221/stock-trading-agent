@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}의사결정 로그 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>의사결정 로그</h2>
+
+<!-- 필터 -->
+<form hx-get="/admin/decisions" hx-target="#decision-table" hx-trigger="change" hx-push-url="true">
+    <div class="grid">
+        <label>
+            계좌
+            <select name="account_id">
+                <option value="">전체</option>
+                {% for acct in accounts %}
+                <option value="{{ acct.id }}" {% if account_id == acct.id %}selected{% endif %}>
+                    {{ acct.nickname }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            단계
+            <select name="stage">
+                <option value="">전체</option>
+                {% for s in ['market_analysis', 'stock_analysis', 'risk_check', 'trade_decision', 'entry_execution', 'exit_execution', 'web_verification'] %}
+                <option value="{{ s }}" {% if stage == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            종목
+            <input type="search" name="symbol" value="{{ symbol or '' }}" placeholder="종목코드">
+        </label>
+    </div>
+    <div class="grid">
+        <label>
+            시작일
+            <input type="date" name="from_date" value="{{ from_date or '' }}">
+        </label>
+        <label>
+            종료일
+            <input type="date" name="to_date" value="{{ to_date or '' }}">
+        </label>
+        <div></div>
+    </div>
+    <input type="hidden" name="page" value="1">
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+</form>
+
+<!-- 의사결정 로그 테이블 -->
+<div id="decision-table">
+    {% include "partials/decision_rows.html" %}
+</div>
+
+<!-- 세션 상세 모달 영역 -->
+<dialog id="decision-detail-dialog">
+    <article id="decision-detail-content" style="max-width: 900px; max-height: 80vh; overflow-y: auto;">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="this.closest('dialog').close()"></button>
+            <h3>의사결정 체인</h3>
+        </header>
+        <div id="decision-detail-body"></div>
+    </article>
+</dialog>
+
+<script>
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'decision-detail-body') {
+        document.getElementById('decision-detail-dialog').showModal();
+    }
+});
+</script>
+{% endblock %}

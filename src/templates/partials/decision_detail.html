@@ -1,0 +1,59 @@
+<p><small>Session: {{ session_id }}</small></p>
+
+{% for d in chain %}
+<article style="margin-bottom: 1rem; padding: 1rem;">
+    <header style="padding: 0.5rem 1rem; margin: -1rem -1rem 1rem -1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                {% if d.stage == 'market_analysis' %}
+                <span class="badge badge-running">시장분석</span>
+                {% elif d.stage == 'stock_analysis' %}
+                <span class="badge badge-pending">종목분석</span>
+                {% elif d.stage == 'risk_check' %}
+                <span class="badge badge-failed">리스크</span>
+                {% elif d.stage == 'trade_decision' %}
+                <span class="badge badge-completed">매매결정</span>
+                {% else %}
+                <span class="badge">{{ d.stage }}</span>
+                {% endif %}
+                {% if d.symbol %}<strong>{{ d.symbol }}</strong>{% endif %}
+            </div>
+            <div>
+                {% if d.decision in ('BUY', 'approve') %}
+                <strong class="pnl-positive">{{ d.decision }}</strong>
+                {% elif d.decision in ('SELL', 'reject') %}
+                <strong class="pnl-negative">{{ d.decision }}</strong>
+                {% else %}
+                <strong>{{ d.decision }}</strong>
+                {% endif %}
+                {% if d.confidence is not none %}
+                ({{ "{:.0%}".format(d.confidence) }})
+                {% endif %}
+            </div>
+        </div>
+    </header>
+
+    <p>{{ d.reasoning }}</p>
+
+    <small>
+        {{ d.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+        | {{ d.llm_model or "-" }}
+        {% if d.llm_cost_usd %} | ${{ "{:.4f}".format(d.llm_cost_usd) }}{% endif %}
+        {% if d.llm_tokens_in %} | {{ "{:,}".format(d.llm_tokens_in) }}+{{ "{:,}".format(d.llm_tokens_out or 0) }} tokens{% endif %}
+    </small>
+
+    {% if d.llm_prompt or d.llm_response %}
+    <details style="margin-top: 0.5rem;">
+        <summary><small>LLM 프롬프트/응답 보기</small></summary>
+        {% if d.llm_prompt %}
+        <h6>프롬프트</h6>
+        <pre style="white-space: pre-wrap; font-size: 0.75rem; max-height: 300px; overflow-y: auto;">{{ d.llm_prompt }}</pre>
+        {% endif %}
+        {% if d.llm_response %}
+        <h6>응답</h6>
+        <pre style="white-space: pre-wrap; font-size: 0.75rem; max-height: 300px; overflow-y: auto;">{{ d.llm_response }}</pre>
+        {% endif %}
+    </details>
+    {% endif %}
+</article>
+{% endfor %}

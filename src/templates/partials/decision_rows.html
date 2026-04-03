@@ -1,0 +1,92 @@
+{% if decisions %}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>일시</th>
+                <th>종목</th>
+                <th>단계</th>
+                <th>판단</th>
+                <th>신뢰도</th>
+                <th>모델</th>
+                <th>비용</th>
+                <th>추론 요약</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in decisions %}
+            <tr>
+                <td>{{ d.created_at.strftime('%m-%d %H:%M') }}</td>
+                <td>{{ d.symbol or "-" }}</td>
+                <td>
+                    {% if d.stage == 'market_analysis' %}
+                    <span class="badge badge-running">시장분석</span>
+                    {% elif d.stage == 'stock_analysis' %}
+                    <span class="badge badge-pending">종목분석</span>
+                    {% elif d.stage == 'risk_check' %}
+                    <span class="badge badge-failed">리스크</span>
+                    {% elif d.stage == 'trade_decision' %}
+                    <span class="badge badge-completed">매매결정</span>
+                    {% else %}
+                    <span class="badge">{{ d.stage }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if d.decision in ('BUY', 'approve') %}
+                    <strong class="pnl-positive">{{ d.decision }}</strong>
+                    {% elif d.decision in ('SELL', 'reject') %}
+                    <strong class="pnl-negative">{{ d.decision }}</strong>
+                    {% else %}
+                    {{ d.decision }}
+                    {% endif %}
+                </td>
+                <td>
+                    {% if d.confidence is not none %}
+                    {{ "{:.0%}".format(d.confidence) }}
+                    {% else %}-{% endif %}
+                </td>
+                <td><small>{{ d.llm_model or "-" }}</small></td>
+                <td>
+                    {% if d.llm_cost_usd %}
+                    ${{ "{:.4f}".format(d.llm_cost_usd) }}
+                    {% else %}-{% endif %}
+                </td>
+                <td><small>{{ d.reasoning[:80] }}{% if d.reasoning|length > 80 %}...{% endif %}</small></td>
+                <td>
+                    <a href="#"
+                       hx-get="/admin/decisions/{{ d.session_id }}"
+                       hx-target="#decision-detail-body"
+                       hx-swap="innerHTML"
+                       title="세션 상세 보기">
+                        &#x1f50d;
+                    </a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</figure>
+
+<!-- 페이지네이션 -->
+{% if total_pages > 1 %}
+<nav>
+    <ul>
+        {% if page > 1 %}
+        <li><a href="#"
+               hx-get="/admin/decisions?page={{ page - 1 }}&per_page={{ per_page }}{% if account_id %}&account_id={{ account_id }}{% endif %}{% if stage %}&stage={{ stage }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}{% if symbol %}&symbol={{ symbol }}{% endif %}"
+               hx-target="#decision-table">&laquo; 이전</a></li>
+        {% endif %}
+        <li><small>{{ page }} / {{ total_pages }} ({{ total }}건)</small></li>
+        {% if page < total_pages %}
+        <li><a href="#"
+               hx-get="/admin/decisions?page={{ page + 1 }}&per_page={{ per_page }}{% if account_id %}&account_id={{ account_id }}{% endif %}{% if stage %}&stage={{ stage }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}{% if symbol %}&symbol={{ symbol }}{% endif %}"
+               hx-target="#decision-table">다음 &raquo;</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<p>의사결정 기록이 없습니다.</p>
+{% endif %}

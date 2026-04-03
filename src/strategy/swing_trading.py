@@ -62,7 +62,7 @@ class SwingTradingStrategy(Strategy):
     # ── 전략 파라미터 (상수) ──────────────────────────────────────────
 
     # 유니버스 필터링 기준
-    MIN_MARKET_CAP: int = 100_000_000_000  # 시총 1000억원 이상
+    MIN_AVG_TRADING_VALUE: int = 5_000_000_000  # 20일 평균 거래대금 50억원 이상
     VOLUME_TOP_N: int = 50  # 거래대금 상위 50 종목
     MIN_VOLATILITY_PCT: Decimal = Decimal("2.0")  # 최소 변동성 2%
     MAX_VOLATILITY_PCT: Decimal = Decimal("8.0")  # 최대 변동성 8%
@@ -98,8 +98,8 @@ class SwingTradingStrategy(Strategy):
         """유니버스 스캔 — 스윙 트레이딩 대상 종목 필터링.
 
         # 상세 로직:
-        # 1. StockMaster에서 KOSPI/KOSDAQ 활성 종목 중 시총 1000억↑ 조회
-        # 2. DailyOHLCV에서 최근 20일 평균 거래대금 상위 50 종목 선별 (DB 집계)
+        # 1. StockMaster에서 KOSPI/KOSDAQ 활성 종목 조회
+        # 2. DailyOHLCV에서 최근 20일 평균 거래대금 50억↑ 중 상위 50 종목 선별
         # 3. 상위 50 종목의 20일 변동성(일간수익률 표준편차) 계산
         #    - 변동성 = 일간 수익률(pct_change)의 표준편차 × 100 (%)
         #    - 2% ≤ 변동성 ≤ 8% 범위만 포함
@@ -107,33 +107,36 @@ class SwingTradingStrategy(Strategy):
         # 4. 이미 보유 중인 스윙 트레이딩 종목 제외
         """
         async with self._session_factory() as session:
-            # Step 1: 시총 조건을 만족하는 활성 종목 조회
-            # KOSPI/KOSDAQ 시장의 시총 1000억원 이상 종목만 선별
+            # Step 1: 활성 종목 조회
+            # KOSPI/KOSDAQ 시장의 활성 종목 심볼 목록
             master_stmt = select(StockMaster.symbol).where(
                 StockMaster.is_active.is_(True),
                 StockMaster.market_type.in_(["kospi", "kosdaq"]),
-                StockMaster.market_cap_krw >= self.MIN_MARKET_CAP,
             )
             master_result = await session.execute(master_stmt)
-            large_cap_symbols = [row[0] for row in master_result.all()]
+            active_symbols = [row[0] for row in master_result.all()]
 
-            if not large_cap_symbols:
-                logger.info("scan_universe.no_large_cap", strategy="swing")
+            if not active_symbols:
+                logger.info("scan_universe.no_active", strategy="swing")
                 return []
 
-            # Step 2: 최근 20일 평균 거래대금 상위 50 종목 선별
+            # Step 2: 최근 20일 평균 거래대금 50억↑ 중 상위 50 종목 선별
             # 거래대금(trading_value) = 거래량 × 가격으로, 유동성의 직접 지표
-            # 상위 50으로 제한하여 충분한 유동성을 확보하면서도 과도한 종목 수 방지
+            # 거래대금 하한으로 소형주를 제외하고, 상위 50으로 제한
             ohlcv_stmt = (
                 select(
                     DailyOHLCV.symbol,
                     func.avg(func.coalesce(DailyOHLCV.trading_value, 0)).label("avg_value"),
                 )
                 .where(
-                    DailyOHLCV.symbol.in_(large_cap_symbols),
+                    DailyOHLCV.symbol.in_(active_symbols),
                     DailyOHLCV.date >= func.current_date() - self.VOLATILITY_LOOKBACK,
                 )
                 .group_by(DailyOHLCV.symbol)
+                .having(
+                    func.avg(func.coalesce(DailyOHLCV.trading_value, 0))
+                    >= self.MIN_AVG_TRADING_VALUE
+                )
                 .order_by(func.avg(func.coalesce(DailyOHLCV.trading_value, 0)).desc())
                 .limit(self.VOLUME_TOP_N)
             )
@@ -194,7 +197,7 @@ class SwingTradingStrategy(Strategy):
         logger.info(
             "scan_universe.result",
             strategy="swing",
-            large_cap=len(large_cap_symbols),
+            active=len(active_symbols),
             top_volume=len(top_volume_symbols),
             volatile=len(volatile_symbols),
             held=len(held_symbols),

@@ -56,7 +56,6 @@ class PositionTradingStrategy(Strategy):
 
     # ── 전략 파라미터 (상수) ──────────────────────────────────────────
     # 유니버스 필터링 기준
-    MIN_MARKET_CAP: int = 500_000_000_000  # 시총 5000억원 이상
     MIN_AVG_TRADING_VALUE: int = 1_000_000_000  # 20일 평균 거래대금 10억원 이상
     TRADING_VALUE_LOOKBACK: int = 20  # 거래대금 평균 계산 기간 (거래일)
 
@@ -92,27 +91,26 @@ class PositionTradingStrategy(Strategy):
         """유니버스 스캔 — 포지션 트레이딩 대상 종목 필터링.
 
         # 상세 로직:
-        # 1. StockMaster에서 KOSPI/KOSDAQ 활성 종목 중 시총 5000억↑ 조회
+        # 1. StockMaster에서 KOSPI/KOSDAQ 활성 종목 조회
         # 2. DailyOHLCV에서 최근 20일 평균 거래대금 10억↑ 필터 (DB 집계)
         # 3. 이미 보유 중인 포지션 트레이딩 종목 제외
         # 4. 최종 종목 코드 리스트 반환
         """
         async with self._session_factory() as session:
-            # Step 1: 시총 조건을 만족하는 활성 종목 조회
-            # KOSPI/KOSDAQ 시장의 시총 5000억원 이상 종목만 선별
+            # Step 1: 활성 종목 조회
+            # KOSPI/KOSDAQ 시장의 활성 종목 심볼 목록
             master_stmt = (
                 select(StockMaster.symbol)
                 .where(
                     StockMaster.is_active.is_(True),
                     StockMaster.market_type.in_(["kospi", "kosdaq"]),
-                    StockMaster.market_cap_krw >= self.MIN_MARKET_CAP,
                 )
             )
             master_result = await session.execute(master_stmt)
-            large_cap_symbols = [row[0] for row in master_result.all()]
+            active_symbols = [row[0] for row in master_result.all()]
 
-            if not large_cap_symbols:
-                logger.info("scan_universe.no_large_cap", strategy="position")
+            if not active_symbols:
+                logger.info("scan_universe.no_active", strategy="position")
                 return []
 
             # Step 2: 최근 20일 평균 거래대금 필터 (DB aggregate)
@@ -126,7 +124,7 @@ class PositionTradingStrategy(Strategy):
                     ),
                 )
                 .where(
-                    DailyOHLCV.symbol.in_(large_cap_symbols),
+                    DailyOHLCV.symbol.in_(active_symbols),
                     DailyOHLCV.date
                     >= func.current_date() - self.TRADING_VALUE_LOOKBACK,
                 )
@@ -154,7 +152,7 @@ class PositionTradingStrategy(Strategy):
         logger.info(
             "scan_universe.result",
             strategy="position",
-            large_cap=len(large_cap_symbols),
+            active=len(active_symbols),
             liquid=len(liquid_symbols),
             held=len(held_symbols),
             candidates=len(candidates),

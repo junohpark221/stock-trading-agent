@@ -706,7 +706,7 @@ class TestConstants:
 
     def test_swing_parameters(self):
         """스윙 전략 파라미터 값 확인."""
-        assert SwingTradingStrategy.MIN_MARKET_CAP == 100_000_000_000
+        assert SwingTradingStrategy.MIN_AVG_TRADING_VALUE == 5_000_000_000
         assert SwingTradingStrategy.VOLUME_TOP_N == 50
         assert Decimal("2.0") == SwingTradingStrategy.MIN_VOLATILITY_PCT
         assert Decimal("8.0") == SwingTradingStrategy.MAX_VOLATILITY_PCT

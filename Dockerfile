@@ -21,6 +21,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ ./src/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
+COPY config/ ./config/
 
 # 프로젝트 자체를 설치
 RUN uv sync --frozen --no-dev
@@ -39,6 +40,7 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 COPY --from=builder /app/alembic /app/alembic
 COPY --from=builder /app/alembic.ini /app/alembic.ini
+COPY --from=builder /app/config /app/config
 
 # entrypoint 스크립트 복사
 COPY scripts/entrypoint.sh /app/entrypoint.sh

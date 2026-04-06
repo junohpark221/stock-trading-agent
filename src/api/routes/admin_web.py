@@ -379,14 +379,17 @@ async def account_detail(
 async def trades_history(
     request: Request,
     account_id: str | None = Query(None),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
     symbol: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
 ):
     """GET /admin/trades — 매매 이력: 청산 포지션 필터 + 페이지네이션."""
+    _from = date.fromisoformat(from_date) if from_date else None
+    _to = date.fromisoformat(to_date) if to_date else None
+
     # 기본 쿼리 (trades.py 패턴 재사용)
     stmt = (
         select(PositionRecord)
@@ -404,12 +407,12 @@ async def trades_history(
     if symbol:
         stmt = stmt.where(PositionRecord.symbol == symbol)
         count_stmt = count_stmt.where(PositionRecord.symbol == symbol)
-    if from_date:
-        stmt = stmt.where(PositionRecord.exit_date >= from_date)
-        count_stmt = count_stmt.where(PositionRecord.exit_date >= from_date)
-    if to_date:
-        stmt = stmt.where(PositionRecord.exit_date <= to_date)
-        count_stmt = count_stmt.where(PositionRecord.exit_date <= to_date)
+    if _from:
+        stmt = stmt.where(PositionRecord.exit_date >= _from)
+        count_stmt = count_stmt.where(PositionRecord.exit_date >= _from)
+    if _to:
+        stmt = stmt.where(PositionRecord.exit_date <= _to)
+        count_stmt = count_stmt.where(PositionRecord.exit_date <= _to)
 
     # 카운트 + 페이지네이션
     total = (await session.execute(count_stmt)).scalar_one()
@@ -453,16 +456,14 @@ async def trades_history(
 async def performance_analysis(
     request: Request,
     account_id: str | None = Query(None),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
     session: AsyncSession = Depends(get_db_session),
 ):
     """GET /admin/performance — 성과 분석: 핵심 지표 + 전략별 + 월별."""
     # 날짜 기본값
-    if to_date is None:
-        to_date = date.today()
-    if from_date is None:
-        from_date = to_date - timedelta(days=30)
+    _to = date.fromisoformat(to_date) if to_date else date.today()
+    _from = date.fromisoformat(from_date) if from_date else _to - timedelta(days=30)
 
     # 계좌 목록 (필터 드롭다운용)
     acct_result = await session.execute(
@@ -473,18 +474,18 @@ async def performance_analysis(
     # 데이터 조회
     fetcher = ReportDataFetcher(get_session_factory())
     closed_positions = await fetcher.get_closed_positions(
-        start_date=from_date, end_date=to_date, account_id=account_id,
+        start_date=_from, end_date=_to, account_id=account_id,
     )
     snapshots = await fetcher.get_portfolio_snapshots(
-        start_date=from_date, end_date=to_date, account_id=account_id,
+        start_date=_from, end_date=_to, account_id=account_id,
     )
 
     # 성과 계산
     metrics = PerformanceCalculator.calculate(
         closed_positions=closed_positions,
         snapshots=snapshots,
-        period_start=from_date,
-        period_end=to_date,
+        period_start=_from,
+        period_end=_to,
     )
     strategy_breakdown = PerformanceCalculator.breakdown_by_strategy(closed_positions)
     monthly_breakdown = PerformanceCalculator.breakdown_by_month(closed_positions)
@@ -947,13 +948,16 @@ async def decisions_log(
     account_id: str | None = Query(None),
     symbol: str | None = Query(None),
     stage: str | None = Query(None),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
 ):
     """GET /admin/decisions — 의사결정 로그: 에이전트 판단 이력 조회."""
+    _from = date.fromisoformat(from_date) if from_date else None
+    _to = date.fromisoformat(to_date) if to_date else None
+
     stmt = select(DecisionLog).order_by(DecisionLog.created_at.desc())
     count_stmt = select(func.count(DecisionLog.id))
 
@@ -966,12 +970,12 @@ async def decisions_log(
     if stage:
         stmt = stmt.where(DecisionLog.stage == stage)
         count_stmt = count_stmt.where(DecisionLog.stage == stage)
-    if from_date:
-        dt_from = datetime.combine(from_date, datetime.min.time())
+    if _from:
+        dt_from = datetime.combine(_from, datetime.min.time())
         stmt = stmt.where(DecisionLog.created_at >= dt_from)
         count_stmt = count_stmt.where(DecisionLog.created_at >= dt_from)
-    if to_date:
-        dt_to = datetime.combine(to_date + timedelta(days=1), datetime.min.time())
+    if _to:
+        dt_to = datetime.combine(_to + timedelta(days=1), datetime.min.time())
         stmt = stmt.where(DecisionLog.created_at < dt_to)
         count_stmt = count_stmt.where(DecisionLog.created_at < dt_to)
 

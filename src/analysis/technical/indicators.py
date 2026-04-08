@@ -9,7 +9,7 @@ from math import isnan
 import pandas as pd
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import EMAIndicator, MACD, SMAIndicator
-from ta.volatility import BollingerBands
+from ta.volatility import AverageTrueRange, BollingerBands
 
 from src.core.models import TechnicalIndicators
 
@@ -253,6 +253,39 @@ def calculate_volume_sma(volume: pd.Series, period: int = 20) -> pd.Series:
         거래량 SMA 시계열
     """
     return SMAIndicator(close=volume, window=period).sma_indicator()
+
+
+def calculate_atr(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+) -> pd.Series:
+    """
+    ATR (Average True Range) — 평균 진폭
+
+    [매매 로직에서의 역할]
+    - 갭(상한가/하한가)을 포함한 진정한 변동성 측정
+    - 단순 종가 표준편차와 달리 일중 변동폭 + 갭을 모두 반영
+    - 변동성 기반 손절폭 산정, 포지션 사이징, 변동성 게이트 등에 활용
+
+    [계산 방식]
+    1. True Range = max(high - low, |high - prev_close|, |low - prev_close|)
+    2. ATR(N) = TR의 N일 지수이동평균(또는 단순이동평균)
+
+    [우리 전략에서의 활용]
+    - SwingTrading scan_universe에서 ATR/종가 비율로 정규화 변동성 계산
+    - 단발 상한가가 표준편차를 부풀리는 문제를 완화
+
+    Args:
+        high: 고가 시계열
+        low: 저가 시계열
+        close: 종가 시계열
+        period: ATR 계산 기간 (기본 14일)
+
+    Returns:
+        ATR 시계열
+    """
+    return AverageTrueRange(
+        high=high, low=low, close=close, window=period
+    ).average_true_range()
 
 
 def compute_all_indicators(df: pd.DataFrame, symbol: str) -> TechnicalIndicators:

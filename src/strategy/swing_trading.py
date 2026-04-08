@@ -26,9 +26,11 @@ import structlog
 from sqlalchemy import func, select
 
 from src.analysis.technical.indicators import (
+    calculate_atr,
     calculate_bollinger_bands,
     calculate_macd,
     calculate_rsi,
+    calculate_sma,
 )
 from src.core.enums import (
     AgentType,
@@ -64,9 +66,18 @@ class SwingTradingStrategy(Strategy):
     # 유니버스 필터링 기준
     MIN_AVG_TRADING_VALUE: int = 5_000_000_000  # 20일 평균 거래대금 50억원 이상
     VOLUME_TOP_N: int = 50  # 거래대금 상위 50 종목
-    MIN_VOLATILITY_PCT: Decimal = Decimal("2.0")  # 최소 변동성 2%
-    MAX_VOLATILITY_PCT: Decimal = Decimal("8.0")  # 최대 변동성 8%
-    VOLATILITY_LOOKBACK: int = 20  # 변동성 계산 기간 (거래일)
+    MIN_VOLATILITY_PCT: Decimal = Decimal("2.0")  # 최소 변동성 2% (ATR/종가 비율)
+    MAX_VOLATILITY_PCT: Decimal = Decimal("8.0")  # 최대 변동성 8% (ATR/종가 비율)
+    VOLATILITY_LOOKBACK: int = 20  # 거래대금/변동성 계산 기간 (거래일)
+    ATR_PERIOD: int = 14  # ATR 계산 기간
+
+    # 추세/모멘텀 게이트 (정배열 초기 종목만 통과)
+    TREND_SMA_SHORT: int = 5  # 단기 이동평균 기간
+    TREND_SMA_LONG: int = 20  # 중기 이동평균 기간
+
+    # 거래대금 급증 게이트 (5일/20일 비율)
+    TRADING_VALUE_SURGE_LOOKBACK: int = 5  # 단기 거래대금 윈도
+    TRADING_VALUE_SURGE_RATIO: Decimal = Decimal("1.2")  # 5일/20일 ≥ 1.2
 
     # 진입 조건 임계값
     MIN_CONFIDENCE: Decimal = Decimal("0.50")  # LLM confidence 최소 0.50
@@ -99,16 +110,17 @@ class SwingTradingStrategy(Strategy):
 
         # 상세 로직:
         # 1. StockMaster에서 KOSPI/KOSDAQ 활성 종목 조회
-        # 2. DailyOHLCV에서 최근 20일 평균 거래대금 50억↑ 중 상위 50 종목 선별
-        # 3. 상위 50 종목의 20일 변동성(일간수익률 표준편차) 계산
-        #    - 변동성 = 일간 수익률(pct_change)의 표준편차 × 100 (%)
-        #    - 2% ≤ 변동성 ≤ 8% 범위만 포함
-        #    - 변동성이 너무 낮으면 수익 기회 부족, 너무 높으면 리스크 과다
+        # 2. 거래대금 게이트 (DB 단일 쿼리)
+        #    - 최근 20일 평균 거래대금 ≥ 50억
+        #    - 최근 5일 평균 거래대금 / 20일 평균 ≥ 1.2 (거래대금 급증)
+        #    - 통과 종목 중 20일 평균 거래대금 상위 50 선정
+        # 3. 추세 + 변동성 게이트 (Python)
+        #    - SMA5 > SMA20 그리고 종가 > SMA20 (정배열 초기)
+        #    - ATR(14) / 종가 × 100 ∈ [2%, 8%] (정규화 ATR)
         # 4. 이미 보유 중인 스윙 트레이딩 종목 제외
         """
         async with self._session_factory() as session:
             # Step 1: 활성 종목 조회
-            # KOSPI/KOSDAQ 시장의 활성 종목 심볼 목록
             master_stmt = select(StockMaster.symbol).where(
                 StockMaster.is_active.is_(True),
                 StockMaster.market_type.in_(["kospi", "kosdaq"]),
@@ -120,13 +132,21 @@ class SwingTradingStrategy(Strategy):
                 logger.info("scan_universe.no_active", strategy="swing")
                 return []
 
-            # Step 2: 최근 20일 평균 거래대금 50억↑ 중 상위 50 종목 선별
-            # 거래대금(trading_value) = 거래량 × 가격으로, 유동성의 직접 지표
-            # 거래대금 하한으로 소형주를 제외하고, 상위 50으로 제한
+            # Step 2: 거래대금 게이트
+            # 20일 평균 거래대금과 5일 평균 거래대금을 단일 쿼리에서 동시 집계.
+            # FILTER 절로 5일 윈도(최근 5거래일)만 별도 평균을 구하고,
+            # HAVING으로 (a) 20일 평균 ≥ 50억 + (b) 5일/20일 비율 ≥ 1.2 동시 만족.
+            tv = func.coalesce(DailyOHLCV.trading_value, 0)
+            avg_20 = func.avg(tv)
+            avg_5 = func.avg(tv).filter(
+                DailyOHLCV.date
+                >= func.current_date() - self.TRADING_VALUE_SURGE_LOOKBACK
+            )
             ohlcv_stmt = (
                 select(
                     DailyOHLCV.symbol,
-                    func.avg(func.coalesce(DailyOHLCV.trading_value, 0)).label("avg_value"),
+                    avg_20.label("avg_20"),
+                    avg_5.label("avg_5"),
                 )
                 .where(
                     DailyOHLCV.symbol.in_(active_symbols),
@@ -134,10 +154,11 @@ class SwingTradingStrategy(Strategy):
                 )
                 .group_by(DailyOHLCV.symbol)
                 .having(
-                    func.avg(func.coalesce(DailyOHLCV.trading_value, 0))
-                    >= self.MIN_AVG_TRADING_VALUE
+                    avg_20 >= self.MIN_AVG_TRADING_VALUE,
+                    # 5일 평균 ≥ 1.2 × 20일 평균 (avg_5가 NULL이면 자동 탈락)
+                    avg_5 >= float(self.TRADING_VALUE_SURGE_RATIO) * avg_20,
                 )
-                .order_by(func.avg(func.coalesce(DailyOHLCV.trading_value, 0)).desc())
+                .order_by(avg_20.desc())
                 .limit(self.VOLUME_TOP_N)
             )
             ohlcv_result = await session.execute(ohlcv_stmt)
@@ -147,59 +168,89 @@ class SwingTradingStrategy(Strategy):
                 logger.info("scan_universe.no_top_volume", strategy="swing")
                 return []
 
-            # Step 3: 20일 변동성 필터
-            # 상위 50개 종목의 최근 20일 종가를 조회하여 Python에서 변동성 계산
-            # (일간 수익률의 표준편차는 DB aggregate로 계산하기 어려움)
-            close_stmt = (
-                select(DailyOHLCV.symbol, DailyOHLCV.date, DailyOHLCV.close)
+            # Step 3: 추세 + ATR 변동성 필터용 OHLC 조회
+            # SMA20 + ATR14 모두 계산해야 하므로 high/low/close 모두 가져옴.
+            ohlc_stmt = (
+                select(
+                    DailyOHLCV.symbol,
+                    DailyOHLCV.date,
+                    DailyOHLCV.high,
+                    DailyOHLCV.low,
+                    DailyOHLCV.close,
+                )
                 .where(
                     DailyOHLCV.symbol.in_(top_volume_symbols),
                     DailyOHLCV.date >= func.current_date() - self.VOLATILITY_LOOKBACK,
                 )
                 .order_by(DailyOHLCV.symbol, DailyOHLCV.date)
             )
-            close_result = await session.execute(close_stmt)
-            close_rows = close_result.all()
+            ohlc_result = await session.execute(ohlc_stmt)
+            ohlc_rows = ohlc_result.all()
 
-        # 종목별 종가 시리즈 구성
+        # 종목별 OHLC 시리즈 구성 (date 순 정렬은 SQL에서 보장됨)
+        symbol_highs: dict[str, list[float]] = {}
+        symbol_lows: dict[str, list[float]] = {}
         symbol_closes: dict[str, list[float]] = {}
-        for symbol, _dt, close in close_rows:
+        for symbol, _dt, high, low, close in ohlc_rows:
+            symbol_highs.setdefault(symbol, []).append(float(high))
+            symbol_lows.setdefault(symbol, []).append(float(low))
             symbol_closes.setdefault(symbol, []).append(float(close))
 
-        # 변동성 필터링: 일간 수익률 표준편차 × 100 (%)
-        # pct_change = (close[i] - close[i-1]) / close[i-1]
-        # volatility = std(pct_change) × 100
-        volatile_symbols: list[str] = []
+        # ATR(14)는 최소 15개 + 안정화를 위해 SMA20 기준 20개 데이터 필요
+        min_required = max(self.TREND_SMA_LONG, self.ATR_PERIOD + 1)
+
+        trend_passed: list[str] = []
+        vol_passed: list[str] = []
         for symbol, closes in symbol_closes.items():
-            if len(closes) < 5:
-                # 최소 5일 데이터 필요 (표준편차 유의미성)
+            if len(closes) < min_required:
                 continue
 
-            series = pd.Series(closes)
-            pct_changes = series.pct_change().dropna()
-            if pct_changes.empty:
+            close_series = pd.Series(closes)
+            high_series = pd.Series(symbol_highs[symbol])
+            low_series = pd.Series(symbol_lows[symbol])
+
+            # ── 추세 게이트: SMA5 > SMA20 + 종가 > SMA20 ──
+            smas = calculate_sma(
+                close_series, periods=[self.TREND_SMA_SHORT, self.TREND_SMA_LONG]
+            )
+            sma_short_last = smas[self.TREND_SMA_SHORT].dropna()
+            sma_long_last = smas[self.TREND_SMA_LONG].dropna()
+            if sma_short_last.empty or sma_long_last.empty:
                 continue
+            last_close = float(close_series.iloc[-1])
+            last_sma_short = float(sma_short_last.iloc[-1])
+            last_sma_long = float(sma_long_last.iloc[-1])
+            if not (last_sma_short > last_sma_long and last_close > last_sma_long):
+                continue
+            trend_passed.append(symbol)
 
-            volatility = Decimal(str(pct_changes.std() * 100))
-            if self.MIN_VOLATILITY_PCT <= volatility <= self.MAX_VOLATILITY_PCT:
-                volatile_symbols.append(symbol)
+            # ── 변동성 게이트: ATR(14) / 종가 × 100 ──
+            atr_series = calculate_atr(
+                high_series, low_series, close_series, period=self.ATR_PERIOD
+            ).dropna()
+            if atr_series.empty or last_close <= 0:
+                continue
+            atr_pct = Decimal(str(float(atr_series.iloc[-1]) / last_close * 100))
+            if not (self.MIN_VOLATILITY_PCT <= atr_pct <= self.MAX_VOLATILITY_PCT):
+                continue
+            vol_passed.append(symbol)
 
-        if not volatile_symbols:
-            logger.info("scan_universe.no_volatile", strategy="swing")
+        if not vol_passed:
+            logger.info("scan_universe.no_candidates_after_filters", strategy="swing")
             return []
 
         # Step 4: 이미 보유 중인 스윙 트레이딩 종목 제외
-        # 동일 전략 타입의 오픈 포지션을 조회하여 중복 진입 방지
         open_positions = await self.get_open_positions(strategy_type=StrategyType.SWING)
         held_symbols = {pos.symbol for pos in open_positions}
-        candidates = [s for s in volatile_symbols if s not in held_symbols]
+        candidates = [s for s in vol_passed if s not in held_symbols]
 
         logger.info(
             "scan_universe.result",
             strategy="swing",
             active=len(active_symbols),
             top_volume=len(top_volume_symbols),
-            volatile=len(volatile_symbols),
+            trend_passed=len(trend_passed),
+            vol_passed=len(vol_passed),
             held=len(held_symbols),
             candidates=len(candidates),
         )

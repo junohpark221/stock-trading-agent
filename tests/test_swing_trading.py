@@ -697,6 +697,87 @@ class TestScanUniverse:
 
 
 # ---------------------------------------------------------------------------
+# 신규 게이트 단위 테스트 (추세 / 거래대금 급증 / ATR 변동성)
+# ---------------------------------------------------------------------------
+
+
+class TestNewUniverseGates:
+    """scan_universe 신규 게이트 단위 검증."""
+
+    def test_trend_gate_pass_uptrend(self):
+        """상승 추세 (SMA5 > SMA20, 종가 > SMA20) → 통과."""
+        from src.analysis.technical.indicators import calculate_sma
+
+        # 단조 증가 → SMA5 > SMA20 + 마지막 종가가 SMA20 위
+        closes = pd.Series([100 + i for i in range(25)])
+        smas = calculate_sma(closes, periods=[5, 20])
+        last_close = float(closes.iloc[-1])
+        sma_short = float(smas[5].dropna().iloc[-1])
+        sma_long = float(smas[20].dropna().iloc[-1])
+        assert sma_short > sma_long
+        assert last_close > sma_long
+
+    def test_trend_gate_block_downtrend(self):
+        """하락 추세 → SMA5 < SMA20 → 차단."""
+        from src.analysis.technical.indicators import calculate_sma
+
+        closes = pd.Series([200 - i for i in range(25)])
+        smas = calculate_sma(closes, periods=[5, 20])
+        sma_short = float(smas[5].dropna().iloc[-1])
+        sma_long = float(smas[20].dropna().iloc[-1])
+        assert sma_short < sma_long  # 차단되어야 함
+
+    def test_trading_value_surge_ratio(self):
+        """5일 평균 / 20일 평균 ≥ 1.2 비율 검증."""
+        # 최근 5일 거래대금이 이전 15일보다 크게 증가
+        recent = [100] * 15 + [200] * 5
+        avg_20 = sum(recent) / 20
+        avg_5 = sum(recent[-5:]) / 5
+        ratio = avg_5 / avg_20
+        assert ratio >= float(SwingTradingStrategy.TRADING_VALUE_SURGE_RATIO)
+
+    def test_trading_value_surge_ratio_block(self):
+        """평탄한 거래대금은 비율 1.0 → 차단."""
+        flat = [100] * 20
+        avg_20 = sum(flat) / 20
+        avg_5 = sum(flat[-5:]) / 5
+        assert avg_5 / avg_20 < float(SwingTradingStrategy.TRADING_VALUE_SURGE_RATIO)
+
+    def test_atr_volatility_calculation(self):
+        """ATR(14) / 종가 비율로 변동성 계산."""
+        from src.analysis.technical.indicators import calculate_atr
+
+        # 적정 변동성 (약 3% 진폭)
+        n = 30
+        closes = pd.Series([100 + i * 0.5 for i in range(n)])
+        highs = closes + 1.5
+        lows = closes - 1.5
+        atr = calculate_atr(highs, lows, closes, period=14).dropna()
+        assert not atr.empty
+        atr_pct = float(atr.iloc[-1]) / float(closes.iloc[-1]) * 100
+        # 적정 범위 안 (대략 2~5%)
+        assert 2.0 <= atr_pct <= 8.0
+
+    def test_atr_robust_to_gap(self):
+        """단발 갭(상한가)이 있어도 ATR이 표준편차보다 안정적."""
+        from src.analysis.technical.indicators import calculate_atr
+
+        # 평탄하다가 한 번 갭(+30%) — 표준편차는 폭발하지만 ATR은 1일 비중만 반영
+        closes = pd.Series([100.0] * 19 + [130.0])
+        highs = closes + 0.5
+        lows = closes - 0.5
+        # 갭 상승일의 high/low 보정
+        highs.iloc[-1] = 131.0
+        lows.iloc[-1] = 129.0
+        std_pct = float(closes.pct_change().dropna().std() * 100)
+        atr = calculate_atr(highs, lows, closes, period=14).dropna()
+        atr_pct = float(atr.iloc[-1]) / float(closes.iloc[-1]) * 100
+        # 표준편차는 7%↑ 폭발, ATR은 훨씬 작음
+        assert std_pct > 6.0
+        assert atr_pct < std_pct
+
+
+# ---------------------------------------------------------------------------
 # Constants validation
 # ---------------------------------------------------------------------------
 

@@ -578,11 +578,12 @@ class SchedulerFactory:
                 CronTrigger(hour=tr_h_offset, minute=tr_m_offset, timezone="UTC"),
             )
 
-        # swing_analysis:{account_id} — swing 전략 계좌만 (시차 실행)
+        # swing_analysis:{account_id} — swing 전략 계좌만 (시차 실행, 평일만)
         if ctx.strategy_type == StrategyType.SWING:
             sw_h, sw_m = SchedulerEngine._parse_time(s.SWING_ANALYSIS_TIME)
             sw_m_offset = (sw_m + account_index) % 60
             sw_h_offset = sw_h + (sw_m + account_index) // 60
+            sw_days = SchedulerEngine._parse_day_of_week(s.SWING_ANALYSIS_DAYS)
             engine.register_job(
                 f"swing_analysis:{aid}",
                 partial(
@@ -598,7 +599,12 @@ class SchedulerFactory:
                     holidays=s.KR_HOLIDAYS,
                     investment_prompt=ctx.investment_prompt,
                 ),
-                CronTrigger(hour=sw_h_offset, minute=sw_m_offset, timezone="UTC"),
+                CronTrigger(
+                    day_of_week=sw_days,
+                    hour=sw_h_offset,
+                    minute=sw_m_offset,
+                    timezone="UTC",
+                ),
             )
 
         # position_analysis:{account_id} — position 전략 계좌만 (시차 실행)

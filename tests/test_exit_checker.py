@@ -212,7 +212,7 @@ class TestCheckTimeBased:
         """보유 기간 > max_holding_days → 청산."""
         checker = _make_checker()
         pos = _make_position(entry_date=date(2026, 1, 1), max_holding_days=60)
-        today = date(2026, 3, 15)  # 73일 경과
+        today = date(2026, 3, 26)  # 정확히 60거래일 경과 (달력 84일, 주말 제외)
         signal = checker.check_time_based(
             pos, Decimal("72000"), Decimal("2.86"), today
         )
@@ -225,8 +225,8 @@ class TestCheckTimeBased:
     def test_trigger_at_exact_max_holding(self) -> None:
         """보유 기간 == max_holding_days (경계값) → 청산."""
         checker = _make_checker()
-        pos = _make_position(entry_date=date(2026, 3, 1), max_holding_days=10)
-        today = date(2026, 3, 11)  # 정확히 10일
+        pos = _make_position(entry_date=date(2026, 3, 2), max_holding_days=10)
+        today = date(2026, 3, 16)  # 월~금 2주 = 정확히 10거래일
         signal = checker.check_time_based(
             pos, Decimal("72000"), Decimal("2.86"), today
         )
@@ -260,7 +260,7 @@ class TestCheckTimeBased:
         """time_urgency 커스텀 파라미터 — Position 전략용 'next_session'."""
         checker = _make_checker()
         pos = _make_position(entry_date=date(2026, 1, 1), max_holding_days=60)
-        today = date(2026, 3, 15)
+        today = date(2026, 3, 26)  # 정확히 60거래일 경과
         signal = checker.check_time_based(
             pos, Decimal("72000"), Decimal("2.86"), today,
             time_urgency="next_session",
@@ -270,10 +270,10 @@ class TestCheckTimeBased:
         assert signal.urgency == "next_session"
 
     def test_reasoning_contains_days(self) -> None:
-        """reasoning에 보유일수, 한도일수 포함."""
+        """reasoning에 보유일수(거래일), 한도일수 포함."""
         checker = _make_checker()
-        pos = _make_position(entry_date=date(2026, 3, 1), max_holding_days=10)
-        today = date(2026, 3, 15)  # 14일 경과
+        pos = _make_position(entry_date=date(2026, 3, 2), max_holding_days=10)
+        today = date(2026, 3, 20)  # 달력 18일, 거래일 14일 (주말 4일 제외)
         signal = checker.check_time_based(
             pos, Decimal("72000"), Decimal("2.86"), today
         )

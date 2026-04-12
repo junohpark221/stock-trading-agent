@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     # 작업 스케줄 12개 — DESIGN.md 488~505행과 동일
     MARKET_DATA_COLLECTION_TIME: str = "15:40"
     SWING_ANALYSIS_TIME: str = "01:00"       # KST 10:00 — 장중 분석+매수
+    SWING_ANALYSIS_DAYS: str = "mon,tue,wed,thu,fri"  # 평일만 실행
     POSITION_ANALYSIS_DAYS: str = "wed,sat"
     POSITION_ANALYSIS_TIME: str = "01:30"   # KST 10:30 — 장중 포지션 분석+매수
     STOP_LOSS_CHECK_INTERVAL_MIN: int = 5

@@ -68,7 +68,7 @@ class SwingTradingStrategy(Strategy):
     VOLUME_TOP_N: int = 50  # 거래대금 상위 50 종목
     MIN_VOLATILITY_PCT: Decimal = Decimal("2.0")  # 최소 변동성 2% (ATR/종가 비율)
     MAX_VOLATILITY_PCT: Decimal = Decimal("8.0")  # 최대 변동성 8% (ATR/종가 비율)
-    VOLATILITY_LOOKBACK: int = 20  # 거래대금/변동성 계산 기간 (거래일)
+    VOLATILITY_LOOKBACK: int = 30  # 거래대금/변동성 계산 기간 (달력일, 약 20거래일)
     ATR_PERIOD: int = 14  # ATR 계산 기간
 
     # 추세/모멘텀 게이트 (정배열 초기 종목만 통과)
@@ -76,8 +76,8 @@ class SwingTradingStrategy(Strategy):
     TREND_SMA_LONG: int = 20  # 중기 이동평균 기간
 
     # 거래대금 급증 게이트 (5일/20일 비율)
-    TRADING_VALUE_SURGE_LOOKBACK: int = 5  # 단기 거래대금 윈도
-    TRADING_VALUE_SURGE_RATIO: Decimal = Decimal("1.2")  # 5일/20일 ≥ 1.2
+    TRADING_VALUE_SURGE_LOOKBACK: int = 8  # 단기 거래대금 윈도 (달력일, 약 5거래일)
+    TRADING_VALUE_SURGE_RATIO: Decimal = Decimal("1.05")  # 5일/20일 ≥ 1.05
 
     # 진입 조건 임계값
     MIN_CONFIDENCE: Decimal = Decimal("0.50")  # LLM confidence 최소 0.50

@@ -639,7 +639,7 @@ class TestCheckExitConditions:
 
     @pytest.mark.asyncio
     async def test_time_based_exit(self):
-        """보유일 ≥ 60일 → TIME_BASED."""
+        """보유일 ≥ 60거래일 → TIME_BASED."""
         broker = AsyncMock()
         broker.get_price = AsyncMock(
             return_value=PriceInfo(
@@ -655,7 +655,7 @@ class TestCheckExitConditions:
             entry_price=Decimal("50000"),
             stop_loss=Decimal("48000"),
             take_profit=Decimal("55000"),
-            entry_date=date.today() - timedelta(days=65),
+            entry_date=date.today() - timedelta(days=90),  # 약 63거래일 > 60
             max_holding_days=60,
         )
 
@@ -706,7 +706,7 @@ class TestCheckExitConditions:
             entry_price=Decimal("50000"),
             stop_loss=Decimal("48000"),
             take_profit=Decimal("55000"),
-            entry_date=date.today() - timedelta(days=65),
+            entry_date=date.today() - timedelta(days=90),  # 약 63거래일 > 60
             max_holding_days=60,
         )
 

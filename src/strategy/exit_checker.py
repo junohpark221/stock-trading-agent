@@ -6,12 +6,26 @@ Strategy 서브클래스에서 check_exit_conditions() 구현 시 개별 조건 
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from src.core.enums import DecisionAction, ExitReason
 from src.core.models import ExitSignal, PortfolioState
 from src.db.models.strategy import PositionRecord
+
+
+def _count_trading_days(start: date, end: date) -> int:
+    """start ~ end 사이 거래일 수 (주말 제외, 공휴일 미반영)."""
+    if start >= end:
+        return 0
+    total = 0
+    current = start
+    one_day = timedelta(days=1)
+    while current < end:
+        if current.weekday() < 5:  # 월~금
+            total += 1
+        current += one_day
+    return total
 
 
 class ExitConditionChecker:
@@ -147,7 +161,7 @@ class ExitConditionChecker:
         if position.max_holding_days is None:
             return None
 
-        days_held = (today - position.entry_date).days
+        days_held = _count_trading_days(position.entry_date, today)
         if days_held >= position.max_holding_days:
             return ExitSignal(
                 symbol=position.symbol,

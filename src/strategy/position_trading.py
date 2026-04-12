@@ -57,7 +57,7 @@ class PositionTradingStrategy(Strategy):
     # ── 전략 파라미터 (상수) ──────────────────────────────────────────
     # 유니버스 필터링 기준
     MIN_AVG_TRADING_VALUE: int = 1_000_000_000  # 20일 평균 거래대금 10억원 이상
-    TRADING_VALUE_LOOKBACK: int = 20  # 거래대금 평균 계산 기간 (거래일)
+    TRADING_VALUE_LOOKBACK: int = 30  # 거래대금 평균 계산 기간 (달력일, 약 20거래일)
 
     # 진입 조건 임계값
     MIN_CONFIDENCE: Decimal = Decimal("0.60")  # LLM confidence 최소 0.60

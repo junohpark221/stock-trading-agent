@@ -300,16 +300,14 @@ class TestPortfolioStateAccountId:
     @pytest.mark.asyncio
     async def test_get_current_state_includes_account_id(self):
         """get_current_state() 반환에 account_id 포함."""
-        broker = AsyncMock()
-        broker.get_balance = AsyncMock(
-            return_value=AccountBalance(
-                total_assets=Decimal("100000000"),
-                cash=Decimal("50000000"),
-                invested=Decimal("50000000"),
-                timestamp=datetime.now(UTC),
-            )
+        balance = AccountBalance(
+            total_assets=Decimal("100000000"),
+            cash=Decimal("50000000"),
+            invested=Decimal("50000000"),
+            timestamp=datetime.now(UTC),
         )
-        broker.get_positions = AsyncMock(return_value=[])
+        broker = AsyncMock()
+        broker.get_balance_and_positions = AsyncMock(return_value=(balance, []))
 
         factory, session = _mock_session_factory()
         # get_peak_value mock

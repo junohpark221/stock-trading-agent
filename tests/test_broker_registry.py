@@ -266,18 +266,18 @@ class TestKISClientFromCredentials:
 
     def test_rate_limit_auto_paper(self) -> None:
         creds = _make_credentials(is_paper=True)
-        client = KISClient.from_credentials(creds, _make_mock_cache())
-        assert client._rate_limit_interval == 0.5
+        KISClient.from_credentials(creds, _make_mock_cache())
+        assert KISClient._global_rate_interval == 0.5
 
     def test_rate_limit_auto_prod(self) -> None:
         creds = _make_credentials(is_paper=False)
-        client = KISClient.from_credentials(creds, _make_mock_cache())
-        assert client._rate_limit_interval == 0.05
+        KISClient.from_credentials(creds, _make_mock_cache())
+        assert KISClient._global_rate_interval == 0.05
 
     def test_rate_limit_explicit(self) -> None:
         creds = _make_credentials()
-        client = KISClient.from_credentials(creds, _make_mock_cache(), rate_limit_interval=0.1)
-        assert client._rate_limit_interval == 0.1
+        KISClient.from_credentials(creds, _make_mock_cache(), rate_limit_interval=0.1)
+        assert KISClient._global_rate_interval == 0.1
 
     def test_settings_is_none(self) -> None:
         creds = _make_credentials()

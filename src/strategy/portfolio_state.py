@@ -51,8 +51,7 @@ class PortfolioStateService:
 
     async def get_current_state(self) -> PortfolioState:
         """Broker 잔고 + DB 이력을 조합하여 현재 포트폴리오 상태를 반환한다."""
-        balance = await self._broker.get_balance()
-        positions = await self._broker.get_positions()
+        balance, positions = await self._broker.get_balance_and_positions()
 
         sector_allocations = await self.get_sector_allocations(
             positions, balance.total_assets

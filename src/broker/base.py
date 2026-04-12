@@ -68,6 +68,16 @@ class BrokerInterface(ABC):
     async def get_positions(self) -> list[Position]:
         """Fetch all open positions."""
 
+    async def get_balance_and_positions(self) -> tuple[AccountBalance, list[Position]]:
+        """Fetch balance and positions in a single API round-trip.
+
+        Default implementation calls get_balance() + get_positions() separately.
+        Subclasses (e.g. KISClient) should override to avoid duplicate API calls.
+        """
+        balance = await self.get_balance()
+        positions = await self.get_positions()
+        return balance, positions
+
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     @abstractmethod

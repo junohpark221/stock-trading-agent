@@ -276,8 +276,8 @@ class SchedulerFactory:
             settings=settings,
         )
 
-        # 계좌별 작업 등록
-        for ctx in contexts:
+        # 계좌별 작업 등록 (account_index로 배치 시차 실행)
+        for account_index, ctx in enumerate(contexts):
             SchedulerFactory._register_account_jobs(
                 engine,
                 ctx,
@@ -286,6 +286,7 @@ class SchedulerFactory:
                 generator=generator,
                 telegram_bot=telegram_bot,
                 settings=settings,
+                account_index=account_index,
             )
 
         logger.info(
@@ -554,23 +555,34 @@ class SchedulerFactory:
         generator: ReportGenerator,
         telegram_bot: TelegramBot,
         settings: Settings,
+        account_index: int = 0,
     ) -> None:
-        """계좌별 작업 등록. 작업 이름: ``{job_type}:{account_id}``."""
+        """계좌별 작업 등록. 작업 이름: ``{job_type}:{account_id}``.
+
+        Args:
+            account_index: 0-based index for staggering cron triggers.
+                Each account offsets its batch jobs by ``account_index`` minutes
+                to avoid simultaneous KIS API calls across accounts.
+        """
         s = settings
         aid = ctx.account_id
 
-        # token_refresh:{account_id} — mock broker면 스킵
+        # token_refresh:{account_id} — mock broker면 스킵 (시차 실행)
         if ctx.auth is not None:
             tr_h, tr_m = SchedulerEngine._parse_time(s.TOKEN_REFRESH_TIME)
+            tr_m_offset = (tr_m + account_index) % 60
+            tr_h_offset = tr_h + (tr_m + account_index) // 60
             engine.register_job(
                 f"token_refresh:{aid}",
                 partial(job_token_refresh, auth=ctx.auth, account_id=aid),
-                CronTrigger(hour=tr_h, minute=tr_m, timezone="UTC"),
+                CronTrigger(hour=tr_h_offset, minute=tr_m_offset, timezone="UTC"),
             )
 
-        # swing_analysis:{account_id} — swing 전략 계좌만
+        # swing_analysis:{account_id} — swing 전략 계좌만 (시차 실행)
         if ctx.strategy_type == StrategyType.SWING:
             sw_h, sw_m = SchedulerEngine._parse_time(s.SWING_ANALYSIS_TIME)
+            sw_m_offset = (sw_m + account_index) % 60
+            sw_h_offset = sw_h + (sw_m + account_index) // 60
             engine.register_job(
                 f"swing_analysis:{aid}",
                 partial(
@@ -586,12 +598,14 @@ class SchedulerFactory:
                     holidays=s.KR_HOLIDAYS,
                     investment_prompt=ctx.investment_prompt,
                 ),
-                CronTrigger(hour=sw_h, minute=sw_m, timezone="UTC"),
+                CronTrigger(hour=sw_h_offset, minute=sw_m_offset, timezone="UTC"),
             )
 
-        # position_analysis:{account_id} — position 전략 계좌만
+        # position_analysis:{account_id} — position 전략 계좌만 (시차 실행)
         if ctx.strategy_type == StrategyType.POSITION:
             pa_h, pa_m = SchedulerEngine._parse_time(s.POSITION_ANALYSIS_TIME)
+            pa_m_offset = (pa_m + account_index) % 60
+            pa_h_offset = pa_h + (pa_m + account_index) // 60
             pa_days = SchedulerEngine._parse_day_of_week(s.POSITION_ANALYSIS_DAYS)
             engine.register_job(
                 f"position_analysis:{aid}",
@@ -609,8 +623,8 @@ class SchedulerFactory:
                 ),
                 CronTrigger(
                     day_of_week=pa_days,
-                    hour=pa_h,
-                    minute=pa_m,
+                    hour=pa_h_offset,
+                    minute=pa_m_offset,
                     timezone="UTC",
                 ),
             )
@@ -632,8 +646,10 @@ class SchedulerFactory:
             IntervalTrigger(minutes=s.STOP_LOSS_CHECK_INTERVAL_MIN),
         )
 
-        # daily_report:{account_id} — 모든 계좌
+        # daily_report:{account_id} — 모든 계좌 (시차 실행)
         dr_h, dr_m = SchedulerEngine._parse_time(s.DAILY_REPORT_TIME)
+        dr_m_offset = (dr_m + account_index) % 60
+        dr_h_offset = dr_h + (dr_m + account_index) // 60
         engine.register_job(
             f"daily_report:{aid}",
             partial(
@@ -644,7 +660,7 @@ class SchedulerFactory:
                 account_id=aid,
                 account_label=ctx.account_label,
             ),
-            CronTrigger(hour=dr_h, minute=dr_m, timezone="UTC"),
+            CronTrigger(hour=dr_h_offset, minute=dr_m_offset, timezone="UTC"),
         )
 
     # ── Watchlist ────────────────────────────────────────────────────

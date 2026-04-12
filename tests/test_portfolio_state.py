@@ -198,16 +198,14 @@ class TestGetCurrentStateEmpty:
 
     @pytest.mark.asyncio
     async def test_empty_portfolio(self):
-        broker = AsyncMock()
-        broker.get_balance = AsyncMock(
-            return_value=_make_balance(
-                total_assets=Decimal("10000000"),
-                cash=Decimal("10000000"),
-                invested=Decimal(0),
-                positions_count=0,
-            )
+        balance = _make_balance(
+            total_assets=Decimal("10000000"),
+            cash=Decimal("10000000"),
+            invested=Decimal(0),
+            positions_count=0,
         )
-        broker.get_positions = AsyncMock(return_value=[])
+        broker = AsyncMock()
+        broker.get_balance_and_positions = AsyncMock(return_value=(balance, []))
 
         factory, session = _mock_session_factory()
         # get_peak_value → no snapshots
@@ -243,8 +241,9 @@ class TestGetCurrentStateWithPositions:
         pos2 = _make_position("000660", market_value=Decimal("5000000"))
 
         broker = AsyncMock()
-        broker.get_balance = AsyncMock(return_value=_make_balance())
-        broker.get_positions = AsyncMock(return_value=[pos1, pos2])
+        broker.get_balance_and_positions = AsyncMock(
+            return_value=(_make_balance(), [pos1, pos2])
+        )
 
         factory, session = _mock_session_factory()
         session.execute = AsyncMock(
@@ -279,11 +278,9 @@ class TestDrawdownCalculation:
 
     @pytest.mark.asyncio
     async def test_drawdown_from_peak(self):
+        balance = _make_balance(total_assets=Decimal("100000000"))
         broker = AsyncMock()
-        broker.get_balance = AsyncMock(
-            return_value=_make_balance(total_assets=Decimal("100000000"))
-        )
-        broker.get_positions = AsyncMock(return_value=[])
+        broker.get_balance_and_positions = AsyncMock(return_value=(balance, []))
 
         factory, session = _mock_session_factory()
         session.execute = AsyncMock(
@@ -307,11 +304,9 @@ class TestDrawdownCalculation:
     @pytest.mark.asyncio
     async def test_new_peak_no_drawdown(self):
         """현재가 신고점이면 drawdown=0."""
+        balance = _make_balance(total_assets=Decimal("120000000"))
         broker = AsyncMock()
-        broker.get_balance = AsyncMock(
-            return_value=_make_balance(total_assets=Decimal("120000000"))
-        )
-        broker.get_positions = AsyncMock(return_value=[])
+        broker.get_balance_and_positions = AsyncMock(return_value=(balance, []))
 
         factory, session = _mock_session_factory()
         session.execute = AsyncMock(

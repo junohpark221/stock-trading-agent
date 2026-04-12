@@ -21,7 +21,7 @@ import re
 import zipfile
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 import aiohttp
 import structlog
@@ -89,6 +89,12 @@ class KISClient(BrokerInterface):
         cache: RedisCache instance for token caching.
     """
 
+    # Global rate limiter shared across all KISClient instances.
+    # KIS enforces rate limits per App Key / IP, so per-instance semaphores
+    # alone cannot prevent violations when multiple accounts run concurrently.
+    _global_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(1)
+    _global_rate_interval: ClassVar[float] = 0.05
+
     def __init__(self, *, settings: Settings, cache: RedisCache) -> None:
         self._settings: Settings | None = settings
         self._cache = cache
@@ -97,9 +103,8 @@ class KISClient(BrokerInterface):
         self._credentials: AccountCredentials | None = None
         self._token_ttl: int = settings.KIS_TOKEN_REDIS_TTL
 
-        # Rate limiting
-        self._semaphore = asyncio.Semaphore(1)
-        self._rate_limit_interval = settings.KIS_RATE_LIMIT_INTERVAL
+        # Rate limiting — update global interval from settings
+        KISClient._global_rate_interval = settings.KIS_RATE_LIMIT_INTERVAL
         self._max_rate_limit_retries = settings.KIS_RATE_LIMIT_MAX_RETRIES
         self._rate_limit_backoff_base = settings.KIS_RATE_LIMIT_BACKOFF_BASE
 
@@ -145,11 +150,12 @@ class KISClient(BrokerInterface):
         instance._token_ttl = token_ttl
 
         # Rate limiting
-        instance._semaphore = asyncio.Semaphore(1)
         if rate_limit_interval is not None:
-            instance._rate_limit_interval = rate_limit_interval
+            resolved_interval = rate_limit_interval
         else:
-            instance._rate_limit_interval = 0.5 if credentials.is_paper else 0.05
+            resolved_interval = 0.5 if credentials.is_paper else 0.05
+        # Update global rate interval (paper trading needs slower pace)
+        KISClient._global_rate_interval = resolved_interval
         instance._max_rate_limit_retries = 3
         instance._rate_limit_backoff_base = 1.0
 
@@ -233,11 +239,16 @@ class KISClient(BrokerInterface):
         is_retry: bool = False,
         rate_limit_retry: int = 0,
     ) -> dict[str, Any]:
-        """Execute a single KIS API call inside the rate-limit semaphore."""
+        """Execute a single KIS API call inside the global rate-limit semaphore.
+
+        The global semaphore serializes ALL KIS API calls across every
+        KISClient instance in this process, preventing rate-limit violations
+        when multiple accounts fire requests concurrently.
+        """
         if not self._session or not self._auth:
             raise BrokerError("KISClient not connected. Call connect() first.")
 
-        async with self._semaphore:
+        async with KISClient._global_semaphore:
             token = await self._auth.get_token()
             headers = self._auth.build_headers(token, tr_id, tr_cont=tr_cont)
             url = f"{self._base_url}{path}"
@@ -249,7 +260,7 @@ class KISClient(BrokerInterface):
                     resp = await self._session.post(url, headers=headers, json=body)
 
                 # Rate limit sleep inside semaphore to guarantee interval
-                await asyncio.sleep(self._rate_limit_interval)
+                await asyncio.sleep(KISClient._global_rate_interval)
 
             except aiohttp.ClientError as exc:
                 raise APIError(f"KIS request failed: {exc}") from exc
@@ -544,6 +555,38 @@ class KISClient(BrokerInterface):
             if _to_int(item.hldg_qty) > 0:
                 positions.append(item.to_domain())
         return positions
+
+    async def get_balance_and_positions(self) -> tuple[AccountBalance, list[Position]]:
+        """Fetch balance and positions in a single ``_fetch_balance_pages()`` call.
+
+        Avoids the duplicate API round-trip that happens when
+        ``get_balance()`` and ``get_positions()`` are called separately.
+        """
+        raw_positions, summary = await self._fetch_balance_pages()
+
+        # Build AccountBalance from summary
+        cash = _to_decimal(summary.dnca_tot_amt)
+        invested = _to_decimal(summary.pchs_amt_smtl_amt)
+        unrealized = _to_decimal(summary.evlu_pfls_smtl_amt)
+
+        balance = AccountBalance(
+            total_assets=_to_decimal(summary.tot_evlu_amt),
+            cash=cash,
+            invested=invested,
+            unrealized_pnl=unrealized,
+            daily_pnl=_to_decimal(summary.thdt_sll_amt) - _to_decimal(summary.thdt_buy_amt),
+            positions_count=len([p for p in raw_positions if _to_int(p.hldg_qty) > 0]),
+            timestamp=datetime.now(),
+        )
+
+        # Build Position list
+        positions = [
+            item.to_domain()
+            for item in raw_positions
+            if _to_int(item.hldg_qty) > 0
+        ]
+
+        return balance, positions
 
     async def _fetch_balance_pages(
         self,

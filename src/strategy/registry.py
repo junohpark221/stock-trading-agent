@@ -124,6 +124,7 @@ class StrategyFactory:
         *,
         account_id: str = "default",
         investment_prompt: str = "",
+        risk_tolerance: str = "moderate",
         risk_overrides: dict[str, object] | None = None,
     ) -> Strategy:
         """계좌별 전략 인스턴스를 생성한다.
@@ -138,6 +139,8 @@ class StrategyFactory:
             계좌 식별자. 기본 ``"default"``.
         investment_prompt:
             계좌별 투자 철학 프롬프트 (LLM system message에 주입).
+        risk_tolerance:
+            계좌별 LLM 리스크 허용 수준 (conservative/moderate/aggressive).
         risk_overrides:
             계좌별 리스크 설정 오버라이드 (허용 키만 적용).
         """
@@ -174,4 +177,5 @@ class StrategyFactory:
             settings=settings,
             account_id=account_id,
             investment_prompt=investment_prompt,
+            risk_tolerance=risk_tolerance,
         )

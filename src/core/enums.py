@@ -278,3 +278,11 @@ class AccountStatus(StrEnum):
     ACTIVE = "active"
     INACTIVE = "inactive"
     SUSPENDED = "suspended"
+
+
+class RiskTolerance(StrEnum):
+    """계좌별 LLM 리스크 허용 수준."""
+
+    CONSERVATIVE = "conservative"
+    MODERATE = "moderate"
+    AGGRESSIVE = "aggressive"

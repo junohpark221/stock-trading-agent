@@ -230,6 +230,7 @@ async def accounts_create(
         kis_hts_id=str(form.get("kis_hts_id", "")).strip(),
         strategy_type=str(form.get("strategy_type", "position")),
         investment_prompt=str(form.get("investment_prompt", "")).strip(),
+        risk_tolerance=str(form.get("risk_tolerance", "moderate")).strip(),
         risk_overrides=risk_overrides,
         is_active=True,
     )
@@ -290,6 +291,7 @@ async def accounts_edit(
 
     account.nickname = str(form.get("nickname", account.nickname)).strip()
     account.strategy_type = str(form.get("strategy_type", account.strategy_type))
+    account.risk_tolerance = str(form.get("risk_tolerance", getattr(account, "risk_tolerance", "moderate"))).strip()
     account.kis_is_paper = "kis_is_paper" in form
     account.kis_account_prod = str(form.get("kis_account_prod", account.kis_account_prod)).strip()
     account.kis_hts_id = str(form.get("kis_hts_id", account.kis_hts_id or "")).strip()

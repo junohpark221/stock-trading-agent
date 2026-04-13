@@ -32,6 +32,7 @@ def _mock_account(**kwargs) -> MagicMock:
     row.strategy_type = kwargs.get("strategy_type", "swing")
     row.investment_prompt = kwargs.get("investment_prompt", "")
     row.risk_overrides = kwargs.get("risk_overrides", None)
+    row.risk_tolerance = kwargs.get("risk_tolerance", "moderate")
     row.is_active = kwargs.get("is_active", True)
     row.created_at = kwargs.get("created_at", datetime(2026, 3, 25, tzinfo=UTC))
     row.updated_at = kwargs.get("updated_at", datetime(2026, 3, 25, tzinfo=UTC))

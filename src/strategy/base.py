@@ -52,6 +52,7 @@ class Strategy(ABC):
         settings: Settings,
         account_id: str = "default",
         investment_prompt: str = "",
+        risk_tolerance: str = "moderate",
     ) -> None:
         self._orchestrator = orchestrator
         self._risk_manager = risk_manager
@@ -63,6 +64,7 @@ class Strategy(ABC):
         self._settings = settings
         self._account_id = account_id
         self._investment_prompt = investment_prompt
+        self._risk_tolerance = risk_tolerance
         self._exit_checker = ExitConditionChecker(
             max_drawdown_pct=Decimal(str(settings.MAX_DRAWDOWN_PCT)),
         )
@@ -101,6 +103,7 @@ class Strategy(ABC):
         return await self._orchestrator.execute(
             symbols,
             investment_prompt=self._investment_prompt or None,
+            risk_tolerance=self._risk_tolerance,
             account_id=self._account_id,
         )
 

@@ -67,6 +67,7 @@ class PipelineOrchestrator:
         *,
         session_id: uuid.UUID | None = None,
         investment_prompt: str | None = None,
+        risk_tolerance: str = "moderate",
         account_id: str = "default",
     ) -> PipelineResult:
         """전체 파이프라인 실행.
@@ -110,6 +111,7 @@ class PipelineOrchestrator:
                 market_decision_id=market_decision_id,
                 semaphore=semaphore,
                 investment_prompt=investment_prompt,
+                risk_tolerance=risk_tolerance,
                 account_id=account_id,
             )
             for symbol in symbols
@@ -174,6 +176,7 @@ class PipelineOrchestrator:
         market_decision_id: uuid.UUID,
         semaphore: asyncio.Semaphore,
         investment_prompt: str | None = None,
+        risk_tolerance: str = "moderate",
         account_id: str = "default",
     ) -> _SymbolResult:
         """종목별 Stock → Risk → Trade 파이프라인 실행."""
@@ -209,6 +212,7 @@ class PipelineOrchestrator:
                         "symbol": symbol,
                         "stock_analysis": sa.model_dump(),  # type: ignore[union-attr]
                         "market_condition": market_condition.model_dump(),
+                        "risk_tolerance": risk_tolerance,
                     },
                     session_id=session_id,
                     parent_id=stock_decision_id,

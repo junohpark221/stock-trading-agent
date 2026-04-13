@@ -47,6 +47,7 @@ class CreateAccountRequest(BaseModel):
     kis_hts_id: str = Field("", max_length=50)
     strategy_type: StrategyType = StrategyType.SWING
     investment_prompt: str = ""
+    risk_tolerance: str = Field("moderate", description="리스크 허용 수준 (conservative/moderate/aggressive)")
     risk_overrides: dict | None = None
 
 
@@ -56,6 +57,7 @@ class UpdateAccountRequest(BaseModel):
     kis_is_paper: bool | None = None
     kis_hts_id: str | None = Field(None, max_length=50)
     strategy_type: StrategyType | None = None
+    risk_tolerance: str | None = Field(None, description="리스크 허용 수준 (conservative/moderate/aggressive)")
     risk_overrides: dict | None = None
 
 
@@ -73,6 +75,7 @@ class AccountSummary(BaseModel):
 
 class AccountDetail(AccountSummary):
     investment_prompt: str
+    risk_tolerance: str
     risk_overrides: dict | None
     kis_is_paper: bool
     created_at: datetime
@@ -109,6 +112,7 @@ def _to_detail(account: Account) -> dict:
     return {
         **_to_summary(account),
         "investment_prompt": account.investment_prompt,
+        "risk_tolerance": account.risk_tolerance,
         "risk_overrides": account.risk_overrides,
         "kis_is_paper": account.kis_is_paper,
         "created_at": account.created_at.isoformat() if account.created_at else None,
@@ -177,6 +181,7 @@ async def create_account(
             kis_hts_id=req.kis_hts_id,
             strategy_type=req.strategy_type.value,
             investment_prompt=req.investment_prompt,
+            risk_tolerance=req.risk_tolerance,
             risk_overrides=req.risk_overrides,
             is_active=True,
         )

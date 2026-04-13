@@ -31,6 +31,9 @@ class Account(TimestampMixin, Base):
     strategy_type: Mapped[str] = mapped_column(String(20), nullable=False, default="position")
     investment_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     risk_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    risk_tolerance: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="moderate",
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 

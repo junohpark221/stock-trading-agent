@@ -512,7 +512,7 @@ class TestStrategyAnalyze:
         result = await strategy.analyze(["005930"])
 
         orchestrator.execute.assert_awaited_once_with(
-            ["005930"], investment_prompt=None, account_id="default"
+            ["005930"], investment_prompt=None, risk_tolerance="moderate", account_id="default"
         )
         assert result.session_id == mock_result.session_id
 

@@ -13,6 +13,7 @@
         <article>
             <header>기본 정보</header>
             <p>전략: {{ account.strategy_type }}</p>
+            <p>리스크 허용도: {{ {"conservative": "보수적", "moderate": "균형", "aggressive": "적극적"}.get(account.risk_tolerance or "moderate", account.risk_tolerance or "moderate") }}</p>
             <p>계좌 ID: {{ account.id }}</p>
         </article>
         <article>

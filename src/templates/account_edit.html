@@ -33,6 +33,14 @@
             </select>
         </label>
         <label>
+            리스크 허용도
+            <select name="risk_tolerance">
+                {% for rt, rt_label in [("conservative", "보수적"), ("moderate", "균형"), ("aggressive", "적극적")] %}
+                <option value="{{ rt }}" {% if (account.risk_tolerance or "moderate") == rt %}selected{% endif %}>{{ rt_label }} ({{ rt }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
             <input type="checkbox" name="kis_is_paper" {% if account.kis_is_paper %}checked{% endif %}>
             모의투자
         </label>

@@ -57,6 +57,7 @@ def _make_account_context(
     nickname: str = "공격형",
     strategy_type: StrategyType = StrategyType.SWING,
     investment_prompt: str = "고성장 성장주 위주",
+    risk_tolerance: str = "moderate",
     account_label: str = "공격형 (4-01)",
 ) -> AccountContext:
     """AccountContext 테스트용 인스턴스."""
@@ -74,6 +75,7 @@ def _make_account_context(
         order_executor=AsyncMock(),
         monitor=AsyncMock(),
         investment_prompt=investment_prompt,
+        risk_tolerance=risk_tolerance,
         account_label=account_label,
     )
 
@@ -173,6 +175,7 @@ class TestRegisterAccountJobs:
             order_executor=AsyncMock(),
             monitor=AsyncMock(),
             investment_prompt="",
+            risk_tolerance="moderate",
             account_label="모의 (5678)",
         )
         SchedulerFactory._register_account_jobs(
@@ -267,6 +270,7 @@ class TestJobAccountParams:
         orchestrator.execute.assert_awaited_once_with(
             ["005930"],
             investment_prompt="aggressive growth",
+            risk_tolerance="moderate",
             account_id="acct-1",
         )
 
@@ -293,6 +297,7 @@ class TestJobAccountParams:
         orchestrator.execute.assert_awaited_once_with(
             ["005930"],
             investment_prompt="value investing",
+            risk_tolerance="moderate",
             account_id="acct-2",
         )
 

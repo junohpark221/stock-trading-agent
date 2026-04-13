@@ -46,6 +46,7 @@ class PipelineRunRequest(BaseModel):
     )
     account_id: str = Field("default", description="계좌 ID")
     investment_prompt: str = Field("", description="투자 철학 프롬프트")
+    risk_tolerance: str = Field("moderate", description="리스크 허용 수준 (conservative/moderate/aggressive)")
 
 
 # ── Orchestrator Factory ─────────────────────────────────────────────────
@@ -90,6 +91,7 @@ async def run_pipeline(req: PipelineRunRequest) -> JSONResponse:
             req.symbols,
             session_id=req.session_id,
             investment_prompt=req.investment_prompt or None,
+            risk_tolerance=req.risk_tolerance,
             account_id=req.account_id,
         )
         return JSONResponse(content=result.model_dump(mode="json"))

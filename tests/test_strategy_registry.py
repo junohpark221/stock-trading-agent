@@ -285,6 +285,7 @@ class TestStrategyAccountPropagation:
         strategy._orchestrator.execute.assert_called_once_with(
             ["005930"],
             investment_prompt="보수적 가치투자",
+            risk_tolerance="moderate",
             account_id="test-acct",
         )
 

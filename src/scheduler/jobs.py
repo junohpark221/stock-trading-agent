@@ -174,6 +174,7 @@ async def job_swing_analysis(
     strategy: Strategy | None = None,
     account_id: str = "default",
     investment_prompt: str = "",
+    risk_tolerance: str = "moderate",
     order_executor: OrderExecutor | None = None,
     account_label: str = "",
     market_open: str = "09:00",
@@ -200,6 +201,7 @@ async def job_swing_analysis(
     result = await orchestrator.execute(
         target_symbols,
         investment_prompt=investment_prompt,
+        risk_tolerance=risk_tolerance,
         account_id=account_id,
     )
     logger.info(
@@ -231,6 +233,7 @@ async def job_position_analysis(
     position_manager: PositionManager,
     account_id: str = "default",
     investment_prompt: str = "",
+    risk_tolerance: str = "moderate",
     order_executor: OrderExecutor | None = None,
     account_label: str = "",
     market_open: str = "09:00",
@@ -247,6 +250,7 @@ async def job_position_analysis(
     result = await orchestrator.execute(
         symbols,
         investment_prompt=investment_prompt,
+        risk_tolerance=risk_tolerance,
         account_id=account_id,
     )
     logger.info(

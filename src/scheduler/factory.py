@@ -79,6 +79,7 @@ class AccountContext:
     order_executor: OrderExecutor
     monitor: TradingMonitor
     investment_prompt: str
+    risk_tolerance: str
     account_label: str  # "닉네임 (뒤4자리)"
     strategy: Strategy | None = None
 
@@ -332,6 +333,7 @@ class SchedulerFactory:
             kis_hts_id=settings.KIS_HTS_ID,
             strategy_type="position",
             investment_prompt="",
+            risk_tolerance="moderate",
             risk_overrides=None,
             is_active=True,
         )
@@ -467,6 +469,7 @@ class SchedulerFactory:
                 deps,
                 account_id=account_id,
                 investment_prompt=account.investment_prompt,
+                risk_tolerance=getattr(account, "risk_tolerance", "moderate"),
                 risk_overrides=account.risk_overrides,
             )
         except Exception:
@@ -491,6 +494,7 @@ class SchedulerFactory:
             order_executor=order_executor,
             monitor=monitor,
             investment_prompt=account.investment_prompt,
+            risk_tolerance=getattr(account, "risk_tolerance", "moderate"),
             account_label=account_label,
             strategy=strategy,
         )
@@ -598,6 +602,7 @@ class SchedulerFactory:
                     market_close=s.MARKET_CLOSE_TIME,
                     holidays=s.KR_HOLIDAYS,
                     investment_prompt=ctx.investment_prompt,
+                    risk_tolerance=ctx.risk_tolerance,
                 ),
                 CronTrigger(
                     day_of_week=sw_days,
@@ -621,6 +626,7 @@ class SchedulerFactory:
                     position_manager=ctx.position_manager,
                     account_id=aid,
                     investment_prompt=ctx.investment_prompt,
+                    risk_tolerance=ctx.risk_tolerance,
                     order_executor=ctx.order_executor,
                     account_label=ctx.account_label,
                     market_open=s.MARKET_OPEN_TIME,

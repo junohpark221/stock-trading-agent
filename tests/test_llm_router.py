@@ -249,7 +249,8 @@ class TestGetAgentConfig:
 
         config = await router._get_agent_config("trader")
         assert config.agent_type == "trader"
-        assert config.primary_model == "openai/gpt-5.2-2025-12-11"
+        assert config.primary_model == "google/gemini-3.1-pro-preview"
+        assert config.escalation_model == "openai/gpt-5.2-2025-12-11"
 
     @pytest.mark.asyncio
     async def test_no_config_anywhere_raises(self, router, mock_session, mock_cache):

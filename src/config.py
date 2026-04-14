@@ -58,12 +58,12 @@ class Settings(BaseSettings):
     FRED_CACHE_TTL: int = 86400       # 24시간
     NEWS_CACHE_TTL: int = 3600        # 1시간
 
-    # ── Phase 3: LLM Providers (GPT-First) ────────────────────────────
+    # ── Phase 3: LLM Providers (Gemini-First) ─────────────────────────
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     GOOGLE_API_KEY: str = ""
     LLM_MONTHLY_BUDGET_USD: Decimal = Decimal("100.00")
-    LLM_DEFAULT_PROVIDER: Literal["openai", "anthropic", "google"] = "openai"
+    LLM_DEFAULT_PROVIDER: Literal["openai", "anthropic", "google"] = "google"
     LLM_ESCALATION_CONFIDENCE_THRESHOLD: Decimal = Decimal("0.60")
     LLM_RESPONSE_CACHE_TTL: int = 1800    # 30분
     LLM_CONFIG_CACHE_TTL: int = 300       # 5분

@@ -694,6 +694,30 @@ class ExecutionResult(BaseModel):
     position_id: int | None = None         # 생성/청산된 포지션 ID
     decision_ids: list[UUID] = []          # 기록된 decision_log ID들
     error: str = ""
+    # True = 브로커 접수 완료 · 체결 미확정 (WS/reconciler가 추후 FILLED 확정)
+    pending: bool = False
+
+
+class ExecutionEvent(BaseModel):
+    """KIS WebSocket 체결통보 이벤트 (H0STCNI0/9 디코드 결과).
+
+    체결 확정, 접수, 거부, 취소 모두 이 하나의 모델로 수신한다.
+    is_filled/is_rejected 플래그로 구분한다.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: str
+    broker_order_id: str                   # 주문번호 (ODNO)
+    orig_broker_order_id: str = ""         # 원주문번호 (ORGN_ODNO) — 정정·취소 시
+    symbol: str
+    side: OrderSide
+    filled_quantity: int = 0
+    filled_price: Decimal = Decimal(0)
+    is_filled: bool = False                # 체결여부='2' ↔ 접수·거부·취소
+    is_rejected: bool = False              # 거부여부='Y'
+    rejected_reason: str = ""
+    timestamp: datetime
 
 
 class ExecuteOrderRequest(BaseModel):

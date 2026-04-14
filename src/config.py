@@ -98,6 +98,20 @@ class Settings(BaseSettings):
     AUTO_EXECUTE_MAX_PORTFOLIO_PCT: float = 5.0
     USE_MOCK_BROKER: bool = False
 
+    # ── Phase 5: Order Execution Stream (KIS 체결통보 WS) ─────────────
+    EXECUTION_STREAM_ENABLED: bool = True
+    KIS_WS_URL_LIVE: str = "ws://ops.koreainvestment.com:21000"
+    KIS_WS_URL_PAPER: str = "ws://ops.koreainvestment.com:31000"
+    KIS_WS_APPROVAL_URL_LIVE: str = "https://openapi.koreainvestment.com:9443/oauth2/Approval"
+    KIS_WS_APPROVAL_URL_PAPER: str = "https://openapivts.koreainvestment.com:29443/oauth2/Approval"
+    ORDER_FILL_TIMEOUT_SEC: int = 1800    # WS 체결 대기 타임아웃 (30분). 초과 시 reconciler 처리.
+    WS_RECONNECT_BACKOFF_MAX_SEC: int = 60
+
+    # Reconcile 잡 — WS 누락 주문 정리 (KST 기준)
+    RECONCILE_MIDDAY_TIME: str = "12:00"   # 장중 mid-day sweep
+    RECONCILE_EOD_TIME: str = "15:40"      # 장 마감 직후 sweep + expire
+    RECONCILE_DAYS: str = "mon,tue,wed,thu,fri"
+
     # ── Phase 6: Scheduler + Report + Monitoring ─────────────────────────
     SCHEDULER_ENABLED: bool = True
     PRE_MARKET_ANALYSIS_TIME: str = "08:30"

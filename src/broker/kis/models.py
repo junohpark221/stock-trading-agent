@@ -198,6 +198,39 @@ class KISBalanceOutput2(BaseModel):
     evlu_pfls_smtl_amt: str = ""    # 평가손익 합계
 
 
+# ── 주문체결조회 (TTTC0081R/VTTC0081R output1 배열) ─────────────────
+
+class KISOrderCcldOutput(BaseModel):
+    """Daily order/fill inquiry — ``TTTC0081R``/``VTTC0081R`` ``output1`` row.
+
+    주요 필드:
+    - ``odno``: 주문번호 (KIS가 place_order 응답 ODNO와 매칭)
+    - ``sll_buy_dvsn_cd``: "01"=매도, "02"=매수
+    - ``tot_ccld_qty``: 총 체결 수량
+    - ``avg_prvs``: 평균가 (체결 단가 평균)
+    - ``rmn_qty``: 미체결 수량 (잔량)
+    - ``cncl_yn``: 취소 여부 ("Y"/"N")
+    - ``rjct_qty``: 거부 수량
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    odno: str = ""                  # 주문번호
+    orgn_odno: str = ""             # 원주문번호 (정정·취소용)
+    pdno: str = ""                  # 종목코드
+    sll_buy_dvsn_cd: str = ""       # 01 매도, 02 매수
+    ord_qty: str = ""               # 주문 수량
+    ord_unpr: str = ""              # 주문 단가
+    tot_ccld_qty: str = ""          # 총 체결 수량
+    avg_prvs: str = ""              # 평균 체결가
+    tot_ccld_amt: str = ""          # 총 체결 금액
+    rmn_qty: str = ""               # 잔량 (미체결)
+    cncl_yn: str = ""               # 취소여부 Y/N
+    rjct_qty: str = ""              # 거부수량
+    ord_tmd: str = ""               # 주문시각 (HHMMSS)
+    ccld_cndt_name: str = ""        # 체결조건명
+
+
 # ── Export helpers (used in client.py) ────────────────────────────────
 
 __all__ = [
@@ -205,6 +238,7 @@ __all__ = [
     "KISPriceOutput",
     "KISDailyChartOutput",
     "KISOrderOutput",
+    "KISOrderCcldOutput",
     "KISBalanceOutput1",
     "KISBalanceOutput2",
     "_to_decimal",

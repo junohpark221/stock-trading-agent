@@ -30,6 +30,7 @@ _redis_client: Redis | None = None
 _telegram_bot: TelegramBot | None = None
 _scheduler_engine: object | None = None  # SchedulerEngine (lazy import)
 _broker_registry: object | None = None  # BrokerRegistry (lazy import)
+_execution_stream: object | None = None  # ExecutionStreamManager (lazy import)
 logger = structlog.get_logger(__name__)
 
 
@@ -93,6 +94,7 @@ def get_broker_registry():
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""
     global _redis_client, _telegram_bot, _scheduler_engine, _broker_registry
+    global _execution_stream
 
     settings = get_settings()
     is_dev = settings.ENV == "development"
@@ -132,7 +134,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.SCHEDULER_ENABLED:
         from src.scheduler.factory import SchedulerFactory
 
-        _scheduler_engine, _broker_registry = await SchedulerFactory.create_scheduler(
+        (
+            _scheduler_engine,
+            _broker_registry,
+            _execution_stream,
+        ) = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=cache,
@@ -144,6 +150,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             jobs=len(_scheduler_engine.get_status()["jobs"]),
         )
 
+        # KIS 체결통보 WS 시작 — Factory가 등록한 credentials 소모.
+        pending_creds = getattr(_execution_stream, "_pending_credentials", [])
+        if pending_creds:
+            await _execution_stream.start(pending_creds)
+            log.info("execution_stream_started", accounts=len(pending_creds))
+
     log.info("app_started", env=settings.ENV)
 
     yield
@@ -153,6 +165,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await _scheduler_engine.stop()
         _scheduler_engine = None
         log.info("scheduler_stopped")
+
+    if _execution_stream is not None:
+        try:
+            await _execution_stream.stop()
+            log.info("execution_stream_stopped")
+        except Exception:
+            log.exception("execution_stream_stop_failed")
+        _execution_stream = None
 
     if _broker_registry is not None:
         await _broker_registry.disconnect_all()

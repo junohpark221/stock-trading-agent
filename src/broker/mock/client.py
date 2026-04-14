@@ -234,6 +234,31 @@ class InMemoryBroker(BrokerInterface):
         logger.info("mock_order_cancelled", order_id=order_id)
         return True
 
+    async def get_order_status(
+        self, broker_order_id: str, *, order_date: object = None
+    ) -> OrderResult:
+        """Return cached order status from in-memory state.
+
+        Mock broker fills instantly (place_order returns FILLED immediately), so
+        this method mainly exists for interface conformance. Unknown order_ids
+        get an empty SUBMITTED placeholder, consistent with KISClient behavior.
+        """
+        if broker_order_id in self._orders:
+            return self._orders[broker_order_id]
+        return OrderResult(
+            order_id=broker_order_id,
+            symbol="",
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=0,
+            price=Decimal(0),
+            status=OrderStatus.SUBMITTED,
+            filled_quantity=0,
+            filled_price=None,
+            commission=Decimal(0),
+            timestamp=datetime.now(),
+        )
+
     # ── Account ───────────────────────────────────────────────────────
 
     async def get_balance(self) -> AccountBalance:

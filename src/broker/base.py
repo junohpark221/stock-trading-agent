@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import date
     from types import TracebackType
 
     from src.core.models import (
@@ -57,6 +58,20 @@ class BrokerInterface(ABC):
     @abstractmethod
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel a pending order. Returns ``True`` on success."""
+
+    @abstractmethod
+    async def get_order_status(
+        self, broker_order_id: str, *, order_date: date | None = None
+    ) -> OrderResult:
+        """Fetch current status of a previously submitted order.
+
+        Used by OrderReconciler to confirm KIS fills after the asynchronous
+        WebSocket 체결통보 path fails or is disabled.
+
+        ``order_date`` defaults to today in KST when ``None``.
+        Returns an ``OrderResult`` whose ``status`` reflects the latest state:
+        SUBMITTED (still pending), FILLED, PARTIALLY_FILLED, REJECTED, CANCELLED.
+        """
 
     # ── Account ───────────────────────────────────────────────────────
 

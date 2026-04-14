@@ -254,6 +254,44 @@ class MessageTemplates:
         return "\n".join(lines)
 
     @staticmethod
+    def submission_notification(
+        *,
+        account_label: str = "",
+        symbol: str,
+        name: str,
+        side: OrderSide,
+        quantity: int,
+        price: Decimal,
+        approval_status: ApprovalStatus,
+        broker_order_id: str = "",
+    ) -> str:
+        """주문 접수(미체결) 통보 — KIS 접수 직후. 체결 확정 시 execution_notification."""
+        esc = MessageTemplates._escape
+        fmt = MessageTemplates
+
+        emoji = _SIDE_EMOJI.get(side, "⚪")
+        side_kr = _SIDE_KR.get(side, str(side))
+        approval_kr = _APPROVAL_STATUS_KR.get(approval_status, str(approval_status))
+
+        lines = MessageTemplates._account_header(account_label)
+        lines.extend([
+            "📥 <b>주문 접수 · 체결 대기</b>",
+            "",
+            f"{emoji} <b>{esc(name)}</b> ({esc(symbol)})",
+            _DIVIDER,
+            "",
+            f"• 구분: {side_kr}",
+            f"• 수량: {quantity:,}주",
+            f"• 주문가: {fmt._fmt_price(price)}원",
+            f"• 승인: {approval_kr}",
+        ])
+        if broker_order_id:
+            lines.append(f"• 주문번호: {esc(broker_order_id)}")
+        lines.append("")
+        lines.append("<i>체결 완료 시 별도 통보됩니다.</i>")
+        return "\n".join(lines)
+
+    @staticmethod
     def rejection_notification(
         *,
         account_label: str = "",

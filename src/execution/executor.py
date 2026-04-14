@@ -5,10 +5,17 @@ Phase 4 전략 시그널(TradeDecision)을 실제 브로커 주문으로 변환�
     Web 검증 → 승인 → 주문 체결 → 포지션 관리 → Audit Trail.
 
 진입(execute_entry)과 청산(execute_exit) 두 경로를 제공한다.
+
+KIS 주문 접수는 동기 응답으로 체결 확정을 주지 않으므로(`OrderStatus.SUBMITTED`만 반환)
+SUBMITTED 상태일 때는 `ExecutionStreamManager`(WS 체결통보 기반) 혹은
+`OrderReconciler`(REST 폴링 기반)가 체결을 확정한다. 본 클래스는
+체결 후 finalize 로직을 공용 헬퍼(`finalize_entry_fill`, `finalize_exit_fill`)로
+노출하여 WS/reconciler 양쪽에서 동일한 경로를 사용하도록 한다.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -32,6 +39,7 @@ from src.core.models import (
     ExecutionResult,
     ExitSignal,
     OrderRequest,
+    OrderResult,
     PortfolioState,
     TradeDecision,
     WebVerification,
@@ -48,6 +56,7 @@ if TYPE_CHECKING:
     from src.config import Settings
     from src.db.models.strategy import PositionRecord
     from src.execution.approval import ApprovalManager
+    from src.execution.execution_stream import ExecutionStreamManager
     from src.execution.web_verify import WebSearchVerifier
     from src.notification.telegram import TelegramBot
     from src.strategy.portfolio_state import PortfolioStateService
@@ -67,6 +76,39 @@ _ACTION_TO_SIDE: dict[str, OrderSide] = {
     DecisionAction.STOP_LOSS: OrderSide.SELL,
     DecisionAction.TAKE_PROFIT: OrderSide.SELL,
 }
+
+# broker.place_order 반환 상태 중 "명시적 실패"로 취급할 집합.
+# SUBMITTED/PENDING은 정상 접수이므로 이 집합에 포함되지 않는다 —
+# KIS는 주문 접수 시 SUBMITTED만 반환하고 체결은 WS(H0STCNI0/9) 또는 reconciler로 확정된다.
+_HARD_FAIL_STATUSES: frozenset[OrderStatus] = frozenset(
+    {OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.FAILED}
+)
+
+
+def _event_to_order_result(
+    *,
+    event: object,  # ExecutionEvent (TYPE_CHECKING 회피용 런타임 duck-typing)
+    submitted: OrderResult,
+    fallback_quantity: int,
+) -> OrderResult:
+    """WS ExecutionEvent + 원 접수응답을 체결된 OrderResult로 병합."""
+    filled_qty = int(getattr(event, "filled_quantity", 0)) or fallback_quantity
+    filled_price = Decimal(str(getattr(event, "filled_price", submitted.price))) or submitted.price
+    return OrderResult(
+        account_id=submitted.account_id,
+        order_id=submitted.order_id,
+        symbol=submitted.symbol,
+        side=submitted.side,
+        order_type=submitted.order_type,
+        quantity=filled_qty,
+        price=submitted.price,
+        status=OrderStatus.FILLED,
+        filled_quantity=filled_qty,
+        filled_price=filled_price,
+        commission=submitted.commission,
+        timestamp=getattr(event, "timestamp", submitted.timestamp),
+    )
+
 
 # ExitReason → DecisionAction
 _EXIT_REASON_TO_ACTION: dict[str, DecisionAction] = {
@@ -101,6 +143,7 @@ class OrderExecutor:
         telegram_bot: TelegramBot,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
+        execution_stream: ExecutionStreamManager | None = None,
     ) -> None:
         self._broker = broker
         self._web_verifier = web_verifier
@@ -112,6 +155,7 @@ class OrderExecutor:
         self._bot = telegram_bot
         self._session_factory = session_factory
         self._settings = settings
+        self._execution_stream = execution_stream
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -329,10 +373,12 @@ class OrderExecutor:
                 account_id=account_id,
             ))
 
-            if order_result.status not in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+            # 6-a. 명시적 실패 — REJECTED/CANCELLED/FAILED
+            if order_result.status in _HARD_FAIL_STATUSES:
                 await self._update_order(
                     order.id, status=OrderStatus.FAILED,
                     rejection_reason=f"브로커 주문 실패: {order_result.status.value}",
+                    broker_order_id=order_result.order_id or None,
                 )
                 return self._fail_result(
                     order=order, symbol=symbol, side=side, quantity=effective_quantity,
@@ -341,128 +387,111 @@ class OrderExecutor:
                     error=f"브로커 주문 실패: {order_result.status.value}",
                 )
 
-            now = datetime.now(UTC)
-            fill_price = order_result.filled_price or price
-            fill_quantity = order_result.filled_quantity or effective_quantity
-            commission = order_result.commission
-
-            # 7. 체결 기록
-            await self._record_execution(
-                order_id=order.id,
-                broker_order_id=order_result.order_id,
-                fill_price=fill_price,
-                fill_quantity=fill_quantity,
-                commission=commission,
-                executed_at=now,
-            )
-
-            # 8. 포지션 생성
-            # 손절가: 명시적 값 > 설정 기반 기본값
-            stop_loss = trade_decision.stop_loss_price
-            if not stop_loss or stop_loss <= 0:
-                default_sl_pct = Decimal(str(self._settings.STOP_LOSS_PERCENT))
-                stop_loss = fill_price * (Decimal("1") - default_sl_pct / Decimal("100"))
-                logger.info(
-                    "executor.default_stop_loss",
-                    symbol=symbol, stop_loss=str(stop_loss), pct=str(default_sl_pct),
+            # 6-b. 즉시 체결 — Mock broker / 일부 실제 브로커
+            if order_result.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                return await self._finalize_entry_fill(
+                    order=order, order_result=order_result,
+                    symbol=symbol, side=side, quantity=effective_quantity, price=price,
+                    strategy_type=strategy_type, trade_decision=trade_decision,
+                    session_id=session_id, parent_decision_id=parent_decision_id,
+                    account_id=account_id, account_label=account_label,
+                    verification=verification, approval_status=approval_status,
+                    decision_ids=decision_ids,
                 )
 
-            position_id: int | None = None
-            try:
-                pos = await self._position_manager.create(
-                    symbol=symbol,
-                    strategy_type=strategy_type,
-                    quantity=fill_quantity,
-                    entry_price=fill_price,
-                    stop_loss_price=stop_loss,
-                    take_profit_price=trade_decision.take_profit_price,
-                    entry_session_id=session_id,
-                    account_id=account_id,
-                )
-                position_id = pos.id
-            except Exception:
-                logger.critical(
-                    "executor.position_create_failed",
-                    order_id=order.id,
-                    symbol=symbol,
-                    exc_info=True,
-                )
-                # 긴급 알림 — 브로커 체결됨, DB 포지션 미기록
-                await self._notify_safe(
-                    f"<b>[긴급] 포지션 생성 실패</b>\n"
-                    f"종목: {symbol}\n수량: {fill_quantity}주 @ {fill_price:,}원\n"
-                    f"브로커 체결 완료, DB 포지션 미기록\n"
-                    f"즉시 수동 확인 필요"
-                )
-                await self._update_order(
-                    order.id,
-                    status=OrderStatus.FILLED,
-                    broker_order_id=order_result.order_id,
-                    filled_quantity=fill_quantity,
-                    filled_price=fill_price,
-                    commission=commission,
-                    executed_at=now,
-                    rejection_reason="포지션 생성 실패 — 수동 확인 필요",
-                )
-                return self._fail_result(
-                    order=order, symbol=symbol, side=side, quantity=fill_quantity,
-                    approval_status=approval_status,
-                    web_verify_result=verification.result, decision_ids=decision_ids,
-                    error="포지션 생성 실패 — 브로커 체결됨, DB 미기록",
-                )
-
-            # 9. 주문 상태 업데이트
+            # 6-c. SUBMITTED — KIS 실제 주문의 정상 경로
             await self._update_order(
-                order.id,
-                status=OrderStatus.FILLED,
+                order.id, status=OrderStatus.SUBMITTED,
                 broker_order_id=order_result.order_id,
-                filled_quantity=fill_quantity,
-                filled_price=fill_price,
-                commission=commission,
-                executed_at=now,
-                position_id=position_id,
             )
-
-            # 10. 텔레그램 체결 통보
-            await self._notify_safe(MessageTemplates.execution_notification(
+            await self._notify_safe(MessageTemplates.submission_notification(
                 account_label=account_label,
                 symbol=symbol, name=symbol, side=side,
-                quantity=fill_quantity, fill_price=fill_price,
-                commission=commission, approval_status=approval_status,
+                quantity=effective_quantity, price=price,
+                approval_status=approval_status,
+                broker_order_id=order_result.order_id,
             ))
-
-            # 11. decision_log 기록
-            action = DecisionAction.BUY if side == OrderSide.BUY else DecisionAction.SELL
+            submission_action = (
+                DecisionAction.BUY if side == OrderSide.BUY else DecisionAction.SELL
+            )
             did = await self._record_decision_safe(
                 session_id=session_id, stage=DecisionStage.EXECUTION,
-                decision=action, symbol=symbol,
-                reasoning=f"체결 완료: {fill_quantity}주 @ {fill_price}",
+                decision=submission_action, symbol=symbol,
+                reasoning=f"접수(미체결): {effective_quantity}주 @ {price}",
                 parent_id=parent_decision_id,
                 account_id=account_id,
                 data_snapshot={
                     "order_id": order.id,
                     "broker_order_id": order_result.order_id,
-                    "fill_price": str(fill_price),
-                    "fill_quantity": fill_quantity,
-                    "commission": str(commission),
-                    "position_id": position_id,
+                    "status": OrderStatus.SUBMITTED.value,
                 },
             )
             if did:
                 decision_ids.append(did)
 
-            return ExecutionResult(
-                success=True,
-                order_id=order.id,
-                broker_order_id=order_result.order_id,
-                symbol=symbol,
-                side=side,
-                quantity=fill_quantity,
-                fill_price=fill_price,
-                commission=commission,
+            # 6-d. WS 체결통보 대기 — stream 연결 시 finalize까지 동기 대기
+            if (
+                self._execution_stream is not None
+                and order_result.order_id
+            ):
+                try:
+                    event = await self._execution_stream.wait_for_fill(
+                        broker_order_id=order_result.order_id,
+                        account_id=account_id,
+                        timeout=self._settings.ORDER_FILL_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "executor.entry_fill_timeout",
+                        order_id=order.id,
+                        broker_order_id=order_result.order_id,
+                        timeout_sec=self._settings.ORDER_FILL_TIMEOUT_SEC,
+                    )
+                    return self._pending_result(
+                        order=order, order_result=order_result,
+                        symbol=symbol, side=side, quantity=effective_quantity,
+                        approval_status=approval_status,
+                        web_verify_result=verification.result,
+                        decision_ids=decision_ids,
+                    )
+
+                if event.is_rejected:
+                    await self._update_order(
+                        order.id, status=OrderStatus.REJECTED,
+                        rejection_reason=event.rejected_reason or "KIS 거부",
+                    )
+                    await self._notify_safe(MessageTemplates.rejection_notification(
+                        account_label=account_label,
+                        symbol=symbol, name=symbol, side=side,
+                        reason=event.rejected_reason or "KIS 거부",
+                        stage="risk_blocked",
+                    ))
+                    return self._fail_result(
+                        order=order, symbol=symbol, side=side, quantity=effective_quantity,
+                        approval_status=approval_status,
+                        web_verify_result=verification.result, decision_ids=decision_ids,
+                        error=f"KIS 거부: {event.rejected_reason or '-'}",
+                    )
+
+                filled_result = _event_to_order_result(
+                    event=event, submitted=order_result, fallback_quantity=effective_quantity,
+                )
+                return await self._finalize_entry_fill(
+                    order=order, order_result=filled_result,
+                    symbol=symbol, side=side, quantity=effective_quantity, price=price,
+                    strategy_type=strategy_type, trade_decision=trade_decision,
+                    session_id=session_id, parent_decision_id=parent_decision_id,
+                    account_id=account_id, account_label=account_label,
+                    verification=verification, approval_status=approval_status,
+                    decision_ids=decision_ids,
+                )
+
+            # 6-e. WS 미연결 — 체결은 reconciler가 처리
+            return self._pending_result(
+                order=order, order_result=order_result,
+                symbol=symbol, side=side, quantity=effective_quantity,
                 approval_status=approval_status,
                 web_verify_result=verification.result,
-                position_id=position_id,
                 decision_ids=decision_ids,
             )
 
@@ -483,6 +512,143 @@ class OrderExecutor:
                 decision_ids=decision_ids,
                 error=str(exc),
             )
+
+    async def _finalize_entry_fill(
+        self,
+        *,
+        order: Order,
+        order_result: OrderResult,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        price: Decimal,
+        strategy_type: str,
+        trade_decision: TradeDecision,
+        session_id: UUID,
+        parent_decision_id: UUID | None,
+        account_id: str,
+        account_label: str,
+        verification: WebVerification,
+        approval_status: ApprovalStatus,
+        decision_ids: list[UUID],
+    ) -> ExecutionResult:
+        """진입 주문 체결 확정 후처리 — 체결기록·포지션생성·알림·audit."""
+        now = datetime.now(UTC)
+        fill_price = order_result.filled_price or price
+        fill_quantity = order_result.filled_quantity or quantity
+        commission = order_result.commission
+
+        await self._record_execution(
+            order_id=order.id,
+            broker_order_id=order_result.order_id,
+            fill_price=fill_price,
+            fill_quantity=fill_quantity,
+            commission=commission,
+            executed_at=now,
+        )
+
+        # 손절가: 명시적 값 > 설정 기반 기본값
+        stop_loss = trade_decision.stop_loss_price
+        if not stop_loss or stop_loss <= 0:
+            default_sl_pct = Decimal(str(self._settings.STOP_LOSS_PERCENT))
+            stop_loss = fill_price * (Decimal("1") - default_sl_pct / Decimal("100"))
+            logger.info(
+                "executor.default_stop_loss",
+                symbol=symbol, stop_loss=str(stop_loss), pct=str(default_sl_pct),
+            )
+
+        position_id: int | None = None
+        try:
+            pos = await self._position_manager.create(
+                symbol=symbol,
+                strategy_type=strategy_type,
+                quantity=fill_quantity,
+                entry_price=fill_price,
+                stop_loss_price=stop_loss,
+                take_profit_price=trade_decision.take_profit_price,
+                entry_session_id=session_id,
+                account_id=account_id,
+            )
+            position_id = pos.id
+        except Exception:
+            logger.critical(
+                "executor.position_create_failed",
+                order_id=order.id, symbol=symbol, exc_info=True,
+            )
+            await self._notify_safe(
+                f"<b>[긴급] 포지션 생성 실패</b>\n"
+                f"종목: {symbol}\n수량: {fill_quantity}주 @ {fill_price:,}원\n"
+                f"브로커 체결 완료, DB 포지션 미기록\n"
+                f"즉시 수동 확인 필요"
+            )
+            await self._update_order(
+                order.id,
+                status=OrderStatus.FILLED,
+                broker_order_id=order_result.order_id,
+                filled_quantity=fill_quantity,
+                filled_price=fill_price,
+                commission=commission,
+                executed_at=now,
+                rejection_reason="포지션 생성 실패 — 수동 확인 필요",
+            )
+            return self._fail_result(
+                order=order, symbol=symbol, side=side, quantity=fill_quantity,
+                approval_status=approval_status,
+                web_verify_result=verification.result, decision_ids=decision_ids,
+                error="포지션 생성 실패 — 브로커 체결됨, DB 미기록",
+            )
+
+        await self._update_order(
+            order.id,
+            status=OrderStatus.FILLED,
+            broker_order_id=order_result.order_id,
+            filled_quantity=fill_quantity,
+            filled_price=fill_price,
+            commission=commission,
+            executed_at=now,
+            position_id=position_id,
+        )
+
+        await self._notify_safe(MessageTemplates.execution_notification(
+            account_label=account_label,
+            symbol=symbol, name=symbol, side=side,
+            quantity=fill_quantity, fill_price=fill_price,
+            commission=commission, approval_status=approval_status,
+        ))
+
+        action = DecisionAction.BUY if side == OrderSide.BUY else DecisionAction.SELL
+        did = await self._record_decision_safe(
+            session_id=session_id, stage=DecisionStage.EXECUTION,
+            decision=action, symbol=symbol,
+            reasoning=f"체결 완료: {fill_quantity}주 @ {fill_price}",
+            parent_id=parent_decision_id,
+            account_id=account_id,
+            data_snapshot={
+                "order_id": order.id,
+                "broker_order_id": order_result.order_id,
+                "fill_price": str(fill_price),
+                "fill_quantity": fill_quantity,
+                "commission": str(commission),
+                "position_id": position_id,
+            },
+        )
+        if did:
+            decision_ids.append(did)
+
+        return ExecutionResult(
+            success=True,
+            order_id=order.id,
+            broker_order_id=order_result.order_id,
+            symbol=symbol,
+            side=side,
+            quantity=fill_quantity,
+            fill_price=fill_price,
+            commission=commission,
+            approval_status=approval_status,
+            web_verify_result=verification.result,
+            position_id=position_id,
+            decision_ids=decision_ids,
+        )
 
     async def execute_exit(
         self,
@@ -528,7 +694,7 @@ class OrderExecutor:
             # 1. TradeDecision 구성 (ApprovalManager 인터페이스용)
             trade_decision = self._build_exit_trade_decision(exit_signal, position)
 
-            # 2. 주문 생성
+            # 2. 주문 생성 — position_id를 미리 설정(WS/reconciler가 청산 소스 참조)
             order = await self._create_order(
                 symbol=symbol,
                 side=side,
@@ -537,6 +703,7 @@ class OrderExecutor:
                 price=price,
                 session_id=session_id,
                 account_id=account_id,
+                position_id=position.id,
             )
 
             # 3. Web 검증
@@ -621,10 +788,12 @@ class OrderExecutor:
                 account_id=account_id,
             ))
 
-            if order_result.status not in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+            # 5-a. 명시적 실패
+            if order_result.status in _HARD_FAIL_STATUSES:
                 await self._update_order(
                     order.id, status=OrderStatus.FAILED,
                     rejection_reason=f"브로커 주문 실패: {order_result.status.value}",
+                    broker_order_id=order_result.order_id or None,
                 )
                 return self._fail_result(
                     order=order, symbol=symbol, side=side, quantity=quantity,
@@ -633,98 +802,107 @@ class OrderExecutor:
                     error=f"브로커 주문 실패: {order_result.status.value}",
                 )
 
-            now = datetime.now(UTC)
-            fill_price = order_result.filled_price or price
-            fill_quantity = order_result.filled_quantity or quantity
-            commission = order_result.commission
-
-            # 6. 체결 기록
-            await self._record_execution(
-                order_id=order.id,
-                broker_order_id=order_result.order_id,
-                fill_price=fill_price,
-                fill_quantity=fill_quantity,
-                commission=commission,
-                executed_at=now,
-            )
-
-            # 7. 포지션 청산
-            position_id: int | None = position.id
-            try:
-                await self._position_manager.close(
-                    position.id,
-                    exit_price=fill_price,
-                    exit_reason=reason,
-                    exit_session_id=session_id,
+            # 5-b. 즉시 체결 (Mock broker 등)
+            if order_result.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                return await self._finalize_exit_fill(
+                    order=order, position=position, order_result=order_result,
+                    symbol=symbol, side=side, quantity=quantity, price=price,
+                    reason=reason, action=action, session_id=session_id,
+                    parent_decision_id=parent_decision_id,
+                    account_id=account_id, account_label=account_label,
+                    verification=verification, approval_status=approval_status,
+                    decision_ids=decision_ids,
                 )
-            except Exception:
-                logger.critical(
-                    "executor.position_close_failed",
-                    order_id=order.id,
-                    position_id=position.id,
-                    symbol=symbol,
-                    exc_info=True,
-                )
-                # 긴급 알림 — 브로커 매도 체결됨, DB 포지션 미청산
-                await self._notify_safe(
-                    f"<b>[긴급] 포지션 청산 DB 실패</b>\n"
-                    f"종목: {symbol}\n수량: {fill_quantity}주 @ {fill_price:,}원\n"
-                    f"브로커 매도 체결 완료, DB 포지션 미청산\n"
-                    f"즉시 수동 확인 필요"
-                )
-                position_id = None
 
-            # 8. 주문 상태 업데이트
+            # 5-c. SUBMITTED — 접수 통보 + WS/reconciler 대기
             await self._update_order(
-                order.id,
-                status=OrderStatus.FILLED,
+                order.id, status=OrderStatus.SUBMITTED,
                 broker_order_id=order_result.order_id,
-                filled_quantity=fill_quantity,
-                filled_price=fill_price,
-                commission=commission,
-                executed_at=now,
-                position_id=position.id,
             )
-
-            # 9. 텔레그램 체결 통보
-            await self._notify_safe(MessageTemplates.execution_notification(
+            await self._notify_safe(MessageTemplates.submission_notification(
                 account_label=account_label,
                 symbol=symbol, name=symbol, side=side,
-                quantity=fill_quantity, fill_price=fill_price,
-                commission=commission, approval_status=approval_status,
+                quantity=quantity, price=price,
+                approval_status=approval_status,
+                broker_order_id=order_result.order_id,
             ))
-
-            # 10. decision_log
             did = await self._record_decision_safe(
                 session_id=session_id, stage=DecisionStage.EXIT,
                 decision=action, symbol=symbol,
-                reasoning=f"청산 체결: {reason.value} {fill_quantity}주 @ {fill_price}",
+                reasoning=f"청산 접수(미체결): {reason.value} {quantity}주 @ {price}",
                 parent_id=parent_decision_id,
                 account_id=account_id,
                 data_snapshot={
                     "order_id": order.id,
-                    "exit_reason": reason.value,
                     "broker_order_id": order_result.order_id,
-                    "fill_price": str(fill_price),
-                    "fill_quantity": fill_quantity,
-                    "position_id": position.id,
+                    "exit_reason": reason.value,
+                    "status": OrderStatus.SUBMITTED.value,
                 },
             )
             if did:
                 decision_ids.append(did)
 
-            return ExecutionResult(
-                success=True,
-                order_id=order.id,
-                broker_order_id=order_result.order_id,
-                symbol=symbol,
-                side=side,
-                quantity=fill_quantity,
-                fill_price=fill_price,
-                commission=commission,
+            if (
+                self._execution_stream is not None
+                and order_result.order_id
+            ):
+                try:
+                    event = await self._execution_stream.wait_for_fill(
+                        broker_order_id=order_result.order_id,
+                        account_id=account_id,
+                        timeout=self._settings.ORDER_FILL_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "executor.exit_fill_timeout",
+                        order_id=order.id,
+                        broker_order_id=order_result.order_id,
+                        timeout_sec=self._settings.ORDER_FILL_TIMEOUT_SEC,
+                    )
+                    return self._pending_result(
+                        order=order, order_result=order_result,
+                        symbol=symbol, side=side, quantity=quantity,
+                        approval_status=approval_status,
+                        web_verify_result=verification.result,
+                        decision_ids=decision_ids,
+                    )
+
+                if event.is_rejected:
+                    await self._update_order(
+                        order.id, status=OrderStatus.REJECTED,
+                        rejection_reason=event.rejected_reason or "KIS 거부",
+                    )
+                    await self._notify_safe(MessageTemplates.rejection_notification(
+                        account_label=account_label,
+                        symbol=symbol, name=symbol, side=side,
+                        reason=event.rejected_reason or "KIS 거부",
+                        stage="risk_blocked",
+                    ))
+                    return self._fail_result(
+                        order=order, symbol=symbol, side=side, quantity=quantity,
+                        approval_status=approval_status,
+                        web_verify_result=verification.result, decision_ids=decision_ids,
+                        error=f"KIS 거부: {event.rejected_reason or '-'}",
+                    )
+
+                filled_result = _event_to_order_result(
+                    event=event, submitted=order_result, fallback_quantity=quantity,
+                )
+                return await self._finalize_exit_fill(
+                    order=order, position=position, order_result=filled_result,
+                    symbol=symbol, side=side, quantity=quantity, price=price,
+                    reason=reason, action=action, session_id=session_id,
+                    parent_decision_id=parent_decision_id,
+                    account_id=account_id, account_label=account_label,
+                    verification=verification, approval_status=approval_status,
+                    decision_ids=decision_ids,
+                )
+
+            return self._pending_result(
+                order=order, order_result=order_result,
+                symbol=symbol, side=side, quantity=quantity,
                 approval_status=approval_status,
                 web_verify_result=verification.result,
-                position_id=position.id,
                 decision_ids=decision_ids,
             )
 
@@ -746,6 +924,112 @@ class OrderExecutor:
                 error=str(exc),
             )
 
+    async def _finalize_exit_fill(
+        self,
+        *,
+        order: Order,
+        position: PositionRecord,
+        order_result: OrderResult,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        price: Decimal,
+        reason: ExitReason,
+        action: DecisionAction,
+        session_id: UUID,
+        parent_decision_id: UUID | None,
+        account_id: str,
+        account_label: str,
+        verification: WebVerification,
+        approval_status: ApprovalStatus,
+        decision_ids: list[UUID],
+    ) -> ExecutionResult:
+        """청산 주문 체결 확정 후처리 — 체결기록·포지션청산·알림·audit."""
+        now = datetime.now(UTC)
+        fill_price = order_result.filled_price or price
+        fill_quantity = order_result.filled_quantity or quantity
+        commission = order_result.commission
+
+        await self._record_execution(
+            order_id=order.id,
+            broker_order_id=order_result.order_id,
+            fill_price=fill_price,
+            fill_quantity=fill_quantity,
+            commission=commission,
+            executed_at=now,
+        )
+
+        try:
+            await self._position_manager.close(
+                position.id,
+                exit_price=fill_price,
+                exit_reason=reason,
+                exit_session_id=session_id,
+            )
+        except Exception:
+            logger.critical(
+                "executor.position_close_failed",
+                order_id=order.id, position_id=position.id,
+                symbol=symbol, exc_info=True,
+            )
+            await self._notify_safe(
+                f"<b>[긴급] 포지션 청산 DB 실패</b>\n"
+                f"종목: {symbol}\n수량: {fill_quantity}주 @ {fill_price:,}원\n"
+                f"브로커 매도 체결 완료, DB 포지션 미청산\n"
+                f"즉시 수동 확인 필요"
+            )
+
+        await self._update_order(
+            order.id,
+            status=OrderStatus.FILLED,
+            broker_order_id=order_result.order_id,
+            filled_quantity=fill_quantity,
+            filled_price=fill_price,
+            commission=commission,
+            executed_at=now,
+            position_id=position.id,
+        )
+
+        await self._notify_safe(MessageTemplates.execution_notification(
+            account_label=account_label,
+            symbol=symbol, name=symbol, side=side,
+            quantity=fill_quantity, fill_price=fill_price,
+            commission=commission, approval_status=approval_status,
+        ))
+
+        did = await self._record_decision_safe(
+            session_id=session_id, stage=DecisionStage.EXIT,
+            decision=action, symbol=symbol,
+            reasoning=f"청산 체결: {reason.value} {fill_quantity}주 @ {fill_price}",
+            parent_id=parent_decision_id,
+            account_id=account_id,
+            data_snapshot={
+                "order_id": order.id,
+                "exit_reason": reason.value,
+                "broker_order_id": order_result.order_id,
+                "fill_price": str(fill_price),
+                "fill_quantity": fill_quantity,
+                "position_id": position.id,
+            },
+        )
+        if did:
+            decision_ids.append(did)
+
+        return ExecutionResult(
+            success=True,
+            order_id=order.id,
+            broker_order_id=order_result.order_id,
+            symbol=symbol,
+            side=side,
+            quantity=fill_quantity,
+            fill_price=fill_price,
+            commission=commission,
+            approval_status=approval_status,
+            web_verify_result=verification.result,
+            position_id=position.id,
+            decision_ids=decision_ids,
+        )
+
     # ── Private: DB Helpers ───────────────────────────────────────────────
 
     async def _create_order(
@@ -758,8 +1042,14 @@ class OrderExecutor:
         price: Decimal,
         session_id: UUID,
         account_id: str = "default",
+        position_id: int | None = None,
     ) -> Order:
-        """orders 테이블에 PENDING 주문 생성."""
+        """orders 테이블에 PENDING 주문 생성.
+
+        Parameters
+        ----------
+        position_id: 청산 주문일 때 원 포지션 ID. 진입 주문은 체결 후 별도 업데이트.
+        """
         row = Order(
             symbol=symbol,
             side=side.value,
@@ -771,6 +1061,7 @@ class OrderExecutor:
             original_quantity=quantity,
             session_id=session_id,
             account_id=account_id,
+            position_id=position_id,
         )
         async with self._session_factory() as session:
             session.add(row)
@@ -888,6 +1179,36 @@ class OrderExecutor:
         except Exception:
             logger.exception("executor.record_decision_failed", symbol=symbol)
             return None
+
+    @staticmethod
+    def _pending_result(
+        *,
+        order: Order,
+        order_result: OrderResult,
+        symbol: str,
+        side: OrderSide,
+        quantity: int,
+        approval_status: ApprovalStatus,
+        web_verify_result: WebVerifyResult | None,
+        decision_ids: list[UUID],
+    ) -> ExecutionResult:
+        """SUBMITTED 후 체결 미확정 — pending=True, success=True로 반환.
+
+        체결 확정은 이후 ExecutionStreamManager(WS) 또는 OrderReconciler가 담당한다.
+        호출자는 `result.pending`을 확인하여 후속 작업 분기를 결정할 수 있다.
+        """
+        return ExecutionResult(
+            success=True,
+            pending=True,
+            order_id=order.id,
+            broker_order_id=order_result.order_id,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            approval_status=approval_status,
+            web_verify_result=web_verify_result,
+            decision_ids=decision_ids,
+        )
 
     @staticmethod
     def _fail_result(

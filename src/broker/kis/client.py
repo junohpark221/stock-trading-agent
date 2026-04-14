@@ -34,6 +34,7 @@ from src.broker.kis.models import (
     KISBalanceOutput2,
     KISBaseResponse,
     KISDailyChartOutput,
+    KISOrderCcldOutput,
     KISOrderOutput,
     KISPriceOutput,
     _to_decimal,
@@ -526,6 +527,110 @@ class KISClient(BrokerInterface):
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel a pending order (not implemented in MVP)."""
         raise NotImplementedError("cancel_order is not supported in MVP scope")
+
+    async def get_order_status(
+        self, broker_order_id: str, *, order_date: date | None = None
+    ) -> OrderResult:
+        """Query the latest status of a previously submitted order.
+
+        Uses KIS 주식일별주문체결조회:
+        - 실전 TR_ID = TTTC0081R
+        - 모의 TR_ID = VTTC0081R
+        - 엔드포인트: ``/uapi/domestic-stock/v1/trading/inquire-daily-ccld``
+
+        Returns an ``OrderResult`` whose ``status`` reflects:
+        - FILLED: 총 체결수량 == 주문수량
+        - PARTIALLY_FILLED: 0 < 총 체결수량 < 주문수량
+        - CANCELLED: cncl_yn == 'Y'
+        - REJECTED: rjct_qty > 0 또는 상태 코드
+        - SUBMITTED: 그 외(미체결 잔량만 존재)
+        """
+        target_date = order_date or date.today()
+        date_str = target_date.strftime("%Y%m%d")
+        is_paper = self._is_paper()
+        tr_id = "VTTC0081R" if is_paper else "TTTC0081R"
+
+        params: dict[str, str] = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "INQR_STRT_DT": date_str,
+            "INQR_END_DT": date_str,
+            "SLL_BUY_DVSN_CD": "00",   # 전체
+            "CCLD_DVSN": "00",         # 전체 (체결+미체결)
+            "INQR_DVSN": "00",          # 역순
+            "INQR_DVSN_3": "00",        # 전체
+            "INQR_DVSN_1": "",
+            "PDNO": "",
+            "ORD_GNO_BRNO": "",
+            "ODNO": broker_order_id,
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "EXCG_ID_DVSN_CD": "KRX",
+        }
+
+        data = await self._request(
+            "GET",
+            "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            tr_id,
+            params=params,
+        )
+        raw_output1 = data.get("output1") or []
+        rows = [KISOrderCcldOutput.model_validate(r) for r in raw_output1]
+        matched = next((r for r in rows if r.odno == broker_order_id), None)
+
+        if matched is None:
+            # 주문번호 조회 실패 — 아직 접수 반영 전이거나 다른 날짜
+            return OrderResult(
+                order_id=broker_order_id,
+                symbol="",
+                side=OrderSide.BUY,
+                order_type=OrderType.LIMIT,
+                quantity=0,
+                price=Decimal(0),
+                status=OrderStatus.SUBMITTED,
+                filled_quantity=0,
+                filled_price=None,
+                commission=Decimal(0),
+                timestamp=datetime.now(),
+            )
+
+        ord_qty = _to_int(matched.ord_qty)
+        ccld_qty = _to_int(matched.tot_ccld_qty)
+        rjct_qty = _to_int(matched.rjct_qty)
+        avg_price = _to_decimal(matched.avg_prvs)
+        is_cancelled = matched.cncl_yn.upper() == "Y"
+        side = OrderSide.SELL if matched.sll_buy_dvsn_cd == "01" else OrderSide.BUY
+
+        if is_cancelled:
+            status = OrderStatus.CANCELLED
+        elif rjct_qty > 0 and ccld_qty == 0:
+            status = OrderStatus.REJECTED
+        elif ord_qty > 0 and ccld_qty >= ord_qty:
+            status = OrderStatus.FILLED
+        elif ccld_qty > 0:
+            status = OrderStatus.PARTIALLY_FILLED
+        else:
+            status = OrderStatus.SUBMITTED
+
+        return OrderResult(
+            order_id=broker_order_id,
+            symbol=matched.pdno,
+            side=side,
+            order_type=OrderType.LIMIT,  # inquire API doesn't expose order_type cleanly
+            quantity=ord_qty,
+            price=_to_decimal(matched.ord_unpr),
+            status=status,
+            filled_quantity=ccld_qty,
+            filled_price=avg_price if ccld_qty > 0 else None,
+            commission=Decimal(0),  # KIS 별도 조회 필요 — 현재 단계에서는 0
+            timestamp=datetime.now(),
+        )
+
+    def _is_paper(self) -> bool:
+        """Determine whether this client is connected to paper or live."""
+        if self._credentials is not None:
+            return self._credentials.is_paper
+        return self._base_url == _KIS_PAPER_BASE_URL
 
     # ── Account ───────────────────────────────────────────────────────
 

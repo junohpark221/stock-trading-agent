@@ -300,7 +300,7 @@ async def test_create_scheduler_mock_broker_legacy():
             ],
         )
 
-        engine, registry = await SchedulerFactory.create_scheduler(
+        engine, registry, _stream = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),
@@ -342,18 +342,21 @@ async def test_create_scheduler_no_accounts_no_key():
             ],
         )
 
-        engine, registry = await SchedulerFactory.create_scheduler(
+        engine, registry, _stream = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),
             telegram_bot=AsyncMock(),
         )
 
-    # 공통 작업만: weekly, monthly, llm_cost (market_data_collect은 provider=None 스킵)
-    assert len(engine._job_fns) == 3
+    # 공통 작업: weekly, monthly, llm_cost + reconcile (midday, eod)
+    # market_data_collect은 provider=None 이라 스킵
+    assert len(engine._job_fns) == 5
     assert "weekly_report" in engine._job_fns
     assert "monthly_report" in engine._job_fns
     assert "llm_cost_report" in engine._job_fns
+    assert "reconcile_open_orders_midday" in engine._job_fns
+    assert "reconcile_open_orders_eod" in engine._job_fns
 
 
 # ── main.py lifespan integration ─────────────────────────────────────────

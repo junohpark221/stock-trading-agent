@@ -278,6 +278,31 @@ class SimulatedBroker(BrokerInterface):
         """미지원 — 백테스트 주문은 즉시 체결. False 반환."""
         return False
 
+    async def get_order_status(
+        self, broker_order_id: str, *, order_date: object = None
+    ) -> OrderResult:
+        """백테스트 주문은 즉시 FILLED. 미조회 주문은 빈 SUBMITTED placeholder."""
+        from datetime import datetime as _dt
+
+        from src.core.enums import OrderSide, OrderType
+
+        for record in self._orders:
+            if record.order_id == broker_order_id:
+                return record
+        return OrderResult(
+            order_id=broker_order_id,
+            symbol="",
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=0,
+            price=Decimal(0),
+            status=OrderStatus.SUBMITTED,
+            filled_quantity=0,
+            filled_price=None,
+            commission=Decimal(0),
+            timestamp=_dt.now(),
+        )
+
     # ── Account (BrokerInterface) ────────────────────────────────────
 
     async def get_balance(self) -> AccountBalance:

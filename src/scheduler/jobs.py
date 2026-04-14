@@ -23,13 +23,14 @@ if TYPE_CHECKING:
     from src.agent.orchestrator import PipelineOrchestrator
     from src.broker.base import BrokerInterface
     from src.broker.kis.auth import KISAuth
-    from src.strategy.base import Strategy
     from src.data.providers.base import DataProvider
     from src.execution.executor import OrderExecutor
     from src.execution.exit_executor import ExitExecutionService
+    from src.execution.reconciler import OrderReconciler
     from src.notification.telegram import TelegramBot
     from src.report.generator import ReportGenerator
     from src.scheduler.monitor import TradingMonitor
+    from src.strategy.base import Strategy
     from src.strategy.exit_checker import ExitConditionChecker
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
@@ -456,3 +457,20 @@ async def job_llm_cost_report(
     html = MessageTemplates.llm_cost_report(data)
     await telegram_bot.send_message(html)
     logger.info("job.llm_cost_report.sent")
+
+
+# ── Order Reconciliation (SUBMITTED 미체결 정리) ─────────────────────
+
+
+async def job_reconcile_open_orders(
+    *,
+    reconciler: OrderReconciler,
+    eod: bool = False,
+) -> None:
+    """KIS REST 기반 SUBMITTED 주문 체결 확인.
+
+    WS 체결통보(ExecutionStreamManager)가 놓친 주문을 KIS 일별 체결조회(TTTC0081R)로
+    교차 확인. 12:00 KST (mid-day) + 15:40 KST (EOD) 2회 실행.
+    """
+    processed = await reconciler.run(eod=eod)
+    logger.info("job.reconcile_open_orders.done", processed=processed, eod=eod)

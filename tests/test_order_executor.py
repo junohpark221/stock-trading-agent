@@ -980,3 +980,167 @@ async def test_execute_entry_default_account_id(executor, fake_session):
     assert result.success is True
     order_row = fake_session.added[0]
     assert order_row.account_id == "default"
+
+
+# ---------------------------------------------------------------------------
+# SUBMITTED path — WS/Reconciler integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_submitted_without_stream_returns_pending(
+    executor, mock_broker, mock_position_manager, fake_session,
+):
+    """KIS 기본 경로(SUBMITTED) + WS 미연결 → pending=True, 포지션 미생성."""
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(status=OrderStatus.SUBMITTED),
+    )
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    assert result.pending is True
+    assert result.broker_order_id == "KIS123"
+    assert result.position_id is None
+    assert result.fill_price is None
+    mock_position_manager.create.assert_not_awaited()
+
+    # orders 테이블에 SUBMITTED로 저장되었는지 확인 (rejection_reason 미기록)
+    from src.db.models.execution import Order
+    order_rows = [x for x in fake_session.added if isinstance(x, Order)]
+    assert len(order_rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_submitted_with_ws_filled_finalizes(
+    executor, mock_broker, mock_position_manager, mock_bot,
+):
+    """SUBMITTED + WS fill event → finalize_entry_fill 경로 진입 → 포지션 생성."""
+    from src.core.models import ExecutionEvent
+
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(status=OrderStatus.SUBMITTED),
+    )
+
+    # WS 매니저 mock: wait_for_fill에서 체결 이벤트 반환
+    stream = AsyncMock()
+    stream.wait_for_fill = AsyncMock(
+        return_value=ExecutionEvent(
+            account_id="default",
+            broker_order_id="KIS123",
+            symbol="005930",
+            side=OrderSide.BUY,
+            filled_quantity=10,
+            filled_price=Decimal("72100"),
+            is_filled=True,
+            is_rejected=False,
+            timestamp=datetime.now(UTC),
+        )
+    )
+    executor._execution_stream = stream
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    assert result.pending is False
+    assert result.fill_price == Decimal("72100")
+    assert result.position_id == 1
+    mock_position_manager.create.assert_awaited_once()
+    stream.wait_for_fill.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_submitted_ws_timeout_returns_pending(
+    executor, mock_broker, mock_position_manager,
+):
+    """SUBMITTED + WS timeout → pending=True, 포지션 미생성."""
+    import asyncio as _asyncio
+
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(status=OrderStatus.SUBMITTED),
+    )
+
+    stream = AsyncMock()
+    stream.wait_for_fill = AsyncMock(side_effect=_asyncio.TimeoutError)
+    executor._execution_stream = stream
+    executor._settings.ORDER_FILL_TIMEOUT_SEC = 1
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    assert result.pending is True
+    assert result.position_id is None
+    mock_position_manager.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_submitted_ws_rejected(
+    executor, mock_broker, mock_position_manager,
+):
+    """SUBMITTED + WS rejection event → FAILED."""
+    from src.core.models import ExecutionEvent
+
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(status=OrderStatus.SUBMITTED),
+    )
+
+    stream = AsyncMock()
+    stream.wait_for_fill = AsyncMock(
+        return_value=ExecutionEvent(
+            account_id="default",
+            broker_order_id="KIS123",
+            symbol="005930",
+            side=OrderSide.BUY,
+            filled_quantity=0,
+            filled_price=Decimal(0),
+            is_filled=False,
+            is_rejected=True,
+            rejected_reason="잔고부족",
+            timestamp=datetime.now(UTC),
+        )
+    )
+    executor._execution_stream = stream
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is False
+    assert result.pending is False
+    assert "잔고부족" in result.error
+    mock_position_manager.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_broker_hard_fail_marks_failed(
+    executor, mock_broker, mock_position_manager,
+):
+    """broker가 REJECTED 반환 → FAILED 처리 (SUBMITTED는 실패로 간주하지 않음)."""
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(status=OrderStatus.REJECTED),
+    )
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is False
+    assert result.pending is False
+    assert "rejected" in result.error
+    mock_position_manager.create.assert_not_awaited()

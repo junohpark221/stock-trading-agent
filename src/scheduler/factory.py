@@ -27,6 +27,7 @@ from src.scheduler.jobs import (
     job_market_data_collect,
     job_monthly_report,
     job_position_analysis,
+    job_reconcile_open_orders,
     job_stop_loss_check,
     job_swing_analysis,
     job_token_refresh,
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from src.config import Settings
     from src.data.cache import RedisCache
     from src.data.providers.base import DataProvider
+    from src.execution.execution_stream import ExecutionStreamManager
     from src.execution.executor import OrderExecutor
     from src.execution.exit_executor import ExitExecutionService
     from src.notification.telegram import TelegramBot
@@ -101,12 +103,13 @@ class SchedulerFactory:
         session_factory: async_sessionmaker[AsyncSession],
         cache: RedisCache,
         telegram_bot: TelegramBot,
-    ) -> tuple[SchedulerEngine, BrokerRegistry]:
+    ) -> tuple[SchedulerEngine, BrokerRegistry, ExecutionStreamManager]:
         """서비스 그래프 조립 → SchedulerEngine 반환.
 
         Returns:
-            (scheduler_engine, broker_registry) — registry는 main.py shutdown에서
-            disconnect_all() 필요.
+            (scheduler_engine, broker_registry, execution_stream) — main.py는
+            - registry 를 shutdown 시 disconnect_all()
+            - execution_stream 을 startup 시 start() / shutdown 시 stop()
         """
         from src.agent.agents.market_analyst import MarketAnalyst
         from src.agent.agents.risk_manager import RiskManager
@@ -138,6 +141,7 @@ class SchedulerFactory:
         # ── 2. BrokerRegistry 생성 + 계좌별 브로커 등록 ───────────────
         registry = BrokerRegistry(cache=cache, use_mock=settings.USE_MOCK_BROKER)
         registered_accounts: list[Account] = []
+        registered_credentials: list[AccountCredentials] = []
 
         for account in accounts:
             try:
@@ -159,6 +163,7 @@ class SchedulerFactory:
                     )
                 await registry.register(creds)
                 registered_accounts.append(account)
+                registered_credentials.append(creds)
             except Exception:
                 logger.exception(
                     "scheduler_factory.account_register_failed",
@@ -231,6 +236,29 @@ class SchedulerFactory:
             except Exception:
                 logger.exception("stock_master_sync_on_startup_failed")
 
+        # ── 4-2. FillFinalizer + ExecutionStreamManager + OrderReconciler ─
+        from src.execution.execution_stream import ExecutionStreamManager
+        from src.execution.fill_finalizer import FillFinalizer
+        from src.execution.reconciler import OrderReconciler
+        from src.strategy.position_manager import PositionManager
+
+        shared_position_manager = PositionManager(session_factory)
+        fill_finalizer = FillFinalizer(
+            session_factory=session_factory,
+            position_manager=shared_position_manager,
+            telegram_bot=telegram_bot,
+            settings=settings,
+        )
+        execution_stream = ExecutionStreamManager(
+            settings=settings,
+            session_factory=session_factory,
+            fill_finalizer=fill_finalizer,
+        )
+        reconciler = OrderReconciler(
+            broker_registry=registry,
+            fill_finalizer=fill_finalizer,
+        )
+
         # ── 5. 계좌별 AccountContext 생성 ─────────────────────────────
         contexts: list[AccountContext] = []
         for account in registered_accounts:
@@ -248,6 +276,7 @@ class SchedulerFactory:
                     session_factory=session_factory,
                     cache=cache,
                     settings=settings,
+                    execution_stream=execution_stream,
                 )
                 contexts.append(ctx)
             except Exception:
@@ -275,6 +304,7 @@ class SchedulerFactory:
             generator=generator,
             telegram_bot=telegram_bot,
             settings=settings,
+            reconciler=reconciler,
         )
 
         # 계좌별 작업 등록 (account_index로 배치 시차 실행)
@@ -290,6 +320,11 @@ class SchedulerFactory:
                 account_index=account_index,
             )
 
+        # Attach credentials to the ExecutionStreamManager so main.py's lifespan
+        # can start WS subscriptions after the scheduler factory returns.
+        execution_stream_credentials: list[AccountCredentials] = registered_credentials
+        execution_stream._pending_credentials = execution_stream_credentials  # type: ignore[attr-defined]
+
         logger.info(
             "scheduler_factory.created",
             account_count=len(contexts),
@@ -297,7 +332,7 @@ class SchedulerFactory:
             watchlist_count=len(watchlist_symbols),
         )
 
-        return engine, registry
+        return engine, registry, execution_stream
 
     # ── Account Loading ──────────────────────────────────────────────
 
@@ -379,6 +414,7 @@ class SchedulerFactory:
         session_factory: async_sessionmaker[AsyncSession],
         cache: RedisCache,
         settings: Settings,
+        execution_stream: ExecutionStreamManager | None = None,
     ) -> AccountContext:
         """계좌별 서비스 인스턴스를 조립하여 AccountContext를 반환한다."""
         from src.execution.executor import OrderExecutor
@@ -426,6 +462,7 @@ class SchedulerFactory:
             telegram_bot=telegram_bot,
             session_factory=session_factory,
             settings=acct_settings,
+            execution_stream=execution_stream,
         )
         exit_service = ExitExecutionService(
             order_executor=order_executor,
@@ -510,6 +547,7 @@ class SchedulerFactory:
         generator: ReportGenerator,
         telegram_bot: TelegramBot,
         settings: Settings,
+        reconciler: OrderReconciler | None = None,
     ) -> None:
         """공통 작업 등록 (계좌 수에 무관하게 1회씩)."""
         s = settings
@@ -548,6 +586,30 @@ class SchedulerFactory:
             partial(job_llm_cost_report, generator=generator, telegram_bot=telegram_bot),
             CronTrigger(day_of_week=lc_day, hour=lc_h, minute=lc_m, timezone="UTC"),
         )
+
+        # reconcile_open_orders_midday — 12:00 KST 장중 sweep (WS 누락 복구)
+        if reconciler is not None:
+            rc_days = SchedulerEngine._parse_day_of_week(s.RECONCILE_DAYS)
+            md_h, md_m = SchedulerEngine._parse_time(s.RECONCILE_MIDDAY_TIME)
+            engine.register_job(
+                "reconcile_open_orders_midday",
+                partial(job_reconcile_open_orders, reconciler=reconciler, eod=False),
+                CronTrigger(
+                    day_of_week=rc_days, hour=md_h, minute=md_m,
+                    timezone="Asia/Seoul",
+                ),
+            )
+
+            # reconcile_open_orders_eod — 15:40 KST 장 마감 sweep + expire
+            eod_h, eod_m = SchedulerEngine._parse_time(s.RECONCILE_EOD_TIME)
+            engine.register_job(
+                "reconcile_open_orders_eod",
+                partial(job_reconcile_open_orders, reconciler=reconciler, eod=True),
+                CronTrigger(
+                    day_of_week=rc_days, hour=eod_h, minute=eod_m,
+                    timezone="Asia/Seoul",
+                ),
+            )
 
     @staticmethod
     def _register_account_jobs(

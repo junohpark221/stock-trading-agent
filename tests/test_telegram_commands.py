@@ -174,14 +174,14 @@ class TestCmdPortfolio:
     @pytest.mark.asyncio
     async def test_success(self, mock_message, mock_session_factory):
         mock_message.text = "/portfolio"
-        snapshot = MagicMock()
+        view = MagicMock()
         with (
             patch("src.notification.commands.resolve_account", return_value=("acc-1", "테스트")),
+            patch("src.api.portfolio_live.fetch_portfolio_view", AsyncMock(return_value=view)),
             patch("src.report.data_fetcher.ReportDataFetcher") as MockFetcher,
             patch("src.notification.templates.MessageTemplates") as MockTemplates,
         ):
             fetcher = MockFetcher.return_value
-            fetcher.get_latest_snapshot = AsyncMock(return_value=snapshot)
             fetcher.get_open_positions = AsyncMock(return_value=[MagicMock()])
             MockTemplates.portfolio_summary_command.return_value = "포트폴리오 요약"
             await cmd_portfolio(mock_message)

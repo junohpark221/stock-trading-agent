@@ -125,6 +125,7 @@ class TestDashboard:
         with (
             patch("src.main.get_redis") as mock_redis,
             patch("src.main.get_scheduler") as mock_sched,
+            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=None)),
             patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
             patch("src.api.routes.admin_web.get_session_factory"),
         ):
@@ -133,7 +134,6 @@ class TestDashboard:
                 "is_running": True, "is_paused": False, "jobs": [],
             }
             fetcher = MockFetcher.return_value
-            fetcher.get_latest_snapshot = AsyncMock(return_value=None)
             fetcher.get_todays_orders = AsyncMock(return_value=[])
 
             async with _client() as c:
@@ -149,11 +149,11 @@ class TestDashboard:
         with (
             patch("src.main.get_redis", side_effect=RuntimeError),
             patch("src.main.get_scheduler", side_effect=RuntimeError),
+            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=None)),
             patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
             patch("src.api.routes.admin_web.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
-            fetcher.get_latest_snapshot = AsyncMock(return_value=None)
             fetcher.get_todays_orders = AsyncMock(return_value=[])
 
             async with _client() as c:
@@ -169,11 +169,11 @@ class TestAccountDetail:
     async def test_found(self, mock_session):
         mock_session.get.return_value = _mock_account()
         with (
+            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=None)),
             patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
             patch("src.api.routes.admin_web.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
-            fetcher.get_latest_snapshot = AsyncMock(return_value=None)
             fetcher.get_open_positions = AsyncMock(return_value=[])
 
             async with _client() as c:

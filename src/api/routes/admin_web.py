@@ -13,6 +13,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import login_handler, logout_handler, require_admin
+from src.api.portfolio_live import fetch_portfolio_view
 from src.api.routes.accounts import _mask_account_no, _slugify
 from src.api.routes.backtest import _execute_backtest
 from src.api.templates import templates
@@ -89,29 +90,30 @@ async def dashboard(
     except RuntimeError:
         scheduler_status = {"is_running": False, "is_paused": False, "jobs": [], "disabled": True}
 
-    # 4) 계좌 목록 + 최신 스냅샷
+    # 4) 계좌 목록 + 라이브 잔고 (30초 Redis 캐시, 실패 시 DB 스냅샷 폴백)
     result = await session.execute(
         select(Account).where(Account.is_active.is_(True)).order_by(Account.created_at)
     )
     accounts_orm = list(result.scalars().all())
 
-    fetcher = ReportDataFetcher(get_session_factory())
     account_cards = []
     for acct in accounts_orm:
-        snapshot = await fetcher.get_latest_snapshot(account_id=acct.id)
+        view = await fetch_portfolio_view(acct.id)
         account_cards.append({
             "id": acct.id,
             "nickname": acct.nickname,
             "strategy_type": acct.strategy_type,
             "is_paper": acct.kis_is_paper,
-            "total_value": snapshot.total_value if snapshot else None,
-            "unrealized_pnl": snapshot.unrealized_pnl if snapshot else None,
-            "realized_pnl_daily": snapshot.realized_pnl_daily if snapshot else None,
-            "positions_count": snapshot.positions_count if snapshot else 0,
-            "snapshot_date": snapshot.snapshot_date if snapshot else None,
+            "total_value": view.total_value if view else None,
+            "unrealized_pnl": view.unrealized_pnl if view else None,
+            "realized_pnl_daily": view.realized_pnl_daily if view else None,
+            "positions_count": view.positions_count if view else 0,
+            "snapshot_date": view.snapshot_date if view else None,
+            "is_live": view.is_live if view else False,
         })
 
     # 5) 오늘 주문
+    fetcher = ReportDataFetcher(get_session_factory())
     todays_orders = await fetcher.get_todays_orders(account_id=None)
     recent_orders = todays_orders[-20:][::-1]  # 최근 20건, 최신순
 
@@ -362,14 +364,14 @@ async def account_detail(
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    view = await fetch_portfolio_view(account_id)
     fetcher = ReportDataFetcher(get_session_factory())
-    snapshot = await fetcher.get_latest_snapshot(account_id=account_id)
     positions = await fetcher.get_open_positions(account_id=account_id)
 
     return templates.TemplateResponse("account_detail.html", {
         "request": request,
         "account": account,
-        "snapshot": snapshot,
+        "snapshot": view,
         "positions": positions,
     })
 

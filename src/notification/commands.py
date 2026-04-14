@@ -230,7 +230,8 @@ def _extract_args(text: str | None, command: str) -> str:
 
 @command_router.message(Command("portfolio"))
 async def cmd_portfolio(message: Message) -> None:
-    """포트폴리오 요약 조회."""
+    """포트폴리오 요약 조회 (라이브 브로커 잔고 + DB 포지션)."""
+    from src.api.portfolio_live import fetch_portfolio_view
     from src.notification.templates import MessageTemplates
     from src.report.data_fetcher import ReportDataFetcher
 
@@ -243,19 +244,19 @@ async def cmd_portfolio(message: Message) -> None:
         return
 
     account_id, account_label = account
-    fetcher = ReportDataFetcher(session_factory)
 
-    snapshot = await fetcher.get_latest_snapshot(account_id=account_id)
-    if snapshot is None:
+    view = await fetch_portfolio_view(account_id)
+    if view is None:
         await message.answer(
             f"📭 <b>{account_label}</b> 포트폴리오 데이터가 없습니다.",
             parse_mode="HTML",
         )
         return
 
+    fetcher = ReportDataFetcher(session_factory)
     positions = await fetcher.get_open_positions(account_id=account_id)
     text = MessageTemplates.portfolio_summary_command(
-        snapshot, len(positions), account_label=account_label,
+        view, len(positions), account_label=account_label,
     )
     await message.answer(text, parse_mode="HTML")
 

@@ -97,6 +97,8 @@ _START_MESSAGE = """\
 /positions [계좌명] — 보유 종목 목록
 /history [계좌명] [N] — 최근 매매 이력
 /performance [계좌명] — 성과 지표
+/buy SYMBOL QTY [PRICE] [계좌명] — 수동 매수 (승인 생략)
+/sell SYMBOL QTY [PRICE] [계좌명] — 수동 매도 (승인 생략)
 /status — 시스템 상태
 /help — 전체 커맨드 도움말
 """
@@ -133,6 +135,15 @@ _HELP_MESSAGE = """\
 
 <b>/status</b>
   시스템 상태 (DB, Redis, 스케줄러, 봇)
+
+<b>/buy</b> SYMBOL QTY [PRICE] [계좌명]
+  수동 매수 — 승인 플로우 생략, 즉시 지정가로 접수
+  PRICE 생략 시 현재가 사용. 예: <code>/buy 005930 10</code>
+  계좌 지정: <code>/buy 005930 10 70000 모던투자</code>
+
+<b>/sell</b> SYMBOL QTY [PRICE] [계좌명]
+  수동 매도 — 승인 플로우 생략, 즉시 지정가로 접수
+  예: <code>/sell 005930 5</code>
 
 <b>계좌명 생략 시</b> 첫 번째 활성 계좌가 자동 선택됩니다.
 계좌 ID 또는 닉네임으로 지정할 수 있습니다.
@@ -497,3 +508,189 @@ async def cmd_status(message: Message) -> None:
     lines.append(f"⏰ 서버 시간: {now}")
 
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# /buy, /sell — 수동 주문 (승인 생략)
+# ---------------------------------------------------------------------------
+
+
+_BUY_USAGE = (
+    "사용법: <code>/buy SYMBOL QTY [PRICE] [계좌명]</code>\n"
+    "예: <code>/buy 005930 10</code> · <code>/buy 005930 10 70000 모던투자</code>"
+)
+_SELL_USAGE = (
+    "사용법: <code>/sell SYMBOL QTY [PRICE] [계좌명]</code>\n"
+    "예: <code>/sell 005930 5</code>"
+)
+
+
+def _parse_order_args(args: str) -> tuple[str, int, "Decimal | None", str] | None:
+    """/buy·/sell 인자 파싱.
+
+    SYMBOL QTY [PRICE] [ACCOUNT...]
+    - 1번째: SYMBOL (필수)
+    - 2번째: QTY 정수 (필수, >0)
+    - 3번째 이후: 숫자면 PRICE, 남은 토큰은 ACCOUNT
+    - PRICE는 3번째 토큰이 숫자일 때만 인정 (그 뒤 토큰은 모두 계좌명)
+
+    Returns None if parsing fails.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    parts = args.split()
+    if len(parts) < 2:
+        return None
+
+    symbol = parts[0].strip()
+    if not symbol:
+        return None
+
+    try:
+        qty = int(parts[1])
+    except ValueError:
+        return None
+    if qty <= 0:
+        return None
+
+    price: Decimal | None = None
+    account_tokens: list[str] = []
+    if len(parts) >= 3:
+        third = parts[2]
+        try:
+            price = Decimal(third)
+            account_tokens = parts[3:]
+        except (InvalidOperation, ValueError):
+            price = None
+            account_tokens = parts[2:]
+
+    if price is not None and price <= 0:
+        return None
+
+    account_text = " ".join(account_tokens).strip()
+    return symbol, qty, price, account_text
+
+
+async def _run_manual_order(message: Message, side: str) -> None:
+    """Shared handler for /buy and /sell."""
+    from decimal import Decimal
+
+    from src.api.routes.orders import _build_executor, _resolve_account_label
+    from src.core.enums import DecisionAction, OrderSide
+    from src.core.models import TradeDecision
+
+    session_factory = _deps["session_factory"]
+    usage = _BUY_USAGE if side == "buy" else _SELL_USAGE
+    args = _extract_args(message.text, side)
+    if not args:
+        await message.answer(f"⚠️ {usage}", parse_mode="HTML")
+        return
+
+    parsed = _parse_order_args(args)
+    if parsed is None:
+        await message.answer(f"⚠️ 인자 파싱 실패\n{usage}", parse_mode="HTML")
+        return
+
+    symbol, qty, price, account_text = parsed
+
+    account = await resolve_account(account_text, session_factory)
+    if account is None:
+        await message.answer(
+            "⚠️ 계좌를 찾을 수 없습니다.", parse_mode="HTML",
+        )
+        return
+    account_id, account_label = account
+
+    broker = None
+    try:
+        executor, broker = await _build_executor(account_id)
+
+        if price is None:
+            try:
+                price_info = await broker.get_price(symbol)
+                price = price_info.current_price
+            except Exception as exc:
+                await message.answer(
+                    f"❌ 현재가 조회 실패: <code>{html.escape(str(exc))}</code>",
+                    parse_mode="HTML",
+                )
+                return
+            if price is None or price <= 0:
+                await message.answer("❌ 현재가가 유효하지 않습니다.", parse_mode="HTML")
+                return
+
+        order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
+        action = DecisionAction.BUY if order_side == OrderSide.BUY else DecisionAction.SELL
+
+        td = TradeDecision(
+            symbol=symbol,
+            action=action,
+            confidence=Decimal("1.0"),
+            quantity=qty,
+            price=price,
+            reasoning=f"Telegram manual /{side} by admin",
+        )
+        # account_label은 여기서 broker label 대신 resolve_account 라벨을 쓰려면
+        # 일관성 위해 _resolve_account_label 사용
+        display_label = await _resolve_account_label(account_id)
+        result = await executor.execute_entry(
+            trade_decision=td,
+            session_id=__import__("uuid").uuid4(),
+            strategy_type="manual",
+            account_id=account_id,
+            account_label=display_label or account_label,
+            manual=True,
+        )
+    except Exception as exc:
+        logger.exception(
+            "telegram_manual_order_failed", side=side, symbol=symbol,
+        )
+        await message.answer(
+            f"❌ 주문 실행 오류: <code>{html.escape(str(exc))}</code>",
+            parse_mode="HTML",
+        )
+        return
+    finally:
+        if broker:
+            try:
+                await broker.disconnect()
+            except Exception:
+                logger.exception("telegram_manual_order_broker_disconnect_failed")
+
+    side_ko = "매수" if side == "buy" else "매도"
+    if result.success:
+        fill_price = result.fill_price or price
+        text = (
+            f"✅ <b>{side_ko} 체결</b>\n"
+            f"계좌: {html.escape(display_label or account_label)}\n"
+            f"종목: <code>{symbol}</code>\n"
+            f"수량: {result.quantity:,}주 @ {fill_price:,}원"
+        )
+    elif result.pending:
+        text = (
+            f"⏳ <b>{side_ko} 접수</b> (체결 대기)\n"
+            f"계좌: {html.escape(display_label or account_label)}\n"
+            f"종목: <code>{symbol}</code>\n"
+            f"수량: {qty:,}주 @ {price:,}원\n"
+            f"주문번호: <code>{result.broker_order_id or '-'}</code>"
+        )
+    else:
+        text = (
+            f"❌ <b>{side_ko} 실패</b>\n"
+            f"계좌: {html.escape(display_label or account_label)}\n"
+            f"종목: <code>{symbol}</code>\n"
+            f"사유: {html.escape(result.error or '-')}"
+        )
+    await message.answer(text, parse_mode="HTML")
+
+
+@command_router.message(Command("buy"))
+async def cmd_buy(message: Message) -> None:
+    """수동 매수 — 승인 플로우 생략 즉시 접수."""
+    await _run_manual_order(message, "buy")
+
+
+@command_router.message(Command("sell"))
+async def cmd_sell(message: Message) -> None:
+    """수동 매도 — 승인 플로우 생략 즉시 접수."""
+    await _run_manual_order(message, "sell")

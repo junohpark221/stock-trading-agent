@@ -722,17 +722,23 @@ class ExecutionEvent(BaseModel):
 
 
 class ExecuteOrderRequest(BaseModel):
-    """수동 주문 실행 요청 (POST /api/orders/execute)."""
+    """수동 주문 실행 요청 (POST /api/orders/execute).
+
+    price를 비우면 서버가 브로커 현재가를 조회해 채운다.
+    manual=True면 OrderExecutor에서 웹검증/승인을 생략하고 즉시 브로커에 제출한다.
+    """
 
     symbol: str
     side: OrderSide
     order_type: OrderType = OrderType.LIMIT
     quantity: int = Field(gt=0)
-    price: Decimal
+    price: Decimal | None = None
     stop_loss_price: Decimal | None = None
     take_profit_price: Decimal | None = None
     strategy_type: StrategyType = StrategyType.SWING
     skip_web_verify: bool = False
+    account_id: str = "default"
+    manual: bool = False
 
 
 class ApprovalResponse(BaseModel):

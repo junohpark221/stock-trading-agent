@@ -15,6 +15,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import src.main as main_mod
+from src.api.auth import require_admin
 from src.core.enums import ApprovalStatus, OrderSide, OrderStatus
 from src.core.models import ExecutionResult
 from src.db.session import get_db_session
@@ -136,7 +137,11 @@ def mock_db_session():
 @pytest.fixture
 def app(mock_db_session):
     """FastAPI app with dependency overrides."""
+    async def _noop_admin():
+        return None
+
     main_mod.app.dependency_overrides[get_db_session] = lambda: mock_db_session
+    main_mod.app.dependency_overrides[require_admin] = _noop_admin
     yield main_mod.app
     main_mod.app.dependency_overrides.clear()
 

@@ -439,3 +439,206 @@ class TestStockMaster:
                 r = await c.get("/admin/stock-master/sync/status")
         assert r.status_code == 200
         assert "종목 마스터 동기화" in r.text
+
+
+# ── Manual Order Handler ─────────────────────────────────────────────
+
+
+class TestManualOrderHandler:
+    """POST /admin/accounts/{account_id}/orders."""
+
+    @pytest.mark.asyncio
+    async def test_account_not_found(self, mock_session):
+        mock_session.get.return_value = None
+        async with _client() as c:
+            r = await c.post(
+                "/admin/accounts/missing/orders",
+                data={"symbol": "005930", "quantity": "1", "side": "buy"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_invalid_side_redirects_with_error(self, mock_session):
+        mock_session.get.return_value = _mock_account()
+        async with _client() as c:
+            r = await c.post(
+                "/admin/accounts/acc-1/orders",
+                data={"symbol": "005930", "quantity": "1", "side": "sideways"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 303
+        assert "order_error" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_missing_symbol_redirects_with_error(self, mock_session):
+        mock_session.get.return_value = _mock_account()
+        async with _client() as c:
+            r = await c.post(
+                "/admin/accounts/acc-1/orders",
+                data={"symbol": "", "quantity": "1", "side": "buy"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 303
+        assert "order_error" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_zero_quantity_redirects_with_error(self, mock_session):
+        mock_session.get.return_value = _mock_account()
+        async with _client() as c:
+            r = await c.post(
+                "/admin/accounts/acc-1/orders",
+                data={"symbol": "005930", "quantity": "0", "side": "buy"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 303
+        assert "order_error" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_happy_path_with_explicit_price(self, mock_session):
+        """가격 지정 + executor 성공 → order_success 쿼리로 redirect."""
+        from decimal import Decimal
+
+        from src.core.enums import ApprovalStatus, OrderSide, WebVerifyResult
+        from src.core.models import ExecutionResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.disconnect = AsyncMock()
+
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True,
+            order_id=42,
+            broker_order_id="KIS42",
+            symbol="005930",
+            side=OrderSide.BUY,
+            quantity=10,
+            fill_price=Decimal("70000"),
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930",
+                        "quantity": "10",
+                        "price": "70000",
+                        "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        assert "order_success" in r.headers.get("location", "")
+        executor.execute_entry.assert_awaited_once()
+        kwargs = executor.execute_entry.await_args.kwargs
+        assert kwargs["manual"] is True
+        assert kwargs["account_id"] == "acc-1"
+        broker.disconnect.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_fetches_price_when_empty(self, mock_session):
+        """price 미입력 시 broker.get_price로 현재가를 채움."""
+        from decimal import Decimal
+
+        from src.core.enums import ApprovalStatus, OrderSide, WebVerifyResult
+        from src.core.models import ExecutionResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(
+            return_value=MagicMock(current_price=Decimal("65000")),
+        )
+        broker.disconnect = AsyncMock()
+
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True,
+            order_id=43,
+            broker_order_id="KIS43",
+            symbol="005930",
+            side=OrderSide.BUY,
+            quantity=5,
+            fill_price=Decimal("65000"),
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930",
+                        "quantity": "5",
+                        "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        assert "order_success" in r.headers.get("location", "")
+        broker.get_price.assert_awaited_once_with("005930")
+        kwargs = executor.execute_entry.await_args.kwargs
+        assert kwargs["trade_decision"].price == Decimal("65000")
+
+    @pytest.mark.asyncio
+    async def test_executor_failure_redirects_with_error(self, mock_session):
+        from decimal import Decimal
+
+        from src.core.enums import ApprovalStatus, OrderSide, WebVerifyResult
+        from src.core.models import ExecutionResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.disconnect = AsyncMock()
+
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=False,
+            order_id=99,
+            symbol="005930",
+            side=OrderSide.BUY,
+            quantity=10,
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+            error="Cash gate rejected",
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930",
+                        "quantity": "10",
+                        "price": "70000",
+                        "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        assert "order_error" in r.headers.get("location", "")

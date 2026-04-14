@@ -1273,3 +1273,57 @@ async def test_execute_entry_broker_hard_fail_marks_failed(
     assert result.pending is False
     assert "rejected" in result.error
     mock_position_manager.create.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Manual=True: 웹검증/승인 플로우 생략 검증
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_manual_skips_web_verify_and_approval(
+    executor,
+    mock_web_verifier,
+    mock_approval_manager,
+    mock_portfolio_service,
+    mock_broker,
+    mock_position_manager,
+):
+    """manual=True면 WebSearchVerifier.verify / ApprovalManager.request_approval /
+    PortfolioStateService.get_current_state를 호출하지 않고 AUTO_APPROVED 경로로 진행."""
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+        manual=True,
+    )
+
+    assert result.success is True
+    assert result.approval_status == ApprovalStatus.AUTO_APPROVED
+    assert result.web_verify_result == WebVerifyResult.SAFE
+    mock_web_verifier.verify.assert_not_awaited()
+    mock_approval_manager.request_approval.assert_not_awaited()
+    mock_portfolio_service.get_current_state.assert_not_awaited()
+    mock_broker.place_order.assert_awaited_once()
+    mock_position_manager.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_manual_still_enforces_cash_gate(
+    executor, mock_broker, mock_position_manager,
+):
+    """manual=True여도 Cash Gate는 동작해야 함 (미수 방지)."""
+    # 주문가능현금을 주문금액보다 훨씬 낮게 설정 → reject 모드에서 차단
+    mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("100"))
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),  # 10주 @ 72000 = 720000 KRW 필요
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+        manual=True,
+    )
+
+    assert result.success is False
+    assert "현금" in result.error or "cash" in result.error.lower()
+    mock_broker.place_order.assert_not_awaited()
+    mock_position_manager.create.assert_not_awaited()

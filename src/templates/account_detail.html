@@ -117,5 +117,41 @@
     {% endif %}
 </section>
 
+<!-- 수동 주문 -->
+<section>
+    <h2>수동 주문</h2>
+    <p><small>승인 생략 즉시 집행. 가격을 비우면 현재가로 지정가 주문을 낸다.</small></p>
+    {% if manual_order_error %}
+    <article style="background:#ffe9e9;border-left:3px solid #d93025;padding:0.5rem 1rem;">
+        <strong>주문 실패:</strong> {{ manual_order_error }}
+    </article>
+    {% endif %}
+    {% if manual_order_success %}
+    <article style="background:#e8f5e9;border-left:3px solid #2e7d32;padding:0.5rem 1rem;">
+        <strong>주문 처리됨:</strong> {{ manual_order_success }}
+    </article>
+    {% endif %}
+    <form method="post" action="/admin/accounts/{{ account.id }}/orders">
+        <div class="grid">
+            <label>
+                종목코드
+                <input type="text" name="symbol" placeholder="005930" required pattern="[0-9A-Za-z]+" autocomplete="off">
+            </label>
+            <label>
+                수량
+                <input type="number" name="quantity" min="1" step="1" required>
+            </label>
+            <label>
+                가격 (비우면 현재가)
+                <input type="number" name="price" min="0" step="1" placeholder="현재가">
+            </label>
+        </div>
+        <div class="grid">
+            <button type="submit" name="side" value="buy">매수</button>
+            <button type="submit" name="side" value="sell" class="secondary">매도</button>
+        </div>
+    </form>
+</section>
+
 <p><a href="/admin/">&larr; 대시보드로 돌아가기</a></p>
 {% endblock %}

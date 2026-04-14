@@ -357,9 +357,11 @@ async def accounts_toggle(
 async def account_detail(
     request: Request,
     account_id: str,
+    order_success: str | None = Query(None),
+    order_error: str | None = Query(None),
     session: AsyncSession = Depends(get_db_session),
 ):
-    """GET /admin/accounts/{account_id} — 계좌 상세: 정보 + 잔고 + 포지션."""
+    """GET /admin/accounts/{account_id} — 계좌 상세: 정보 + 잔고 + 포지션 + 수동 주문."""
     account = await session.get(Account, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -373,7 +375,136 @@ async def account_detail(
         "account": account,
         "snapshot": view,
         "positions": positions,
+        "manual_order_success": order_success,
+        "manual_order_error": order_error,
     })
+
+
+@router.post("/accounts/{account_id}/orders", dependencies=[Depends(require_admin)])
+async def account_manual_order(
+    request: Request,
+    account_id: str,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """POST /admin/accounts/{account_id}/orders — 백오피스 수동 주문 실행.
+
+    폼 필드: symbol, quantity, price(선택), side("buy"|"sell").
+    executor에 manual=True로 전달하여 웹검증/승인을 생략한다.
+    결과 메시지를 쿼리스트링으로 붙여 계좌 상세로 redirect한다.
+    """
+    from urllib.parse import quote
+
+    from src.api.routes.orders import _build_executor, _resolve_account_label
+    from src.core.enums import DecisionAction, OrderSide
+    from src.core.models import TradeDecision
+
+    account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    form = await request.form()
+    redirect_base = f"/admin/accounts/{account_id}"
+
+    def _redirect_error(msg: str) -> RedirectResponse:
+        return RedirectResponse(
+            f"{redirect_base}?order_error={quote(msg)}", status_code=303,
+        )
+
+    symbol = str(form.get("symbol", "")).strip()
+    side_raw = str(form.get("side", "")).strip().lower()
+    qty_raw = str(form.get("quantity", "")).strip()
+    price_raw = str(form.get("price", "")).strip()
+
+    if not symbol:
+        return _redirect_error("종목코드는 필수입니다")
+    if side_raw not in ("buy", "sell"):
+        return _redirect_error("side는 buy 또는 sell이어야 합니다")
+    try:
+        quantity = int(qty_raw)
+    except ValueError:
+        return _redirect_error(f"수량이 올바르지 않습니다: {qty_raw}")
+    if quantity <= 0:
+        return _redirect_error("수량은 1 이상이어야 합니다")
+
+    price: Decimal | None = None
+    if price_raw:
+        try:
+            price = Decimal(price_raw)
+        except Exception:
+            return _redirect_error(f"가격이 올바르지 않습니다: {price_raw}")
+        if price <= 0:
+            return _redirect_error("가격은 0보다 커야 합니다")
+
+    broker = None
+    try:
+        executor, broker = await _build_executor(account_id)
+
+        if price is None:
+            try:
+                price_info = await broker.get_price(symbol)
+                price = price_info.current_price
+            except Exception as exc:
+                logger.warning(
+                    "manual_order_quote_failed",
+                    account_id=account_id, symbol=symbol, error=str(exc),
+                )
+                return _redirect_error(f"현재가 조회 실패: {exc}")
+            if price is None or price <= 0:
+                return _redirect_error("현재가가 유효하지 않습니다")
+
+        side = OrderSide.BUY if side_raw == "buy" else OrderSide.SELL
+        action = DecisionAction.BUY if side == OrderSide.BUY else DecisionAction.SELL
+
+        trade_decision = TradeDecision(
+            symbol=symbol,
+            action=action,
+            confidence=Decimal("1.0"),
+            quantity=quantity,
+            price=price,
+            reasoning=f"Backoffice manual order by admin ({account_id})",
+        )
+
+        account_label = await _resolve_account_label(account_id)
+        result = await executor.execute_entry(
+            trade_decision=trade_decision,
+            session_id=uuid4(),
+            strategy_type="manual",
+            account_id=account_id,
+            account_label=account_label,
+            manual=True,
+        )
+
+    except HTTPException as exc:
+        return _redirect_error(str(exc.detail))
+    except Exception as exc:
+        logger.exception(
+            "manual_order_failed", account_id=account_id, symbol=symbol,
+        )
+        return _redirect_error(f"주문 실행 오류: {exc}")
+    finally:
+        if broker:
+            try:
+                await broker.disconnect()
+            except Exception:
+                logger.exception("manual_order_broker_disconnect_failed")
+
+    if result.success:
+        msg = (
+            f"{side_raw.upper()} {symbol} {quantity:,}주 @ "
+            f"{result.fill_price or price:,}원 체결"
+        )
+        return RedirectResponse(
+            f"{redirect_base}?order_success={quote(msg)}", status_code=303,
+        )
+    if result.pending:
+        msg = (
+            f"{side_raw.upper()} {symbol} {quantity:,}주 접수 완료 — 체결 대기 "
+            f"(주문번호 {result.broker_order_id or '-'})"
+        )
+        return RedirectResponse(
+            f"{redirect_base}?order_success={quote(msg)}", status_code=303,
+        )
+    return _redirect_error(result.error or "주문 실패")
 
 
 # ── Trades History ───────────────────────────────────────────────────────

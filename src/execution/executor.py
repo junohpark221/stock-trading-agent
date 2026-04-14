@@ -170,6 +170,7 @@ class OrderExecutor:
         account_id: str = "default",
         account_label: str = "",
         broker: BrokerInterface | None = None,
+        manual: bool = False,
     ) -> ExecutionResult:
         """진입 주문 실행.
 
@@ -182,6 +183,7 @@ class OrderExecutor:
         strategy_type: 전략 유형 (StrategyType.value).
         parent_decision_id: 부모 decision_log ID.
         analysis_summary: 분석 요약 (승인 메시지에 표시).
+        manual: True면 웹검증/승인 플로우를 생략(관리자 수동 주문). Cash gate와 포지션 생성은 유지.
         """
         side = _ACTION_TO_SIDE.get(trade_decision.action, OrderSide.BUY)
         symbol = trade_decision.symbol
@@ -217,23 +219,35 @@ class OrderExecutor:
                 account_id=account_id,
             )
 
-            # 2. Web 검증
-            verification = await self._web_verifier.verify(
-                symbol=symbol,
-                side=side,
-                session_id=session_id,
-                parent_decision_id=parent_decision_id,
-                is_stop_loss=False,
-            )
-            # web_verify 결과 + BLOCKED 시 status를 한 번에 업데이트
-            web_update: dict = {
-                "web_verify_result": verification.result.value,
-                "web_verify_summary": verification.summary,
-            }
-            if verification.result == WebVerifyResult.BLOCKED:
-                web_update["status"] = OrderStatus.CANCELLED.value
-                web_update["rejection_reason"] = f"Web 검증 차단: {verification.summary}"
-            await self._update_order(order.id, **web_update)
+            # 2. Web 검증 — manual=True면 생략하고 SAFE 결과로 간주
+            if manual:
+                verification = WebVerification(
+                    symbol=symbol,
+                    result=WebVerifyResult.SAFE,
+                    summary="수동 주문: 웹검증 생략",
+                )
+                await self._update_order(
+                    order.id,
+                    web_verify_result=verification.result.value,
+                    web_verify_summary=verification.summary,
+                )
+            else:
+                verification = await self._web_verifier.verify(
+                    symbol=symbol,
+                    side=side,
+                    session_id=session_id,
+                    parent_decision_id=parent_decision_id,
+                    is_stop_loss=False,
+                )
+                # web_verify 결과 + BLOCKED 시 status를 한 번에 업데이트
+                web_update: dict = {
+                    "web_verify_result": verification.result.value,
+                    "web_verify_summary": verification.summary,
+                }
+                if verification.result == WebVerifyResult.BLOCKED:
+                    web_update["status"] = OrderStatus.CANCELLED.value
+                    web_update["rejection_reason"] = f"Web 검증 차단: {verification.summary}"
+                await self._update_order(order.id, **web_update)
 
             if verification.result == WebVerifyResult.BLOCKED:
                 await self._notify_safe(MessageTemplates.rejection_notification(
@@ -260,107 +274,112 @@ class OrderExecutor:
             if verification.result == WebVerifyResult.WARNING:
                 logger.warning("executor.web_verify_warning", symbol=symbol, summary=verification.summary)
 
-            # 3. 포트폴리오 상태 조회
-            portfolio_state = await self._portfolio_service.get_current_state()
-
-            # 4. 승인 요청
-            approval_status = await self._approval_manager.request_approval(
-                trade_decision=trade_decision,
-                order_id=order.id,
-                session_id=session_id,
-                portfolio_state=portfolio_state,
-                web_verification=verification,
-                analysis_summary=analysis_summary,
-                account_id=account_id,
-                account_label=account_label,
-            )
-
-            if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
-                # ApprovalManager가 이미 DB 업데이트 + 텔레그램 알림 처리
-                await self._update_order(order.id, status=OrderStatus.CANCELLED)
-                did = await self._record_decision_safe(
-                    session_id=session_id, stage=DecisionStage.EXECUTION,
-                    decision=DecisionAction.REJECT, symbol=symbol,
-                    reasoning=f"승인 {approval_status.value}",
-                    parent_id=parent_decision_id,
-                    account_id=account_id,
-                    data_snapshot={"order_id": order.id, "approval": approval_status.value},
-                )
-                if did:
-                    decision_ids.append(did)
-                return self._fail_result(
-                    order=order, symbol=symbol, side=side, quantity=quantity,
-                    approval_status=approval_status,
-                    web_verify_result=verification.result, decision_ids=decision_ids,
-                    error=f"승인 {approval_status.value}",
-                )
-
-            # 5. 수량 변경 확인 (DB에서 재조회)
-            effective_quantity = quantity
-            refreshed_order = await self._get_order(order.id)
-            if refreshed_order and refreshed_order.modified_quantity is not None:
-                modified_qty = refreshed_order.modified_quantity
-
-                # 포트폴리오 상태 갱신 (승인 대기 중 변경 반영)
+            # 3-4-5. 포트폴리오 상태 + 승인 요청 + 수량 변경 — manual=True면 전체 생략
+            if manual:
+                approval_status = ApprovalStatus.AUTO_APPROVED
+                effective_quantity = quantity
+            else:
+                # 3. 포트폴리오 상태 조회
                 portfolio_state = await self._portfolio_service.get_current_state()
 
-                # sector 조회 (리스크 재검증에 필요)
-                sector = ""
-                try:
-                    async with self._session_factory() as _sess:
-                        _row = await _sess.execute(
-                            select(StockMaster.sector).where(
-                                StockMaster.symbol == symbol
-                            )
-                        )
-                        sector = _row.scalar() or ""
-                except Exception:
-                    logger.warning("executor.sector_lookup_failed", symbol=symbol)
-
-                # 리스크 재검증
-                risk_result = await self._risk_manager.check(
-                    symbol=symbol,
-                    action=SignalAction.BUY if side == OrderSide.BUY else SignalAction.SELL,
-                    quantity=modified_qty,
-                    price=price,
-                    stop_loss_price=trade_decision.stop_loss_price,
-                    sector=sector,
+                # 4. 승인 요청
+                approval_status = await self._approval_manager.request_approval(
+                    trade_decision=trade_decision,
+                    order_id=order.id,
+                    session_id=session_id,
+                    portfolio_state=portfolio_state,
+                    web_verification=verification,
+                    analysis_summary=analysis_summary,
+                    account_id=account_id,
+                    account_label=account_label,
                 )
 
-                if not risk_result.passed:
-                    await self._update_order(
-                        order.id,
-                        status=OrderStatus.CANCELLED,
-                        rejection_reason=f"리스크 재검증 실패: {', '.join(risk_result.violations)}",
-                    )
-                    await self._notify_safe(MessageTemplates.rejection_notification(
-                        account_label=account_label,
-                        symbol=symbol, name=symbol, side=side,
-                        reason=f"리스크 재검증 실패 (수정 수량 {modified_qty:,}주)",
-                        stage="risk_blocked",
-                    ))
+                if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
+                    # ApprovalManager가 이미 DB 업데이트 + 텔레그램 알림 처리
+                    await self._update_order(order.id, status=OrderStatus.CANCELLED)
                     did = await self._record_decision_safe(
                         session_id=session_id, stage=DecisionStage.EXECUTION,
                         decision=DecisionAction.REJECT, symbol=symbol,
-                        reasoning=f"수정 수량 리스크 위반: {risk_result.violations}",
+                        reasoning=f"승인 {approval_status.value}",
                         parent_id=parent_decision_id,
                         account_id=account_id,
-                        data_snapshot={
-                            "order_id": order.id,
-                            "modified_qty": modified_qty,
-                            "violations": risk_result.violations,
-                        },
+                        data_snapshot={"order_id": order.id, "approval": approval_status.value},
                     )
                     if did:
                         decision_ids.append(did)
                     return self._fail_result(
-                        order=order, symbol=symbol, side=side, quantity=modified_qty,
+                        order=order, symbol=symbol, side=side, quantity=quantity,
                         approval_status=approval_status,
                         web_verify_result=verification.result, decision_ids=decision_ids,
-                        error=f"리스크 재검증 실패: {risk_result.violations}",
+                        error=f"승인 {approval_status.value}",
                     )
 
-                effective_quantity = risk_result.adjusted_quantity or modified_qty
+                # 5. 수량 변경 확인 (DB에서 재조회)
+                effective_quantity = quantity
+                refreshed_order = await self._get_order(order.id)
+                if refreshed_order and refreshed_order.modified_quantity is not None:
+                    modified_qty = refreshed_order.modified_quantity
+
+                    # 포트폴리오 상태 갱신 (승인 대기 중 변경 반영)
+                    portfolio_state = await self._portfolio_service.get_current_state()
+
+                    # sector 조회 (리스크 재검증에 필요)
+                    sector = ""
+                    try:
+                        async with self._session_factory() as _sess:
+                            _row = await _sess.execute(
+                                select(StockMaster.sector).where(
+                                    StockMaster.symbol == symbol
+                                )
+                            )
+                            sector = _row.scalar() or ""
+                    except Exception:
+                        logger.warning("executor.sector_lookup_failed", symbol=symbol)
+
+                    # 리스크 재검증
+                    risk_result = await self._risk_manager.check(
+                        symbol=symbol,
+                        action=SignalAction.BUY if side == OrderSide.BUY else SignalAction.SELL,
+                        quantity=modified_qty,
+                        price=price,
+                        stop_loss_price=trade_decision.stop_loss_price,
+                        sector=sector,
+                    )
+
+                    if not risk_result.passed:
+                        await self._update_order(
+                            order.id,
+                            status=OrderStatus.CANCELLED,
+                            rejection_reason=f"리스크 재검증 실패: {', '.join(risk_result.violations)}",
+                        )
+                        await self._notify_safe(MessageTemplates.rejection_notification(
+                            account_label=account_label,
+                            symbol=symbol, name=symbol, side=side,
+                            reason=f"리스크 재검증 실패 (수정 수량 {modified_qty:,}주)",
+                            stage="risk_blocked",
+                        ))
+                        did = await self._record_decision_safe(
+                            session_id=session_id, stage=DecisionStage.EXECUTION,
+                            decision=DecisionAction.REJECT, symbol=symbol,
+                            reasoning=f"수정 수량 리스크 위반: {risk_result.violations}",
+                            parent_id=parent_decision_id,
+                            account_id=account_id,
+                            data_snapshot={
+                                "order_id": order.id,
+                                "modified_qty": modified_qty,
+                                "violations": risk_result.violations,
+                            },
+                        )
+                        if did:
+                            decision_ids.append(did)
+                        return self._fail_result(
+                            order=order, symbol=symbol, side=side, quantity=modified_qty,
+                            approval_status=approval_status,
+                            web_verify_result=verification.result, decision_ids=decision_ids,
+                            error=f"리스크 재검증 실패: {risk_result.violations}",
+                        )
+
+                    effective_quantity = risk_result.adjusted_quantity or modified_qty
 
             # 5-a. Cash Gate (미수 방지): place_order 직전 브로커 주문가능현금 확인.
             # dnca_tot_amt(예수금총액)는 D+2 정산 전이라 당일 매수분을 차감하지

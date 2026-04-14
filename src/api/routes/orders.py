@@ -36,6 +36,7 @@ from src.core.models import (
 )
 from src.db.models.execution import ApprovalRequestDB, Execution, Order
 from src.db.session import get_db_session
+from src.api.auth import require_admin
 
 logger = structlog.get_logger(__name__)
 
@@ -45,7 +46,81 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 # ── Executor Factory ─────────────────────────────────────────────────
 
 
-async def _build_executor():
+async def _build_account_broker(account_id: str):
+    """계좌별 브로커 인스턴스 생성 후 connect. USE_MOCK_BROKER면 InMemoryBroker.
+
+    account_id="default"는 레거시 env var 기반. 그 외는 accounts 테이블에서
+    Fernet으로 복호화한 AccountCredentials로 KISClient.from_credentials() 호출.
+    호출자가 disconnect() 책임을 진다.
+    """
+    from src.broker.credentials import AccountCredentials
+    from src.config import get_settings
+    from src.data.cache import get_cache
+    from src.db.models.account import Account, AccountCrypto
+    from src.db.session import get_session_factory
+
+    settings = get_settings()
+    cache = get_cache()
+
+    if settings.USE_MOCK_BROKER:
+        from src.broker.mock.client import InMemoryBroker
+        broker = InMemoryBroker()
+        await broker.connect()
+        return broker
+
+    from src.broker.kis.client import KISClient
+
+    # "default" 레거시 계좌 — env var 직접 사용
+    if account_id == "default":
+        broker = KISClient(settings=settings, cache=cache)
+        await broker.connect()
+        return broker
+
+    # 멀티 계좌 — accounts 테이블에서 복호화 후 credentials 경로
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    enc_key = settings.ACCOUNT_ENCRYPTION_KEY
+    if not enc_key:
+        raise HTTPException(status_code=500, detail="ACCOUNT_ENCRYPTION_KEY not configured")
+
+    credentials = AccountCredentials(
+        account_id=account.id,
+        app_key=AccountCrypto.decrypt(account.kis_app_key_enc, enc_key),
+        app_secret=AccountCrypto.decrypt(account.kis_app_secret_enc, enc_key),
+        account_no=account.kis_account_no,
+        account_prod=account.kis_account_prod,
+        is_paper=account.kis_is_paper,
+        hts_id=account.kis_hts_id,
+    )
+    broker = KISClient.from_credentials(credentials, cache)
+    await broker.connect()
+    return broker
+
+
+async def _resolve_account_label(account_id: str) -> str:
+    """계좌 상세에서 표시할 닉네임/계좌번호 조합. 실패 시 account_id."""
+    if account_id == "default":
+        return "default"
+    from src.db.models.account import Account
+    from src.db.session import get_session_factory
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        account = await session.get(Account, account_id)
+    if account is None:
+        return account_id
+    acct_no = account.kis_account_no or ""
+    last4 = acct_no[-4:] if len(acct_no) >= 4 else acct_no
+    if account.nickname and account.nickname != account.id:
+        return f"{account.nickname} ({last4})" if last4 else account.nickname
+    return last4 or account.id
+
+
+async def _build_executor(account_id: str = "default"):
     """OrderExecutor + 전체 의존성 트리를 조립.
 
     strategy.py의 _build_strategy() 패턴과 동일.
@@ -69,14 +144,8 @@ async def _build_executor():
     session_factory = get_session_factory()
     cache = get_cache()
 
-    # Broker — USE_MOCK_BROKER=true이면 InMemoryBroker 사용 (테스트/개발용)
-    if settings.USE_MOCK_BROKER:
-        from src.broker.mock.client import InMemoryBroker
-        broker = InMemoryBroker()
-    else:
-        from src.broker.kis.client import KISClient
-        broker = KISClient(settings=settings, cache=cache)
-    await broker.connect()
+    # 계좌별 브로커 — 요청 단위 생성/해제
+    broker = await _build_account_broker(account_id)
 
     # LLM
     cost_tracker = CostTracker(session_factory=session_factory, settings=settings)
@@ -244,15 +313,34 @@ async def get_order_detail(
 # ── POST /api/orders/execute ─────────────────────────────────────────
 
 
-@router.post("/execute")
+@router.post("/execute", dependencies=[Depends(require_admin)])
 async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
     """수동 주문 실행 — Web 검증 → 승인 → 브로커 주문 → 포지션 관리.
 
     OrderExecutor.execute_entry()의 전체 파이프라인을 실행한다.
+    manual=True면 웹검증/승인을 생략하고 즉시 브로커로 접수한다.
+    price가 None이면 브로커 현재가로 지정가 주문을 낸다.
     """
     broker = None
     try:
-        executor, broker = await _build_executor()
+        executor, broker = await _build_executor(req.account_id)
+
+        # 가격 자동 보정 — 빈 값이면 현재가 조회
+        price = req.price
+        if price is None or price <= 0:
+            try:
+                price_info = await broker.get_price(req.symbol)
+                price = price_info.current_price
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"현재가 조회 실패: {exc}",
+                ) from exc
+            if price is None or price <= 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"현재가가 유효하지 않습니다: {price}",
+                )
 
         # TradeDecision 구성
         action = DecisionAction.BUY if req.side == OrderSide.BUY else DecisionAction.SELL
@@ -262,17 +350,21 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
             confidence=Decimal("1.0"),
             order_type=req.order_type,
             quantity=req.quantity,
-            price=req.price,
+            price=price,
             stop_loss_price=req.stop_loss_price,
             take_profit_price=req.take_profit_price,
-            reasoning="Manual order via API",
+            reasoning="Manual order via API" if req.manual else "Manual order via API (with approval)",
         )
 
         session_id = uuid4()
+        account_label = await _resolve_account_label(req.account_id)
         result = await executor.execute_entry(
             trade_decision=trade_decision,
             session_id=session_id,
             strategy_type=req.strategy_type.value,
+            account_id=req.account_id,
+            account_label=account_label,
+            manual=req.manual,
         )
 
         return JSONResponse(
@@ -280,9 +372,37 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
             status_code=200 if result.success else 422,
         )
 
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("execute_order_failed", symbol=req.symbol)
         raise HTTPException(status_code=500, detail="Internal server error") from None
+    finally:
+        if broker:
+            await broker.disconnect()
+
+
+@router.get("/quote/{account_id}/{symbol}", dependencies=[Depends(require_admin)])
+async def get_quote(account_id: str, symbol: str) -> JSONResponse:
+    """현재가 조회 — 수동 주문 폼/커맨드 보조용.
+
+    계좌별 브로커로 broker.get_price(symbol)를 호출하고, 사용 후 disconnect한다.
+    """
+    broker = None
+    try:
+        broker = await _build_account_broker(account_id)
+        info = await broker.get_price(symbol)
+        return JSONResponse(content={
+            "symbol": symbol,
+            "account_id": account_id,
+            "current_price": str(info.current_price),
+            "timestamp": info.timestamp.isoformat() if getattr(info, "timestamp", None) else None,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("get_quote_failed", symbol=symbol, account_id=account_id)
+        raise HTTPException(status_code=422, detail=f"현재가 조회 실패: {exc}") from exc
     finally:
         if broker:
             await broker.disconnect()

@@ -10,11 +10,14 @@ from src.notification.commands import (
     ChatIdFilterMiddleware,
     _extract_args,
     _parse_history_args,
+    _parse_order_args,
+    cmd_buy,
     cmd_help,
     cmd_history,
     cmd_performance,
     cmd_portfolio,
     cmd_positions,
+    cmd_sell,
     cmd_start,
     cmd_status,
     resolve_account,
@@ -263,3 +266,131 @@ class TestCmdStatus:
         text = mock_message.answer.call_args[0][0]
         assert "Database: OK" in text
         assert "Redis: OK" in text
+
+
+# ── /buy, /sell 수동 주문 ────────────────────────────────────────────
+
+
+class TestParseOrderArgs:
+    def test_symbol_qty_only(self):
+        from decimal import Decimal
+
+        got = _parse_order_args("005930 10")
+        assert got == ("005930", 10, None, "")
+
+    def test_with_price(self):
+        from decimal import Decimal
+
+        got = _parse_order_args("005930 10 70000")
+        assert got == ("005930", 10, Decimal("70000"), "")
+
+    def test_with_price_and_account(self):
+        from decimal import Decimal
+
+        got = _parse_order_args("005930 10 70000 모던투자")
+        assert got == ("005930", 10, Decimal("70000"), "모던투자")
+
+    def test_account_without_price(self):
+        got = _parse_order_args("005930 10 모던투자")
+        assert got == ("005930", 10, None, "모던투자")
+
+    def test_multi_word_account(self):
+        got = _parse_order_args("005930 10 long term acct")
+        assert got == ("005930", 10, None, "long term acct")
+
+    def test_missing_qty(self):
+        assert _parse_order_args("005930") is None
+
+    def test_invalid_qty(self):
+        assert _parse_order_args("005930 abc") is None
+
+    def test_zero_qty(self):
+        assert _parse_order_args("005930 0") is None
+
+    def test_negative_qty(self):
+        assert _parse_order_args("005930 -5") is None
+
+    def test_empty(self):
+        assert _parse_order_args("") is None
+
+
+class TestCmdBuySell:
+    @pytest.mark.asyncio
+    async def test_buy_missing_args_shows_usage(self, mock_message):
+        mock_message.text = "/buy"
+        await cmd_buy(mock_message)
+        text = mock_message.answer.call_args[0][0]
+        assert "사용법" in text
+
+    @pytest.mark.asyncio
+    async def test_buy_bad_parse_shows_usage(self, mock_message):
+        mock_message.text = "/buy bogus"
+        await cmd_buy(mock_message)
+        text = mock_message.answer.call_args[0][0]
+        assert "사용법" in text or "파싱" in text
+
+    @pytest.mark.asyncio
+    async def test_buy_account_not_found(self, mock_message):
+        mock_message.text = "/buy 005930 10 없는계좌123"
+        with patch("src.notification.commands.resolve_account", AsyncMock(return_value=None)):
+            await cmd_buy(mock_message)
+        text = mock_message.answer.call_args[0][0]
+        assert "찾을 수 없습니다" in text
+
+    @pytest.mark.asyncio
+    async def test_buy_happy_path(self, mock_message):
+        """현재가 자동조회 + executor 호출 → 성공 메시지."""
+        from decimal import Decimal
+
+        from src.core.enums import OrderSide, WebVerifyResult
+        from src.core.models import ExecutionResult
+
+        mock_message.text = "/buy 005930 10"
+
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(
+            return_value=MagicMock(current_price=Decimal("70000")),
+        )
+        broker.disconnect = AsyncMock()
+
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True,
+            order_id=1,
+            broker_order_id="KIS1",
+            symbol="005930",
+            side=OrderSide.BUY,
+            quantity=10,
+            fill_price=Decimal("70000"),
+            approval_status=__import__("src.core.enums", fromlist=["ApprovalStatus"]).ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+
+        with (
+            patch("src.notification.commands.resolve_account",
+                  AsyncMock(return_value=("acc-1", "테스트"))),
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트 (1234)")),
+        ):
+            await cmd_buy(mock_message)
+
+        executor.execute_entry.assert_awaited_once()
+        # manual=True로 호출되었는지 검증
+        kwargs = executor.execute_entry.await_args.kwargs
+        assert kwargs["manual"] is True
+        assert kwargs["account_id"] == "acc-1"
+
+        text = mock_message.answer.call_args[0][0]
+        assert "매수 체결" in text
+        broker.disconnect.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sell_delegates_to_run(self, mock_message):
+        """cmd_sell이 side=sell로 공용 핸들러를 호출하는지 간접 검증."""
+        mock_message.text = "/sell"
+        await cmd_sell(mock_message)
+        text = mock_message.answer.call_args[0][0]
+        # usage 메시지 형태
+        assert "/sell" in text or "사용법" in text

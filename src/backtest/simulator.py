@@ -338,6 +338,11 @@ class SimulatedBroker(BrokerInterface):
         """현재 보유 포지션 목록 (quantity > 0)."""
         return [p for p in self._positions.values() if p.quantity > 0]
 
+    async def get_buyable_cash(self, symbol: str, price: Decimal) -> Decimal:
+        """백테스트에서는 정산 지연을 모델링하지 않으므로 현재 현금 반환."""
+        del symbol, price
+        return self._cash
+
     # ── Internal helpers ─────────────────────────────────────────────
 
     def _ensure_date_set(self) -> None:

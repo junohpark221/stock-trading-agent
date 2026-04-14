@@ -24,6 +24,7 @@ _STAGE_ICON: dict[str, str] = {
     "approval_rejected": "❌",
     "approval_timeout": "⏰",
     "risk_blocked": "⚠️",
+    "cash_gate": "💸",
 }
 
 _STAGE_LABEL: dict[str, str] = {
@@ -31,10 +32,11 @@ _STAGE_LABEL: dict[str, str] = {
     "approval_rejected": "사용자 거부",
     "approval_timeout": "승인 시간 초과",
     "risk_blocked": "리스크 차단",
+    "cash_gate": "현금 부족 차단",
 }
 
 # "차단" stages vs "거부" stages
-_BLOCK_STAGES: set[str] = {"web_verify", "risk_blocked"}
+_BLOCK_STAGES: set[str] = {"web_verify", "risk_blocked", "cash_gate"}
 
 _EXIT_REASON_KR: dict[str, str] = {
     ExitReason.STOP_LOSS: "손절",

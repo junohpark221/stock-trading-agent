@@ -50,7 +50,12 @@ class PortfolioStateService:
     # -- 포트폴리오 상태 집계 --------------------------------------------------
 
     async def get_current_state(self) -> PortfolioState:
-        """Broker 잔고 + DB 이력을 조합하여 현재 포트폴리오 상태를 반환한다."""
+        """Broker 잔고 + DB 이력을 조합하여 현재 포트폴리오 상태를 반환한다.
+
+        ``buyable_cash``는 기본값 0으로 채운다. 계좌 레벨에서 정확한 값은
+        KIS의 경우 종목·단가 조합 질의가 필요하므로 ``fetch_buyable_cash``를
+        별도 호출하여 채운다 (allocator 등).
+        """
         balance, positions = await self._broker.get_balance_and_positions()
 
         sector_allocations = await self.get_sector_allocations(
@@ -72,6 +77,7 @@ class PortfolioStateService:
             account_id=self._account_id,
             total_value=balance.total_assets,
             cash=balance.cash,
+            buyable_cash=Decimal(0),  # allocator가 필요 시 fetch_buyable_cash로 채움
             invested=balance.invested,
             unrealized_pnl=balance.unrealized_pnl,
             daily_pnl=balance.daily_pnl,
@@ -92,6 +98,32 @@ class PortfolioStateService:
             drawdown_pct=str(drawdown_pct),
         )
         return state
+
+    async def fetch_buyable_cash(
+        self, symbol: str, price: Decimal
+    ) -> Decimal:
+        """브로커의 주문가능현금(미수 제외)을 조회한다.
+
+        KIS의 ``inquire-psbl-order``는 종목·단가 필수이므로 대표 후보 1개의
+        symbol/price를 넘겨 계좌 수준 가용 현금의 근사치로 사용한다.
+        미수없는매수금액(``nrcvb_buy_amt``)은 대부분 종목에 무관하며, 종목
+        증거금률 차이로 약간의 편차만 존재한다.
+
+        Returns:
+            가용 현금 (KRW). 조회 실패 시 0. 호출부가 적절히 폴백 처리할 것.
+        """
+        if not symbol or price <= Decimal(0):
+            return Decimal(0)
+        try:
+            return await self._broker.get_buyable_cash(symbol, price)
+        except Exception:
+            logger.warning(
+                "portfolio_state.buyable_cash_query_failed",
+                account_id=self._account_id,
+                symbol=symbol,
+                exc_info=True,
+            )
+            return Decimal(0)
 
     # -- 섹터 배분 계산 --------------------------------------------------------
 

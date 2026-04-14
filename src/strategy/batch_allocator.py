@@ -88,10 +88,22 @@ class BatchBudgetAllocator:
             return []
 
         state = await self._portfolio_service.get_current_state()
-        cash = state.cash
         total_pv = state.total_value
 
-        # ── 1. 배치 예산 계산 ────────────────────────────────────────
+        # ── 1. 가용 현금 조회 (주문가능현금, 미수 제외) ─────────────
+        # state.cash(dnca_tot_amt)는 D+2 정산 전 당일 매수분을 차감하지 않아
+        # 미수 방지용으로 신뢰할 수 없다. 브로커의 주문가능현금 API를 사용.
+        # KIS는 symbol+price 필수이므로 첫 후보로 질의 → 계좌 레벨 근사값.
+        first_candidate = buy_decisions[0]
+        probe_price = first_candidate.price or Decimal(0)
+        buyable_cash = await self._portfolio_service.fetch_buyable_cash(
+            first_candidate.symbol, probe_price
+        )
+        # 폴백: 브로커가 0을 반환하면 보수적으로 state.cash 사용하지 말고 0 처리.
+        # (이 allocator 위에 있는 OrderExecutor cash gate가 최종 방어선.)
+        cash = buyable_cash
+
+        # ── 2. 배치 예산 계산 ────────────────────────────────────────
         batch_budget = self._compute_batch_budget(cash)
         min_alloc = Decimal(self._settings.BATCH_MIN_ALLOCATION_KRW)
 
@@ -100,6 +112,8 @@ class BatchBudgetAllocator:
                 "batch_allocator.budget_below_min",
                 account_id=account_id,
                 cash=str(cash),
+                buyable_cash=str(buyable_cash),
+                state_cash=str(state.cash),
                 batch_budget=str(batch_budget),
                 min_allocation=str(min_alloc),
                 candidate_count=len(buy_decisions),

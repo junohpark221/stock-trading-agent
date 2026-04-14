@@ -7,6 +7,7 @@ Return types use Pydantic domain models from ``src/core/models``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -92,6 +93,24 @@ class BrokerInterface(ABC):
         balance = await self.get_balance()
         positions = await self.get_positions()
         return balance, positions
+
+    @abstractmethod
+    async def get_buyable_cash(self, symbol: str, price: Decimal) -> Decimal:
+        """미수/신용 없이 매수 가능한 현금 한도를 조회한다 (KRW).
+
+        예수금총액(``dnca_tot_amt``)은 D+2 정산 전 당일 매수분을 차감하지
+        않으므로 가용 현금과 다르다. 이 메서드는 브로커가 보유한 **실제
+        주문가능현금**을 반환해야 한다 — KIS의 경우 TR ``TTTC8908R``의
+        ``nrcvb_buy_amt`` (미수없는매수금액).
+
+        Args:
+            symbol: 조회 대상 종목 코드 (KIS는 PDNO 필수). Mock/simulator는
+                심볼을 무시하고 계좌 전체 가용 현금을 반환해도 된다.
+            price: 주문 예정 단가. KIS는 종목증거금률 반영을 위해 단가 필요.
+
+        Returns:
+            미수 없이 매수 가능한 KRW 금액 (Decimal). 0이면 현금 부족.
+        """
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 

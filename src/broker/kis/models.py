@@ -198,6 +198,32 @@ class KISBalanceOutput2(BaseModel):
     evlu_pfls_smtl_amt: str = ""    # 평가손익 합계
 
 
+# ── 매수가능조회 (TTTC8908R/VTTC8908R output) ───────────────────────
+
+class KISPsblOrderOutput(BaseModel):
+    """매수가능조회 응답 — ``TTTC8908R``/``VTTC8908R`` ``output`` 객체.
+
+    KIS 엔드포인트 ``/uapi/domestic-stock/v1/trading/inquire-psbl-order``.
+
+    미수/신용 없이 매수 가능한 금액·수량을 조회한다.
+
+    주요 필드:
+    - ``nrcvb_buy_amt``: 미수없는매수금액 — **현금 한도 내 매수 가능 금액**
+    - ``nrcvb_buy_qty``: 미수없는매수수량 — 현금 한도 내 매수 가능 수량
+    - ``ord_psbl_cash``: 주문가능현금 (미수 포함, 사용 지양)
+    - ``max_buy_amt`` / ``max_buy_qty``: 미수 포함 최대치 (사용 지양)
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    ord_psbl_cash: str = ""         # 주문가능현금 (미수 포함)
+    nrcvb_buy_amt: str = ""         # 미수없는매수금액
+    nrcvb_buy_qty: str = ""         # 미수없는매수수량
+    max_buy_amt: str = ""           # 최대매수금액 (미수 포함)
+    max_buy_qty: str = ""           # 최대매수수량 (미수 포함)
+    psbl_qty_calc_unpr: str = ""    # 가능수량계산단가
+
+
 # ── 주문체결조회 (TTTC0081R/VTTC0081R output1 배열) ─────────────────
 
 class KISOrderCcldOutput(BaseModel):
@@ -241,6 +267,7 @@ __all__ = [
     "KISOrderCcldOutput",
     "KISBalanceOutput1",
     "KISBalanceOutput2",
+    "KISPsblOrderOutput",
     "_to_decimal",
     "_to_int",
 ]

@@ -37,6 +37,7 @@ from src.broker.kis.models import (
     KISOrderCcldOutput,
     KISOrderOutput,
     KISPriceOutput,
+    KISPsblOrderOutput,
     _to_decimal,
     _to_int,
 )
@@ -631,6 +632,54 @@ class KISClient(BrokerInterface):
         if self._credentials is not None:
             return self._credentials.is_paper
         return self._base_url == _KIS_PAPER_BASE_URL
+
+    async def get_buyable_cash(self, symbol: str, price: Decimal) -> Decimal:
+        """미수없는매수금액(``nrcvb_buy_amt``)을 조회한다.
+
+        KIS 매수가능조회 — TR ``TTTC8908R`` (실전) / ``VTTC8908R`` (모의).
+        엔드포인트: ``/uapi/domestic-stock/v1/trading/inquire-psbl-order``.
+
+        ``dnca_tot_amt``(예수금총액)은 D+2 정산 전 당일 매수분을 반영하지
+        않아 "가용 현금"으로 쓸 수 없다. 이 API는 KIS가 산정한 실제
+        미수 없는 매수 한도를 반환한다.
+
+        Args:
+            symbol: 종목 코드 (PDNO). 빈 문자열이면 0 반환.
+            price: 주문 예정 단가. 양수여야 함.
+
+        Returns:
+            미수 없이 매수 가능한 KRW 금액. 응답이 비어있으면 0.
+        """
+        if not symbol or price <= Decimal(0):
+            return Decimal(0)
+
+        is_paper = self._is_paper()
+        tr_id = "VTTC8908R" if is_paper else "TTTC8908R"
+
+        params: dict[str, str] = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "PDNO": symbol,
+            "ORD_UNPR": str(int(price)),
+            # 지정가(00) 기준 현금 한도 조회. 수량 산정이 목적이 아닌
+            # 금액 산정이므로 종목증거금률 영향이 적다.
+            "ORD_DVSN": "00",
+            "CMA_EVLU_AMT_ICLD_YN": "N",
+            "OVRS_ICLD_YN": "N",
+        }
+
+        data = await self._request(
+            "GET",
+            "/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            tr_id,
+            params=params,
+        )
+        raw_output = data.get("output")
+        if not raw_output:
+            return Decimal(0)
+
+        output = KISPsblOrderOutput.model_validate(raw_output)
+        return _to_decimal(output.nrcvb_buy_amt)
 
     # ── Account ───────────────────────────────────────────────────────
 

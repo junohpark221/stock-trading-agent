@@ -866,6 +866,65 @@ class TestKISClientGetBalance:
         assert bal.positions_count == 0
 
 
+class TestKISClientGetBuyableCash:
+    """get_buyable_cash (TTTC8908R): 미수없는매수금액 조회."""
+
+    @pytest.mark.asyncio
+    async def test_returns_nrcvb_buy_amt(self):
+        """정상 응답에서 nrcvb_buy_amt(미수없는매수금액)을 파싱한다."""
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output": {
+                    "ord_psbl_cash": "25000000",        # 미수 포함 한도
+                    "nrcvb_buy_amt": "10000000",        # 미수 없는 금액 (target)
+                    "max_buy_amt": "25000000",
+                    "max_buy_qty": "347",
+                    "nrcvb_buy_qty": "138",
+                },
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        buyable = await client.get_buyable_cash("005930", Decimal("72000"))
+        assert buyable == Decimal("10000000")
+
+    @pytest.mark.asyncio
+    async def test_empty_symbol_returns_zero(self):
+        """symbol이 비어있으면 네트워크 호출 없이 0 반환."""
+        client = _make_kis_client()
+        client._session.get = AsyncMock()
+
+        buyable = await client.get_buyable_cash("", Decimal("72000"))
+        assert buyable == Decimal(0)
+        client._session.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_zero_price_returns_zero(self):
+        """price가 0 이하이면 네트워크 호출 없이 0 반환."""
+        client = _make_kis_client()
+        client._session.get = AsyncMock()
+
+        buyable = await client.get_buyable_cash("005930", Decimal(0))
+        assert buyable == Decimal(0)
+        client._session.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_output_returns_zero(self):
+        """output 필드 부재 시 0 반환 (방어적 처리)."""
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "0", "msg_cd": "0000", "msg1": "ok"},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        buyable = await client.get_buyable_cash("005930", Decimal("72000"))
+        assert buyable == Decimal(0)
+
+
 class TestKISClientGetPositions:
     @pytest.mark.asyncio
     async def test_filters_zero_qty(self):

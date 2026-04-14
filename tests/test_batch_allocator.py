@@ -56,11 +56,19 @@ def _make_portfolio_state(cash: Decimal, total_value: Decimal | None = None) -> 
     )
 
 
-def _make_portfolio_service(cash: Decimal, total_value: Decimal | None = None) -> MagicMock:
+def _make_portfolio_service(
+    cash: Decimal,
+    total_value: Decimal | None = None,
+    buyable_cash: Decimal | None = None,
+) -> MagicMock:
     svc = MagicMock()
     svc.get_current_state = AsyncMock(
         return_value=_make_portfolio_state(cash, total_value),
     )
+    # fetch_buyable_cash 기본값: cash와 동일 (테스트에서 기존 기대치 유지).
+    # buyable_cash를 명시하면 분리된 값으로 시뮬레이션 가능.
+    effective_buyable = buyable_cash if buyable_cash is not None else cash
+    svc.fetch_buyable_cash = AsyncMock(return_value=effective_buyable)
     return svc
 
 
@@ -91,11 +99,15 @@ def _td(
 def _make_allocator(
     cash: Decimal,
     total_value: Decimal | None = None,
+    *,
+    buyable_cash: Decimal | None = None,
     **s_overrides,
 ) -> BatchBudgetAllocator:
     return BatchBudgetAllocator(
         settings=_make_settings(**s_overrides),
-        portfolio_service=_make_portfolio_service(cash, total_value),
+        portfolio_service=_make_portfolio_service(
+            cash, total_value, buyable_cash=buyable_cash
+        ),
     )
 
 
@@ -126,6 +138,36 @@ class TestEmptyAndSingle:
         alloc = _make_allocator(Decimal("30_000"))  # cash 3만
         td = _td("005930", price=Decimal("50000"), confidence=Decimal("0.9"))
         # batch_budget = 30000 < MIN_ALLOCATION_KRW=500_000 → 전체 드랍
+        result = await alloc.allocate([td])
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_uses_buyable_cash_not_state_cash(self):
+        """예수금(state.cash)=25M인데 주문가능현금(buyable)=10M이면 10M 기준 배분.
+
+        미수 방지 회귀 테스트: dnca_tot_amt(예수금)은 D+2 정산 지연으로
+        당일 매수분을 반영하지 않아 부정확하다. allocator는 반드시
+        broker.get_buyable_cash (nrcvb_buy_amt) 기준으로 예산을 잡아야 함.
+        """
+        alloc = _make_allocator(
+            cash=Decimal("25_000_000"),              # 예수금총액 (부정확)
+            buyable_cash=Decimal("10_000_000"),      # 실제 가용 현금
+            BATCH_BUDGET_PCT=100.0,
+        )
+        td = _td("005930", price=Decimal("50000"), confidence=Decimal("0.9"))
+        result = await alloc.allocate([td])
+        assert len(result) == 1
+        # 예수금 기준이면 500주, buyable 기준이면 200주여야 함
+        assert result[0].quantity == 200
+
+    @pytest.mark.asyncio
+    async def test_buyable_zero_drops_all_candidates(self):
+        """주문가능현금 0 → 예수금과 무관하게 전체 드랍."""
+        alloc = _make_allocator(
+            cash=Decimal("10_000_000"),
+            buyable_cash=Decimal(0),
+        )
+        td = _td("005930", price=Decimal("50000"), confidence=Decimal("0.9"))
         result = await alloc.allocate([td])
         assert result == []
 

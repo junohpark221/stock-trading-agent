@@ -246,6 +246,9 @@ def session_factory(fake_session):
 def mock_broker():
     broker = AsyncMock()
     broker.place_order = AsyncMock(return_value=_make_order_result())
+    # Cash gate: 기본적으로 충분한 가용 현금 반환 (기존 테스트는 cash gate 통과 가정).
+    # cash gate 자체를 검증하는 테스트는 override하여 낮은 값 반환.
+    broker.get_buyable_cash = AsyncMock(return_value=Decimal("1_000_000_000"))
     return broker
 
 
@@ -308,6 +311,7 @@ def mock_settings():
     settings.WEB_VERIFY_ENABLED = True
     settings.WEB_VERIFY_SKIP_ON_STOP_LOSS = True
     settings.ALERT_TELEGRAM_ENABLED = True
+    settings.ORDER_CASH_GATE_MODE = "reject"
     return settings
 
 
@@ -912,6 +916,7 @@ async def test_execute_entry_broker_override(executor, mock_broker):
     """broker 파라미터 전달 시 self._broker 대신 전달된 broker 사용."""
     alt_broker = AsyncMock()
     alt_broker.place_order = AsyncMock(return_value=_make_order_result())
+    alt_broker.get_buyable_cash = AsyncMock(return_value=Decimal("1_000_000_000"))
 
     td = _make_trade_decision()
     sid = uuid.uuid4()
@@ -980,6 +985,130 @@ async def test_execute_entry_default_account_id(executor, fake_session):
     assert result.success is True
     order_row = fake_session.added[0]
     assert order_row.account_id == "default"
+
+
+# ---------------------------------------------------------------------------
+# Cash Gate: 미수 방지
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cash_gate_reject_blocks_order_exceeding_buyable(
+    executor, mock_broker, mock_settings,
+):
+    """reject 모드: 주문 총액 > 주문가능현금 → 차단, place_order 미호출."""
+    mock_settings.ORDER_CASH_GATE_MODE = "reject"
+    # 주문 10주 * 72000 = 720,000 / 가용 현금 500,000 → 차단
+    mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("500_000"))
+
+    td = _make_trade_decision(quantity=10, price=Decimal("72000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is False
+    assert "주문가능현금 부족" in (result.error or "")
+    mock_broker.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cash_gate_shrink_adjusts_quantity_to_fit_buyable(
+    executor, mock_broker, mock_settings,
+):
+    """shrink 모드: 초과 시 수량을 buyable 내로 자동 축소하여 주문 진행."""
+    mock_settings.ORDER_CASH_GATE_MODE = "shrink"
+    # 주문 10주 * 72000 = 720,000, 가용 500,000 → 6주로 축소 (500000/72000=6.94→6)
+    mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("500_000"))
+    mock_broker.place_order = AsyncMock(return_value=_make_order_result(
+        filled_quantity=6,
+    ))
+
+    td = _make_trade_decision(quantity=10, price=Decimal("72000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    # place_order에 축소된 수량 전달되었는지 확인
+    call_kwargs = mock_broker.place_order.call_args.args[0]
+    assert call_kwargs.quantity == 6
+
+
+@pytest.mark.asyncio
+async def test_cash_gate_shrink_falls_back_to_reject_when_below_1_share(
+    executor, mock_broker, mock_settings,
+):
+    """shrink 모드에서 가용이 1주 가격보다 작으면 차단 동작."""
+    mock_settings.ORDER_CASH_GATE_MODE = "shrink"
+    # 가용 1만원 / 단가 7.2만원 → 0주 → reject 경로로 폴백
+    mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("10_000"))
+
+    td = _make_trade_decision(quantity=10, price=Decimal("72000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is False
+    mock_broker.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cash_gate_off_mode_skips_check(
+    executor, mock_broker, mock_settings,
+):
+    """off 모드: 가용 현금 0이어도 gate 미적용 → place_order 호출."""
+    mock_settings.ORDER_CASH_GATE_MODE = "off"
+    mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("0"))
+
+    td = _make_trade_decision(quantity=10, price=Decimal("72000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    mock_broker.place_order.assert_awaited_once()
+    # off 모드에서는 get_buyable_cash 자체를 호출하지 않아야 함
+    mock_broker.get_buyable_cash.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cash_gate_sell_skips_check(
+    executor, mock_broker, mock_settings,
+):
+    """SELL 주문은 현금 체크 생략 (리스크 감소 방향)."""
+    mock_settings.ORDER_CASH_GATE_MODE = "reject"
+    mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("0"))
+
+    td = _make_trade_decision(action=DecisionAction.SELL, quantity=10,
+                              price=Decimal("72000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    mock_broker.get_buyable_cash.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cash_gate_passes_when_sufficient(executor, mock_broker, mock_settings):
+    """주문 총액 <= 가용 현금: gate 통과, 수량 유지."""
+    mock_settings.ORDER_CASH_GATE_MODE = "reject"
+    mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("10_000_000"))
+
+    td = _make_trade_decision(quantity=10, price=Decimal("72000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    call_kwargs = mock_broker.place_order.call_args.args[0]
+    assert call_kwargs.quantity == 10
 
 
 # ---------------------------------------------------------------------------

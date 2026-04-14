@@ -89,13 +89,21 @@ class Settings(BaseSettings):
     MAX_DAILY_TRADES: int = 5                # 일일 최대 거래 횟수
 
     # ── Phase 4+: Batch Budget Allocation ─────────────────────────────
-    BATCH_BUDGET_PCT: float = 100.0          # 가용 현금 중 배치 예산 비율 (0~100)
+    BATCH_BUDGET_PCT: float = 80.0           # 가용 현금 중 배치 예산 비율 (0~100). 20% 안전 버퍼.
     BATCH_BUDGET_MAX_KRW: int = 0            # 배치 예산 절대 상한 (0=무제한)
     BATCH_TOP_N_CANDIDATES: int = 5          # 점수 상위 N개만 배분 대상
     BATCH_MIN_ALLOCATION_KRW: int = 500_000  # 한 종목 최소 할당액 (미만이면 드랍)
     BATCH_SCORE_W_CONFIDENCE: float = 0.7    # confidence 가중치
     BATCH_SCORE_W_RR: float = 0.3            # risk_reward 정규화 가중치
     BATCH_RR_CAP: float = 3.0                # risk_reward 정규화 상한
+
+    # ── Cash Gate (미수 방지) ─────────────────────────────────────────
+    # OrderExecutor가 place_order 직전에 브로커 주문가능현금(미수 제외)을
+    # 조회하여 초과 시 동작 방식 결정.
+    # - "reject": 초과 시 주문 차단 (기본, 안전)
+    # - "shrink": 초과 시 가용 현금 내 수량으로 자동 축소
+    # - "off": 체크 비활성 (KIS 이외 브로커 / 디버깅용)
+    ORDER_CASH_GATE_MODE: str = "reject"
 
     # ── Phase 5: Notifications ────────────────────────────────────────
     HUMAN_APPROVAL_REQUIRED: bool = True

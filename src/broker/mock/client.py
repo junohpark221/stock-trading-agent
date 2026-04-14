@@ -288,6 +288,15 @@ class InMemoryBroker(BrokerInterface):
         """Return all open positions (quantity > 0)."""
         return [p for p in self._positions.values() if p.quantity > 0]
 
+    async def get_buyable_cash(self, symbol: str, price: Decimal) -> Decimal:
+        """In-memory 브로커는 단순히 현재 보유 현금을 반환한다.
+
+        실제 KIS처럼 D+2 정산 지연이 없으므로 ``self._cash`` = 가용 현금.
+        ``symbol``/``price`` 는 인터페이스 호환을 위해 받지만 사용하지 않음.
+        """
+        del symbol, price  # Mock: account-level cash, symbol-agnostic
+        return self._cash
+
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _next_order_id(self) -> str:

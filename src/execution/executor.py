@@ -362,6 +362,102 @@ class OrderExecutor:
 
                 effective_quantity = risk_result.adjusted_quantity or modified_qty
 
+            # 5-a. Cash Gate (미수 방지): place_order 직전 브로커 주문가능현금 확인.
+            # dnca_tot_amt(예수금총액)는 D+2 정산 전이라 당일 매수분을 차감하지
+            # 않음 → 실제 가용은 TTTC8908R의 nrcvb_buy_amt만 정확. 초과 시 모드별
+            # 처리: reject=차단, shrink=수량 축소, off=비활성.
+            if side == OrderSide.BUY:
+                gate_mode = str(
+                    self._settings.ORDER_CASH_GATE_MODE or "reject"
+                ).lower()
+                if gate_mode != "off":
+                    buyable = await effective_broker.get_buyable_cash(symbol, price)
+                    order_total = Decimal(effective_quantity) * price
+
+                    if order_total > buyable:
+                        max_qty_by_cash = int(buyable / price) if price > 0 else 0
+
+                        if gate_mode == "shrink" and max_qty_by_cash >= 1:
+                            logger.warning(
+                                "executor.cash_gate.shrink",
+                                symbol=symbol,
+                                original_qty=effective_quantity,
+                                adjusted_qty=max_qty_by_cash,
+                                order_total=str(order_total),
+                                buyable=str(buyable),
+                                account_id=account_id,
+                            )
+                            did = await self._record_decision_safe(
+                                session_id=session_id, stage=DecisionStage.EXECUTION,
+                                decision=DecisionAction.APPROVE, symbol=symbol,
+                                reasoning=(
+                                    f"Cash gate 축소: {effective_quantity}주→"
+                                    f"{max_qty_by_cash}주 (가용={buyable})"
+                                ),
+                                parent_id=parent_decision_id,
+                                account_id=account_id,
+                                data_snapshot={
+                                    "order_id": order.id,
+                                    "gate_mode": gate_mode,
+                                    "original_qty": effective_quantity,
+                                    "adjusted_qty": max_qty_by_cash,
+                                    "order_total_krw": str(order_total),
+                                    "buyable_krw": str(buyable),
+                                },
+                            )
+                            if did:
+                                decision_ids.append(did)
+                            effective_quantity = max_qty_by_cash
+                        else:
+                            # reject 모드 또는 shrink인데 1주도 불가능
+                            reason = (
+                                f"주문가능현금 부족 — 필요={order_total:,} KRW, "
+                                f"가용={buyable:,} KRW"
+                            )
+                            logger.warning(
+                                "executor.cash_gate.reject",
+                                symbol=symbol,
+                                quantity=effective_quantity,
+                                order_total=str(order_total),
+                                buyable=str(buyable),
+                                account_id=account_id,
+                            )
+                            await self._update_order(
+                                order.id,
+                                status=OrderStatus.CANCELLED,
+                                rejection_reason=reason,
+                            )
+                            await self._notify_safe(
+                                MessageTemplates.rejection_notification(
+                                    account_label=account_label,
+                                    symbol=symbol, name=symbol, side=side,
+                                    reason=reason, stage="cash_gate",
+                                )
+                            )
+                            did = await self._record_decision_safe(
+                                session_id=session_id, stage=DecisionStage.EXECUTION,
+                                decision=DecisionAction.REJECT, symbol=symbol,
+                                reasoning=reason,
+                                parent_id=parent_decision_id,
+                                account_id=account_id,
+                                data_snapshot={
+                                    "order_id": order.id,
+                                    "gate_mode": gate_mode,
+                                    "order_total_krw": str(order_total),
+                                    "buyable_krw": str(buyable),
+                                },
+                            )
+                            if did:
+                                decision_ids.append(did)
+                            return self._fail_result(
+                                order=order, symbol=symbol, side=side,
+                                quantity=effective_quantity,
+                                approval_status=approval_status,
+                                web_verify_result=verification.result,
+                                decision_ids=decision_ids,
+                                error=reason,
+                            )
+
             # 6. 브로커 주문
             order_result = await effective_broker.place_order(OrderRequest(
                 symbol=symbol,

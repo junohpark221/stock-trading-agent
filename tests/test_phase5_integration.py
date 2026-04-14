@@ -238,6 +238,7 @@ def session_factory(fake_session):
 def mock_broker():
     broker = AsyncMock()
     broker.place_order = AsyncMock(return_value=_order_result())
+    broker.get_buyable_cash = AsyncMock(return_value=Decimal("1_000_000_000"))
     return broker
 
 
@@ -300,6 +301,7 @@ def mock_settings():
     settings.WEB_VERIFY_ENABLED = True
     settings.WEB_VERIFY_SKIP_ON_STOP_LOSS = True
     settings.ALERT_TELEGRAM_ENABLED = True
+    settings.ORDER_CASH_GATE_MODE = "reject"
     return settings
 
 

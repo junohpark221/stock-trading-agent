@@ -544,7 +544,8 @@ class PortfolioState(BaseModel):
 
     account_id: str = "default"
     total_value: Decimal
-    cash: Decimal
+    cash: Decimal                      # 예수금 총액 (dnca_tot_amt, D+2 반영 안됨)
+    buyable_cash: Decimal = Decimal(0) # 미수없는매수금액 (nrcvb_buy_amt, 진짜 가용)
     invested: Decimal
     unrealized_pnl: Decimal
     daily_pnl: Decimal

@@ -88,6 +88,15 @@ class Settings(BaseSettings):
     CORRELATION_THRESHOLD: float = 0.7       # 상관계수 임계치 (0~1)
     MAX_DAILY_TRADES: int = 5                # 일일 최대 거래 횟수
 
+    # ── Phase 4+: Batch Budget Allocation ─────────────────────────────
+    BATCH_BUDGET_PCT: float = 100.0          # 가용 현금 중 배치 예산 비율 (0~100)
+    BATCH_BUDGET_MAX_KRW: int = 0            # 배치 예산 절대 상한 (0=무제한)
+    BATCH_TOP_N_CANDIDATES: int = 5          # 점수 상위 N개만 배분 대상
+    BATCH_MIN_ALLOCATION_KRW: int = 500_000  # 한 종목 최소 할당액 (미만이면 드랍)
+    BATCH_SCORE_W_CONFIDENCE: float = 0.7    # confidence 가중치
+    BATCH_SCORE_W_RR: float = 0.3            # risk_reward 정규화 가중치
+    BATCH_RR_CAP: float = 3.0                # risk_reward 정규화 상한
+
     # ── Phase 5: Notifications ────────────────────────────────────────
     HUMAN_APPROVAL_REQUIRED: bool = True
     HUMAN_APPROVAL_TIMEOUT_SEC: int = 300

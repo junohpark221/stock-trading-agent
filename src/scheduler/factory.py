@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from src.report.generator import ReportGenerator
     from src.scheduler.monitor import TradingMonitor
     from src.strategy.base import Strategy
+    from src.strategy.batch_allocator import BatchBudgetAllocator
     from src.strategy.exit_checker import ExitConditionChecker
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
@@ -83,6 +84,7 @@ class AccountContext:
     investment_prompt: str
     risk_tolerance: str
     account_label: str  # "닉네임 (뒤4자리)"
+    allocator: BatchBudgetAllocator | None = None
     strategy: Strategy | None = None
 
 
@@ -420,6 +422,7 @@ class SchedulerFactory:
         from src.execution.executor import OrderExecutor
         from src.execution.exit_executor import ExitExecutionService
         from src.scheduler.monitor import TradingMonitor
+        from src.strategy.batch_allocator import BatchBudgetAllocator
         from src.strategy.exit_checker import ExitConditionChecker
         from src.strategy.portfolio_state import PortfolioStateService
         from src.strategy.position_manager import PositionManager
@@ -483,6 +486,12 @@ class SchedulerFactory:
             account_label=account_label,
         )
 
+        allocator = BatchBudgetAllocator(
+            settings=acct_settings,
+            portfolio_service=portfolio_service,
+            recorder=recorder,  # type: ignore[arg-type]
+        )
+
         # KISAuth — KISClient일 때만
         auth: KISAuth | None = None
         if not settings.USE_MOCK_BROKER and hasattr(broker, "_auth"):
@@ -533,6 +542,7 @@ class SchedulerFactory:
             investment_prompt=account.investment_prompt,
             risk_tolerance=getattr(account, "risk_tolerance", "moderate"),
             account_label=account_label,
+            allocator=allocator,
             strategy=strategy,
         )
 
@@ -665,6 +675,7 @@ class SchedulerFactory:
                     holidays=s.KR_HOLIDAYS,
                     investment_prompt=ctx.investment_prompt,
                     risk_tolerance=ctx.risk_tolerance,
+                    allocator=ctx.allocator,
                 ),
                 CronTrigger(
                     day_of_week=sw_days,
@@ -694,6 +705,7 @@ class SchedulerFactory:
                     market_open=s.MARKET_OPEN_TIME,
                     market_close=s.MARKET_CLOSE_TIME,
                     holidays=s.KR_HOLIDAYS,
+                    allocator=ctx.allocator,
                 ),
                 CronTrigger(
                     day_of_week=pa_days,

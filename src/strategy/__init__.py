@@ -1,6 +1,7 @@
 """Strategy engine — portfolio state, risk management, and strategy base class."""
 
 from src.strategy.base import Strategy
+from src.strategy.batch_allocator import BatchBudgetAllocator
 from src.strategy.exit_calculator import ExitPriceCalculator
 from src.strategy.exit_checker import ExitConditionChecker
 from src.strategy.memory_manager import AgentMemoryManager
@@ -20,6 +21,7 @@ from src.strategy.swing_trading import SwingTradingStrategy
 __all__ = [
     "AgentMemoryManager",
     "AlgoRiskManager",
+    "BatchBudgetAllocator",
     "ExitConditionChecker",
     "ExitPriceCalculator",
     "PortfolioStateService",

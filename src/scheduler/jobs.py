@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from src.report.generator import ReportGenerator
     from src.scheduler.monitor import TradingMonitor
     from src.strategy.base import Strategy
+    from src.strategy.batch_allocator import BatchBudgetAllocator
     from src.strategy.exit_checker import ExitConditionChecker
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
@@ -109,6 +110,7 @@ async def _execute_buy_decisions(
     market_open: str,
     market_close: str,
     holidays: str = "",
+    allocator: BatchBudgetAllocator | None = None,
 ) -> int:
     """PipelineResult의 BUY 결정을 실제 주문으로 실행. 장중에만 동작.
 
@@ -132,6 +134,23 @@ async def _execute_buy_decisions(
             account_id=account_id,
         )
         return 0
+
+    # 배치 예산 배분: 후보들을 가용 현금에 맞춰 순위·재사이징·필터.
+    if allocator is not None:
+        original_count = len(buy_decisions)
+        buy_decisions = await allocator.allocate(
+            buy_decisions,
+            account_id=account_id,
+            session_id=pipeline_result.session_id,
+        )
+        logger.info(
+            "job.buy_execution.batch_allocated",
+            account_id=account_id,
+            original_count=original_count,
+            allocated_count=len(buy_decisions),
+        )
+        if not buy_decisions:
+            return 0
 
     executed = 0
     for td in buy_decisions:
@@ -181,6 +200,7 @@ async def job_swing_analysis(
     market_open: str = "09:00",
     market_close: str = "15:30",
     holidays: str = "",
+    allocator: BatchBudgetAllocator | None = None,
 ) -> None:
     """스윙 전략 시그널 스캔 + BUY 자동 실행. Daily 01:00 UTC (10:00 KST). 계좌별."""
     # scan_universe()로 필터링, 없으면 전체 watchlist fallback
@@ -223,6 +243,7 @@ async def job_swing_analysis(
             market_open=market_open,
             market_close=market_close,
             holidays=holidays,
+            allocator=allocator,
         )
         if executed:
             logger.info("job.swing_analysis.orders_executed", count=executed, account_id=account_id)
@@ -240,6 +261,7 @@ async def job_position_analysis(
     market_open: str = "09:00",
     market_close: str = "15:30",
     holidays: str = "",
+    allocator: BatchBudgetAllocator | None = None,
 ) -> None:
     """보유 포지션 심층 분석 + BUY 자동 실행. Wed & Sat 01:30 UTC (10:30 KST). 계좌별."""
     positions = await position_manager.get_open(account_id=account_id)
@@ -273,6 +295,7 @@ async def job_position_analysis(
             market_open=market_open,
             market_close=market_close,
             holidays=holidays,
+            allocator=allocator,
         )
         if executed:
             logger.info("job.position_analysis.orders_executed", count=executed, account_id=account_id)

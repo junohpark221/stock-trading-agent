@@ -70,6 +70,7 @@ class DecisionStage(StrEnum):
     STOCK_ANALYSIS = "stock_analysis"
     RISK_CHECK = "risk_check"
     TRADE_DECISION = "trade_decision"
+    BATCH_ALLOCATION = "batch_allocation"
     APPROVAL = "approval"
     EXECUTION = "execution"
     EXIT = "exit"

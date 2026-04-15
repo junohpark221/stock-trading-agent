@@ -130,12 +130,11 @@ async def _build_executor(account_id: str = "default"):
     from src.config import get_settings
     from src.data.cache import get_cache
     from src.db.session import get_session_factory
-    from src.execution.approval import ApprovalManager
     from src.execution.executor import OrderExecutor
     from src.execution.web_verify import WebSearchVerifier
     from src.llm.cost_tracker import CostTracker
     from src.llm.router import LLMRouter
-    from src.main import get_telegram_bot
+    from src.main import get_approval_manager, get_telegram_bot
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
     from src.strategy.risk_manager import AlgoRiskManager
@@ -157,21 +156,17 @@ async def _build_executor(account_id: str = "default"):
     )
     recorder = DecisionRecorder(session_factory)
 
-    # Notification — 앱 전역 싱글톤 사용 (lifespan에서 start/stop 관리)
+    # Notification/Approval — 앱 전역 싱글톤 사용. ApprovalManager를 여기서
+    # 새로 만들면 TelegramBot._callback_handler가 덮어써져 스케줄러에서 보낸
+    # 기존 승인 요청의 버튼 클릭이 "not_pending_or_already_timed_out"으로
+    # 무시된다.
     telegram_bot = get_telegram_bot()
+    approval_manager = get_approval_manager()
 
     # Execution components
     web_verifier = WebSearchVerifier(
         llm_router=llm_router, recorder=recorder, settings=settings,
     )
-    approval_manager = ApprovalManager(
-        telegram_bot=telegram_bot,
-        recorder=recorder,
-        session_factory=session_factory,
-        cache=cache,
-        settings=settings,
-    )
-    await approval_manager.initialize()
 
     # Strategy components
     portfolio_service = PortfolioStateService(

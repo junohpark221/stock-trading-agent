@@ -24,10 +24,12 @@ from src.config import get_settings
 from src.core.models import HealthStatus
 from src.data.cache import close_cache, init_cache
 from src.db.session import close_db, get_db_session, init_db
+from src.execution.approval import ApprovalManager
 from src.notification.telegram import TelegramBot
 
 _redis_client: Redis | None = None
 _telegram_bot: TelegramBot | None = None
+_approval_manager: ApprovalManager | None = None
 _scheduler_engine: object | None = None  # SchedulerEngine (lazy import)
 _broker_registry: object | None = None  # BrokerRegistry (lazy import)
 _execution_stream: object | None = None  # ExecutionStreamManager (lazy import)
@@ -76,6 +78,21 @@ def get_telegram_bot() -> TelegramBot:
     return _telegram_bot
 
 
+def get_approval_manager() -> ApprovalManager:
+    """현재 ApprovalManager 싱글톤 반환. 초기화 전이면 RuntimeError.
+
+    여러 인스턴스가 생기면 ``TelegramBot._callback_handler``가 서로를 덮어써
+    버튼 클릭이 이전 인스턴스의 pending 상태에 도달하지 못한다. 따라서
+    전역 싱글톤으로 유지하고 모든 호출부(스케줄러/API/커맨드/백오피스)는
+    같은 인스턴스를 공유해야 한다.
+    """
+    if _approval_manager is None:
+        raise RuntimeError(
+            "ApprovalManager not initialized. App lifespan not started."
+        )
+    return _approval_manager
+
+
 def get_scheduler():
     """현재 SchedulerEngine 싱글톤 반환. 미초기화 시 RuntimeError."""
     if _scheduler_engine is None:
@@ -93,7 +110,8 @@ def get_broker_registry():
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""
-    global _redis_client, _telegram_bot, _scheduler_engine, _broker_registry
+    global _redis_client, _telegram_bot, _approval_manager
+    global _scheduler_engine, _broker_registry
     global _execution_stream
 
     settings = get_settings()
@@ -130,6 +148,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await _telegram_bot.start()
     log.info("telegram_bot_initialized")
 
+    # ApprovalManager 싱글톤 — 모든 호출부가 같은 pending 상태를 공유해야
+    # 텔레그램 콜백이 올바른 인스턴스로 전달된다. Telegram 봇 기동 직후,
+    # 스케줄러 조립 이전에 초기화하여 콜백 핸들러 등록을 1회만 수행.
+    from src.agent.decision_recorder import DecisionRecorder
+
+    _approval_manager = ApprovalManager(
+        telegram_bot=_telegram_bot,
+        recorder=DecisionRecorder(session_factory),
+        session_factory=session_factory,
+        cache=cache,
+        settings=settings,
+    )
+    await _approval_manager.initialize()
+    log.info("approval_manager_initialized")
+
     # Scheduler — TelegramBot 초기화 후 조립 (job들이 telegram_bot 사용)
     if settings.SCHEDULER_ENABLED:
         from src.scheduler.factory import SchedulerFactory
@@ -143,6 +176,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             session_factory=session_factory,
             cache=cache,
             telegram_bot=_telegram_bot,
+            approval_manager=_approval_manager,
         )
         await _scheduler_engine.start()
         log.info(
@@ -183,6 +217,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await _telegram_bot.stop()
         _telegram_bot = None
         log.info("telegram_bot_stopped")
+
+    _approval_manager = None
 
     close_cache()
 

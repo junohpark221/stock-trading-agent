@@ -305,6 +305,7 @@ async def test_create_scheduler_mock_broker_legacy():
             session_factory=session_factory,
             cache=MagicMock(),
             telegram_bot=AsyncMock(),
+            approval_manager=AsyncMock(),
         )
 
     from src.broker.registry import BrokerRegistry
@@ -347,6 +348,7 @@ async def test_create_scheduler_no_accounts_no_key():
             session_factory=session_factory,
             cache=MagicMock(),
             telegram_bot=AsyncMock(),
+            approval_manager=AsyncMock(),
         )
 
     # 공통 작업: weekly, monthly, llm_cost + reconcile (midday, eod)

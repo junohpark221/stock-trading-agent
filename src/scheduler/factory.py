@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from src.config import Settings
     from src.data.cache import RedisCache
     from src.data.providers.base import DataProvider
+    from src.execution.approval import ApprovalManager
     from src.execution.execution_stream import ExecutionStreamManager
     from src.execution.executor import OrderExecutor
     from src.execution.exit_executor import ExitExecutionService
@@ -105,6 +106,7 @@ class SchedulerFactory:
         session_factory: async_sessionmaker[AsyncSession],
         cache: RedisCache,
         telegram_bot: TelegramBot,
+        approval_manager: ApprovalManager,
     ) -> tuple[SchedulerEngine, BrokerRegistry, ExecutionStreamManager]:
         """서비스 그래프 조립 → SchedulerEngine 반환.
 
@@ -120,7 +122,6 @@ class SchedulerFactory:
         from src.agent.decision_recorder import DecisionRecorder
         from src.agent.tools.context import ToolContext
         from src.agent.tools.registry import ToolRegistry
-        from src.execution.approval import ApprovalManager
         from src.execution.web_verify import WebSearchVerifier
         from src.llm.cost_tracker import CostTracker
         from src.llm.router import LLMRouter
@@ -201,14 +202,11 @@ class SchedulerFactory:
             settings=settings,
             cache=cache,
         )
-        approval_manager = ApprovalManager(
-            telegram_bot=telegram_bot,
-            recorder=recorder,
-            session_factory=session_factory,
-            cache=cache,
-            settings=settings,
-        )
-        await approval_manager.initialize()
+
+        # ApprovalManager는 main.py에서 생성한 전역 싱글톤을 주입받아 사용.
+        # 여기서 새 인스턴스를 만들면 TelegramBot 콜백 핸들러가 덮어써져
+        # 다른 호출부(예: /buy 커맨드, 백오피스 수동 주문)의 pending 승인이
+        # 유실된다.
 
         data_fetcher = ReportDataFetcher(session_factory)
         generator = ReportGenerator(

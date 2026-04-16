@@ -23,6 +23,12 @@ from src.core.enums import ApprovalStatus, ExitReason, OrderSide, OrderStatus
 from src.db.models.account import Account
 from src.db.models.execution import Execution, Order
 from src.db.models.strategy import PositionRecord
+
+_TERMINAL_NON_FILL = frozenset({
+    OrderStatus.CANCELLED.value,
+    OrderStatus.REJECTED.value,
+    OrderStatus.FAILED.value,
+})
 from src.notification.templates import MessageTemplates
 
 if TYPE_CHECKING:
@@ -122,6 +128,19 @@ class FillFinalizer:
         """EOD sweep — 미체결 주문을 CANCELLED(expired)로 정리."""
         if order.status != OrderStatus.SUBMITTED.value:
             return
+
+        # 고아 포지션 정리: WS/reconciler가 조기 생성한 포지션이 있으면 닫기
+        if order.position_id:
+            try:
+                await self._close_orphaned_position(order.position_id, order.symbol)
+            except Exception:
+                logger.critical(
+                    "fill_finalizer.orphan_position_close_failed",
+                    order_id=order.id,
+                    position_id=order.position_id,
+                    exc_info=True,
+                )
+
         await self._update_order(
             order.id,
             status=OrderStatus.CANCELLED,
@@ -298,6 +317,57 @@ class FillFinalizer:
             reason=reason,
             stage="risk_blocked",
         ))
+
+    # ── Orphaned position cleanup ────────────────────────────────────
+
+    async def _close_orphaned_position(
+        self, position_id: int, symbol: str,
+    ) -> None:
+        """미체결 주문에 조기 생성된 PositionRecord를 닫는다 (PnL=0)."""
+        today = datetime.now(UTC).date()
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PositionRecord).where(
+                    PositionRecord.id == position_id,
+                    PositionRecord.status == "open",
+                ),
+            )
+            record = result.scalar_one_or_none()
+            if record is None:
+                return
+            record.status = "closed"
+            record.exit_price = record.entry_price
+            record.exit_date = today
+            record.exit_reason = ExitReason.EXPIRED.value
+            record.realized_pnl = Decimal("0")
+            await session.commit()
+        logger.warning(
+            "fill_finalizer.orphan_position_closed",
+            position_id=position_id, symbol=symbol,
+        )
+
+    async def cleanup_orphaned_positions(self) -> int:
+        """1회성 안전망: Order가 모두 취소/거부/실패인 open 포지션을 닫는다."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PositionRecord).where(PositionRecord.status == "open"),
+            )
+            open_positions = list(result.scalars().all())
+
+        closed = 0
+        for pos in open_positions:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(Order).where(Order.position_id == pos.id),
+                )
+                orders = list(result.scalars().all())
+
+            if orders and all(o.status in _TERMINAL_NON_FILL for o in orders):
+                await self._close_orphaned_position(pos.id, pos.symbol)
+                closed += 1
+
+        logger.info("fill_finalizer.cleanup_orphaned_positions", closed=closed)
+        return closed
 
     # ── DB helpers ────────────────────────────────────────────────────
 

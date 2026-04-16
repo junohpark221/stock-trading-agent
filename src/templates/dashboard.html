@@ -120,4 +120,18 @@
     <p>오늘 매매 활동이 없습니다.</p>
     {% endif %}
 </section>
+
+<!-- 관리 도구 -->
+<section>
+    <h2>관리 도구</h2>
+    {% if cleanup_msg %}
+    <article style="background:#e8f5e9;border-left:3px solid #2e7d32;padding:0.5rem 1rem;">
+        {{ cleanup_msg }}
+    </article>
+    {% endif %}
+    <form method="post" action="/admin/cleanup-orphaned-positions" style="display:inline;">
+        <button type="submit" class="secondary outline" onclick="return confirm('미체결 주문에 의해 생성된 고아 포지션을 정리합니다. 계속하시겠습니까?')">고아 포지션 정리</button>
+    </form>
+    <small>미체결 주문으로 인해 잘못 남아있는 보유 포지션을 일괄 정리합니다.</small>
+</section>
 {% endblock %}

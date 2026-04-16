@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from src.core.enums import OrderStatus
 from src.core.models import DailyReportData, PerformanceMetrics, WeeklyReportData
 from src.report.data_fetcher import ReportDataFetcher
 from src.report.metrics import PerformanceCalculator
@@ -61,7 +62,7 @@ class ReportGenerator:
 
         # 데이터 수집
         snapshot = await self._fetcher.get_latest_snapshot(account_id=account_id)
-        orders = await self._fetcher.get_todays_orders(account_id=account_id)
+        all_orders = await self._fetcher.get_todays_orders(account_id=account_id)
         open_positions = await self._fetcher.get_open_positions(account_id=account_id)
         budget_status = await self._cost_tracker.get_budget_status()
         usage_stats = await self._cost_tracker.get_usage_stats(
@@ -113,19 +114,26 @@ class ReportGenerator:
             else _ZERO
         )
 
-        # trades_today
+        # trades_today — 체결(FILLED) 주문만 포함
         trades_today = [
             {
                 "symbol": o.symbol,
                 "side": o.side,
-                "quantity": o.quantity,
-                "price": str(o.price),
+                "quantity": o.filled_quantity or o.quantity,
+                "price": str(o.filled_price or o.price),
                 "status": o.status,
                 "filled_price": str(o.filled_price) if o.filled_price else None,
                 "executed_at": o.executed_at.isoformat() if o.executed_at else None,
             }
-            for o in orders
+            for o in all_orders
+            if o.status == OrderStatus.FILLED.value
         ]
+        pending_orders_count = sum(
+            1 for o in all_orders if o.status == OrderStatus.SUBMITTED.value
+        )
+        cancelled_orders_count = sum(
+            1 for o in all_orders if o.status == OrderStatus.CANCELLED.value
+        )
 
         # sector_allocations (JSONB float → Decimal 변환)
         sector_allocations = {
@@ -154,6 +162,8 @@ class ReportGenerator:
             cash_pct=cash_pct,
             positions_count=positions_count,
             trades_today=trades_today,
+            pending_orders_count=pending_orders_count,
+            cancelled_orders_count=cancelled_orders_count,
             cumulative_return_pct=cumulative_return_pct,
             sector_allocations=sector_allocations,
             warnings=warnings,

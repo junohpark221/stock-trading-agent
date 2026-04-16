@@ -205,7 +205,7 @@ class TestDailyReport:
     def test_empty_trades(self, daily_report_data: DailyReportData) -> None:
         daily_report_data.trades_today = []
         result = MessageTemplates.daily_report(daily_report_data)
-        assert "거래 없음" in result
+        assert "체결 없음" in result
 
     def test_portfolio_section(self, daily_report_data: DailyReportData) -> None:
         result = MessageTemplates.daily_report(daily_report_data)

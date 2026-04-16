@@ -397,18 +397,22 @@ class MessageTemplates:
         # 섹션 3: 오늘의 거래
         lines.append("")
         if data.trades_today:
-            lines.append(f"<b>📈 오늘의 거래</b> ({len(data.trades_today)}건)")
+            lines.append(f"<b>📈 오늘의 거래</b> ({len(data.trades_today)}건 체결)")
             for t in data.trades_today:
                 side = t.get("side", "")
                 emoji = _SIDE_EMOJI.get(side, "⚪")
                 side_kr = _SIDE_KR.get(side, str(side))
                 symbol = t.get("symbol", "")
                 qty = t.get("quantity", 0)
-                price = t.get("price", "0")
+                price = t.get("filled_price") or t.get("price", "0")
                 lines.append(f"{emoji} {symbol} {side_kr} {qty:,}주 @ {int(Decimal(str(price))):,}")
         else:
             lines.append("<b>📈 오늘의 거래</b>")
-            lines.append("• 오늘 거래 없음")
+            lines.append("• 오늘 체결 없음")
+        if data.pending_orders_count > 0:
+            lines.append(f"⏳ 미체결: {data.pending_orders_count}건")
+        if data.cancelled_orders_count > 0:
+            lines.append(f"🚫 취소: {data.cancelled_orders_count}건")
 
         # 섹션 4: 포트폴리오 현황
         lines.extend([

@@ -24,6 +24,7 @@ from src.db.models.backtest import BacktestRun, BacktestTrade
 from src.db.models.llm import DecisionLog
 from src.db.models.market_data import StockMaster
 from src.db.models.scheduler import JobExecution
+from src.db.models.execution import Order
 from src.db.models.strategy import PositionRecord
 from src.db.session import get_db_session, get_session_factory
 from src.report.data_fetcher import ReportDataFetcher
@@ -61,6 +62,7 @@ async def logout(request: Request):
 @router.get("/", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def dashboard(
     request: Request,
+    cleanup_msg: str | None = Query(None),
     session: AsyncSession = Depends(get_db_session),
 ):
     """GET /admin/ — 대시보드: 시스템 상태 + 계좌 현황 + 오늘 매매."""
@@ -132,6 +134,7 @@ async def dashboard(
         "accounts": account_cards,
         "recent_orders": recent_orders,
         "order_summary": order_summary,
+        "cleanup_msg": cleanup_msg,
     })
 
 
@@ -369,12 +372,14 @@ async def account_detail(
     view = await fetch_portfolio_view(account_id)
     fetcher = ReportDataFetcher(get_session_factory())
     positions = await fetcher.get_open_positions(account_id=account_id)
+    pending_orders = await fetcher.get_pending_orders(account_id=account_id)
 
     return templates.TemplateResponse("account_detail.html", {
         "request": request,
         "account": account,
         "snapshot": view,
         "positions": positions,
+        "pending_orders": pending_orders,
         "manual_order_success": order_success,
         "manual_order_error": order_error,
     })
@@ -1173,3 +1178,57 @@ async def decision_session_detail(
         "chain": chain,
         "session_id": str(session_id),
     })
+
+
+# ── Cleanup ──────────────────────────────────────────────────────────────
+
+
+@router.post("/cleanup-orphaned-positions", dependencies=[Depends(require_admin)])
+async def cleanup_orphaned_positions(request: Request):
+    """POST /admin/cleanup-orphaned-positions — 고아 포지션(미체결 주문 잔여) 일괄 정리."""
+    from src.core.enums import ExitReason, OrderStatus
+
+    session_factory = get_session_factory()
+    today = date.today()
+    terminal_statuses = {
+        OrderStatus.CANCELLED.value,
+        OrderStatus.REJECTED.value,
+        OrderStatus.FAILED.value,
+    }
+
+    async with session_factory() as session:
+        result = await session.execute(
+            select(PositionRecord).where(PositionRecord.status == "open"),
+        )
+        open_positions = list(result.scalars().all())
+
+    closed = 0
+    for pos in open_positions:
+        async with session_factory() as session:
+            result = await session.execute(
+                select(Order).where(Order.position_id == pos.id),
+            )
+            orders = list(result.scalars().all())
+
+        if orders and all(o.status in terminal_statuses for o in orders):
+            async with session_factory() as session:
+                result = await session.execute(
+                    select(PositionRecord).where(
+                        PositionRecord.id == pos.id,
+                        PositionRecord.status == "open",
+                    ),
+                )
+                record = result.scalar_one_or_none()
+                if record:
+                    record.status = "closed"
+                    record.exit_price = record.entry_price
+                    record.exit_date = today
+                    record.exit_reason = ExitReason.EXPIRED.value
+                    record.realized_pnl = Decimal("0")
+                    await session.commit()
+                    closed += 1
+
+    logger.info("admin.cleanup_orphaned_positions", closed=closed)
+    return RedirectResponse(
+        f"/admin/?cleanup_msg=고아 포지션 {closed}건 정리 완료", status_code=303,
+    )

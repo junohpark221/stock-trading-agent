@@ -789,6 +789,8 @@ class DailyReportData(BaseModel):
     cash_pct: Decimal
     positions_count: int
     trades_today: list[dict] = []
+    pending_orders_count: int = 0
+    cancelled_orders_count: int = 0
     cumulative_return_pct: Decimal
     sector_allocations: dict[str, Decimal] = {}
     warnings: list[str] = []

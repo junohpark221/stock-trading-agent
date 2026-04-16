@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy import Date, func, select
 
+from src.core.enums import OrderStatus
 from src.db.models.execution import Execution, Order
 from src.db.models.strategy import PortfolioSnapshot, PositionRecord
 
@@ -91,6 +92,21 @@ class ReportDataFetcher:
             stmt = (
                 select(Order)
                 .where(func.cast(Order.created_at, Date) == date.today())
+                .order_by(Order.created_at.asc())
+            )
+            if account_id is not None:
+                stmt = stmt.where(Order.account_id == account_id)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_pending_orders(
+        self, *, account_id: str | None = None,
+    ) -> list[Order]:
+        """현재 미체결 주문 (status='submitted')."""
+        async with self._session_factory() as session:
+            stmt = (
+                select(Order)
+                .where(Order.status == OrderStatus.SUBMITTED.value)
                 .order_by(Order.created_at.asc())
             )
             if account_id is not None:

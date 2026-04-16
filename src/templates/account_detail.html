@@ -117,6 +117,41 @@
     {% endif %}
 </section>
 
+<!-- 미체결 주문 -->
+<section>
+    <h2>미체결 주문 ({{ pending_orders|length }}건)</h2>
+    {% if pending_orders %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>종목</th>
+                    <th>구분</th>
+                    <th>수량</th>
+                    <th>주문가</th>
+                    <th>접수시각</th>
+                    <th>주문번호</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in pending_orders %}
+                <tr>
+                    <td>{{ order.symbol }}</td>
+                    <td>{{ "매수" if order.side == "buy" else "매도" }}</td>
+                    <td>{{ "{:,}".format(order.quantity) }}</td>
+                    <td>{{ "{:,.0f}".format(order.price) }}원</td>
+                    <td>{{ order.created_at.strftime("%H:%M:%S") if order.created_at else "-" }}</td>
+                    <td>{{ order.broker_order_id or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>미체결 주문이 없습니다.</p>
+    {% endif %}
+</section>
+
 <!-- 수동 주문 -->
 <section>
     <h2>수동 주문</h2>

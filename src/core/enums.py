@@ -199,6 +199,7 @@ class ExitReason(StrEnum):
     LLM_SIGNAL = "llm_signal"
     DRAWDOWN = "drawdown"
     MANUAL = "manual"
+    EXPIRED = "expired"
 
 
 # ---------------------------------------------------------------------------

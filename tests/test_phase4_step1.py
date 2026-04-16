@@ -67,6 +67,7 @@ class TestExitReason:
         ("LLM_SIGNAL", "llm_signal"),
         ("DRAWDOWN", "drawdown"),
         ("MANUAL", "manual"),
+        ("EXPIRED", "expired"),
     ]
 
     def test_all_values(self):
@@ -78,7 +79,7 @@ class TestExitReason:
             assert ExitReason(value).value == value
 
     def test_member_count(self):
-        assert len(ExitReason) == 8
+        assert len(ExitReason) == 9
 
     def test_invalid_value(self):
         with pytest.raises(ValueError):

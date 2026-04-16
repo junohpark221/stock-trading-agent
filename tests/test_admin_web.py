@@ -175,6 +175,7 @@ class TestAccountDetail:
         ):
             fetcher = MockFetcher.return_value
             fetcher.get_open_positions = AsyncMock(return_value=[])
+            fetcher.get_pending_orders = AsyncMock(return_value=[])
 
             async with _client() as c:
                 r = await c.get("/admin/accounts/acc-1")

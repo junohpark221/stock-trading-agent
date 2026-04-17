@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from src.data.providers.base import DataProvider
     from src.execution.executor import OrderExecutor
     from src.execution.exit_executor import ExitExecutionService
-    from src.execution.reconciler import OrderReconciler
+    from src.execution.reconciler import OrderReconciler, PositionReconciler
     from src.notification.telegram import TelegramBot
     from src.report.generator import ReportGenerator
     from src.scheduler.monitor import TradingMonitor
@@ -497,3 +497,22 @@ async def job_reconcile_open_orders(
     """
     processed = await reconciler.run(eod=eod)
     logger.info("job.reconcile_open_orders.done", processed=processed, eod=eod)
+
+
+async def job_reconcile_positions(
+    *,
+    position_reconciler: PositionReconciler,
+) -> None:
+    """브로커 보유 포지션 vs DB open 포지션 정합성 검증.
+
+    브로커에 없는 DB 포지션을 닫고 연결된 주문을 보정한다.
+    15:50 KST (EOD order reconcile 이후) 1회 실행.
+    """
+    result = await position_reconciler.reconcile()
+    logger.info(
+        "job.reconcile_positions.done",
+        closed=result.closed_count,
+        order_corrected=result.order_corrected_count,
+        broker_symbols=result.broker_symbol_count,
+        db_open=result.db_open_count,
+    )

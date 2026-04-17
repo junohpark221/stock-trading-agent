@@ -1185,50 +1185,21 @@ async def decision_session_detail(
 
 @router.post("/cleanup-orphaned-positions", dependencies=[Depends(require_admin)])
 async def cleanup_orphaned_positions(request: Request):
-    """POST /admin/cleanup-orphaned-positions — 고아 포지션(미체결 주문 잔여) 일괄 정리."""
-    from src.core.enums import ExitReason, OrderStatus
+    """POST /admin/cleanup-orphaned-positions — 브로커-DB 포지션 정합성 검증."""
+    from src.execution.reconciler import PositionReconciler
+    from src.main import get_broker_registry
 
-    session_factory = get_session_factory()
-    today = date.today()
-    terminal_statuses = {
-        OrderStatus.CANCELLED.value,
-        OrderStatus.REJECTED.value,
-        OrderStatus.FAILED.value,
-    }
-
-    async with session_factory() as session:
-        result = await session.execute(
-            select(PositionRecord).where(PositionRecord.status == "open"),
-        )
-        open_positions = list(result.scalars().all())
-
-    closed = 0
-    for pos in open_positions:
-        async with session_factory() as session:
-            result = await session.execute(
-                select(Order).where(Order.position_id == pos.id),
-            )
-            orders = list(result.scalars().all())
-
-        if orders and all(o.status in terminal_statuses for o in orders):
-            async with session_factory() as session:
-                result = await session.execute(
-                    select(PositionRecord).where(
-                        PositionRecord.id == pos.id,
-                        PositionRecord.status == "open",
-                    ),
-                )
-                record = result.scalar_one_or_none()
-                if record:
-                    record.status = "closed"
-                    record.exit_price = record.entry_price
-                    record.exit_date = today
-                    record.exit_reason = ExitReason.EXPIRED.value
-                    record.realized_pnl = Decimal("0")
-                    await session.commit()
-                    closed += 1
-
-    logger.info("admin.cleanup_orphaned_positions", closed=closed)
-    return RedirectResponse(
-        f"/admin/?cleanup_msg=고아 포지션 {closed}건 정리 완료", status_code=303,
+    reconciler = PositionReconciler(
+        broker_registry=get_broker_registry(),
+        session_factory=get_session_factory(),
     )
+    result = await reconciler.reconcile()
+
+    msg = (
+        f"포지션 {result.closed_count}건 정리, "
+        f"주문 {result.order_corrected_count}건 보정 "
+        f"(브로커: {result.broker_symbol_count}종목, "
+        f"DB: {result.db_open_count}종목)"
+    )
+    logger.info("admin.cleanup_orphaned_positions", **vars(result))
+    return RedirectResponse(f"/admin/?cleanup_msg={msg}", status_code=303)

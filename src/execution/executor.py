@@ -92,8 +92,26 @@ def _event_to_order_result(
     fallback_quantity: int,
 ) -> OrderResult:
     """WS ExecutionEvent + 원 접수응답을 체결된 OrderResult로 병합."""
-    filled_qty = int(getattr(event, "filled_quantity", 0)) or fallback_quantity
-    filled_price = Decimal(str(getattr(event, "filled_price", submitted.price))) or submitted.price
+    filled_qty = int(getattr(event, "filled_quantity", 0))
+    filled_price = Decimal(str(getattr(event, "filled_price", 0)))
+
+    # 체결수량이 0이면 아직 미체결 — SUBMITTED 상태로 반환
+    if filled_qty <= 0:
+        return OrderResult(
+            account_id=submitted.account_id,
+            order_id=submitted.order_id,
+            symbol=submitted.symbol,
+            side=submitted.side,
+            order_type=submitted.order_type,
+            quantity=submitted.quantity,
+            price=submitted.price,
+            status=OrderStatus.SUBMITTED,
+            filled_quantity=0,
+            filled_price=None,
+            commission=submitted.commission,
+            timestamp=getattr(event, "timestamp", submitted.timestamp),
+        )
+
     return OrderResult(
         account_id=submitted.account_id,
         order_id=submitted.order_id,
@@ -104,7 +122,7 @@ def _event_to_order_result(
         price=submitted.price,
         status=OrderStatus.FILLED,
         filled_quantity=filled_qty,
-        filled_price=filled_price,
+        filled_price=filled_price if filled_price > 0 else submitted.price,
         commission=submitted.commission,
         timestamp=getattr(event, "timestamp", submitted.timestamp),
     )
@@ -588,6 +606,21 @@ class OrderExecutor:
                         error=f"KIS 거부: {event.rejected_reason or '-'}",
                     )
 
+                # 체결이 아닌 이벤트(접수/정정 통보)면 pending 처리
+                if not event.is_filled:
+                    logger.warning(
+                        "executor.entry_event_not_filled",
+                        order_id=order.id,
+                        broker_order_id=order_result.order_id,
+                    )
+                    return self._pending_result(
+                        order=order, order_result=order_result,
+                        symbol=symbol, side=side, quantity=effective_quantity,
+                        approval_status=approval_status,
+                        web_verify_result=verification.result,
+                        decision_ids=decision_ids,
+                    )
+
                 filled_result = _event_to_order_result(
                     event=event, submitted=order_result, fallback_quantity=effective_quantity,
                 )
@@ -998,6 +1031,21 @@ class OrderExecutor:
                         approval_status=approval_status,
                         web_verify_result=verification.result, decision_ids=decision_ids,
                         error=f"KIS 거부: {event.rejected_reason or '-'}",
+                    )
+
+                # 체결이 아닌 이벤트(접수/정정 통보)면 pending 처리
+                if not event.is_filled:
+                    logger.warning(
+                        "executor.exit_event_not_filled",
+                        order_id=order.id,
+                        broker_order_id=order_result.order_id,
+                    )
+                    return self._pending_result(
+                        order=order, order_result=order_result,
+                        symbol=symbol, side=side, quantity=quantity,
+                        approval_status=approval_status,
+                        web_verify_result=verification.result,
+                        decision_ids=decision_ids,
                     )
 
                 filled_result = _event_to_order_result(

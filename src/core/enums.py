@@ -200,6 +200,7 @@ class ExitReason(StrEnum):
     DRAWDOWN = "drawdown"
     MANUAL = "manual"
     EXPIRED = "expired"
+    RECONCILED = "reconciled"
 
 
 # ---------------------------------------------------------------------------

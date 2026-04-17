@@ -167,6 +167,15 @@ class ExecutionStreamManager:
 
     async def _on_event(self, event: ExecutionEvent) -> None:
         """Primary entry point invoked by KISExecutionStream."""
+        # 접수/정정 통보는 무시 — 체결(is_filled) 또는 거부(is_rejected)만 처리
+        if not event.is_filled and not event.is_rejected:
+            logger.debug(
+                "execution_stream.skip_non_terminal_event",
+                broker_order_id=event.broker_order_id,
+                symbol=getattr(event, "symbol", ""),
+            )
+            return
+
         async with self._lock:
             entry = self._waiters.get(event.broker_order_id)
             if entry is None:

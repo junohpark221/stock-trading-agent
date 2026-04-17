@@ -28,6 +28,7 @@ from src.scheduler.jobs import (
     job_monthly_report,
     job_position_analysis,
     job_reconcile_open_orders,
+    job_reconcile_positions,
     job_stop_loss_check,
     job_swing_analysis,
     job_token_refresh,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     from src.execution.execution_stream import ExecutionStreamManager
     from src.execution.executor import OrderExecutor
     from src.execution.exit_executor import ExitExecutionService
+    from src.execution.reconciler import OrderReconciler, PositionReconciler
     from src.notification.telegram import TelegramBot
     from src.report.generator import ReportGenerator
     from src.scheduler.monitor import TradingMonitor
@@ -239,7 +241,7 @@ class SchedulerFactory:
         # ── 4-2. FillFinalizer + ExecutionStreamManager + OrderReconciler ─
         from src.execution.execution_stream import ExecutionStreamManager
         from src.execution.fill_finalizer import FillFinalizer
-        from src.execution.reconciler import OrderReconciler
+        from src.execution.reconciler import OrderReconciler, PositionReconciler
         from src.strategy.position_manager import PositionManager
 
         shared_position_manager = PositionManager(session_factory)
@@ -257,6 +259,10 @@ class SchedulerFactory:
         reconciler = OrderReconciler(
             broker_registry=registry,
             fill_finalizer=fill_finalizer,
+        )
+        position_reconciler = PositionReconciler(
+            broker_registry=registry,
+            session_factory=session_factory,
         )
 
         # ── 5. 계좌별 AccountContext 생성 ─────────────────────────────
@@ -305,6 +311,7 @@ class SchedulerFactory:
             telegram_bot=telegram_bot,
             settings=settings,
             reconciler=reconciler,
+            position_reconciler=position_reconciler,
         )
 
         # 계좌별 작업 등록 (account_index로 배치 시차 실행)
@@ -556,6 +563,7 @@ class SchedulerFactory:
         telegram_bot: TelegramBot,
         settings: Settings,
         reconciler: OrderReconciler | None = None,
+        position_reconciler: PositionReconciler | None = None,
     ) -> None:
         """공통 작업 등록 (계좌 수에 무관하게 1회씩)."""
         s = settings
@@ -615,6 +623,21 @@ class SchedulerFactory:
                 partial(job_reconcile_open_orders, reconciler=reconciler, eod=True),
                 CronTrigger(
                     day_of_week=rc_days, hour=eod_h, minute=eod_m,
+                    timezone="Asia/Seoul",
+                ),
+            )
+
+        # reconcile_positions — 15:50 KST 브로커-DB 포지션 정합성 검증
+        if position_reconciler is not None:
+            rc_days = SchedulerEngine._parse_day_of_week(s.RECONCILE_DAYS)
+            engine.register_job(
+                "reconcile_positions",
+                partial(
+                    job_reconcile_positions,
+                    position_reconciler=position_reconciler,
+                ),
+                CronTrigger(
+                    day_of_week=rc_days, hour=15, minute=50,
                     timezone="Asia/Seoul",
                 ),
             )

@@ -186,6 +186,7 @@ class StrategyType(StrEnum):
 
     POSITION = "position"  # 주~월 단위 (중장기)
     SWING = "swing"        # 일~주 단위 (단기~중기)
+    MANUAL = "manual"      # 브로커 직접 체결 등 전략 외 보유 종목
 
 
 class ExitReason(StrEnum):

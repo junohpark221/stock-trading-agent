@@ -503,15 +503,19 @@ async def job_reconcile_positions(
     *,
     position_reconciler: PositionReconciler,
 ) -> None:
-    """브로커 보유 포지션 vs DB open 포지션 정합성 검증.
+    """브로커 보유 포지션 vs DB open 포지션 양방향 동기화.
 
-    브로커에 없는 DB 포지션을 닫고 연결된 주문을 보정한다.
-    15:50 KST (EOD order reconcile 이후) 1회 실행.
+    - DB only  → closed (exit_reason=reconciled)
+    - broker only → 신규 생성 (strategy=manual)
+    - 수량/단가 불일치 → DB 갱신
+    장중 9:00–16:00 KST 매시 정각 + 15:50 KST EOD 실행.
     """
     result = await position_reconciler.reconcile()
     logger.info(
         "job.reconcile_positions.done",
         closed=result.closed_count,
+        created=result.created_count,
+        qty_updated=result.qty_updated_count,
         order_corrected=result.order_corrected_count,
         broker_symbols=result.broker_symbol_count,
         db_open=result.db_open_count,

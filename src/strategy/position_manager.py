@@ -320,3 +320,53 @@ class PositionManager:
             id=position_id,
             new_stop_loss=str(new_stop_loss),
         )
+
+    async def update_quantity(
+        self,
+        position_id: int,
+        *,
+        quantity: int,
+        avg_cost: Decimal,
+    ) -> PositionRecord:
+        """수량·평균단가 갱신 (브로커 정합성 보정용).
+
+        Parameters
+        ----------
+        position_id: 포지션 ID
+        quantity: 브로커 실보유 수량
+        avg_cost: 브로커 평균단가
+
+        Raises
+        ------
+        DatabaseError: 포지션을 찾을 수 없거나 이미 청산된 경우
+        """
+        try:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(PositionRecord).where(PositionRecord.id == position_id)
+                )
+                record = result.scalar_one_or_none()
+
+                if record is None:
+                    raise DatabaseError(f"Position not found: id={position_id}")
+                if record.status == "closed":
+                    raise DatabaseError(
+                        f"Cannot update closed position: id={position_id}"
+                    )
+
+                record.quantity = quantity
+                record.avg_cost = avg_cost
+                await session.commit()
+                await session.refresh(record)
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(f"Quantity update failed: {exc}") from exc
+
+        logger.info(
+            "position.quantity_updated",
+            id=position_id,
+            quantity=quantity,
+            avg_cost=str(avg_cost),
+        )
+        return record

@@ -263,6 +263,7 @@ class SchedulerFactory:
         position_reconciler = PositionReconciler(
             broker_registry=registry,
             session_factory=session_factory,
+            position_manager=shared_position_manager,
         )
 
         # ── 5. 계좌별 AccountContext 생성 ─────────────────────────────
@@ -627,7 +628,7 @@ class SchedulerFactory:
                 ),
             )
 
-        # reconcile_positions — 15:50 KST 브로커-DB 포지션 정합성 검증
+        # reconcile_positions — 15:50 KST 브로커-DB 포지션 정합성 검증 (EOD 확정)
         if position_reconciler is not None:
             rc_days = SchedulerEngine._parse_day_of_week(s.RECONCILE_DAYS)
             engine.register_job(
@@ -638,6 +639,19 @@ class SchedulerFactory:
                 ),
                 CronTrigger(
                     day_of_week=rc_days, hour=15, minute=50,
+                    timezone="Asia/Seoul",
+                ),
+            )
+
+            # sync_positions_intraday — 9:00~16:00 KST 매시 정각 양방향 동기화
+            engine.register_job(
+                "sync_positions_intraday",
+                partial(
+                    job_reconcile_positions,
+                    position_reconciler=position_reconciler,
+                ),
+                CronTrigger(
+                    day_of_week=rc_days, hour="9-16", minute=0,
                     timezone="Asia/Seoul",
                 ),
             )

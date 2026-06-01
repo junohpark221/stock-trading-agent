@@ -1,5 +1,5 @@
 """OrderReconciler — REST 기반 SUBMITTED 주문 체결 안전망.
-PositionReconciler — 브로커-DB 포지션 정합성 검증.
+PositionReconciler — 브로커-DB 포지션 양방향 정합성 동기화.
 
 OrderReconciler:
 WS 체결통보(ExecutionStreamManager)가 놓친 체결을 두 시점에 정리한다:
@@ -10,8 +10,12 @@ WS 체결통보(ExecutionStreamManager)가 놓친 체결을 두 시점에 정리
 ``FillFinalizer`` 공용 서비스를 통해 DB/포지션/알림을 반영한다.
 
 PositionReconciler:
-브로커 실제 보유 종목과 DB open 포지션을 비교하여, 브로커에 없는 포지션을
-닫고 연결된 주문을 보정한다. 15:50 KST 정기 작업 또는 백오피스 버튼으로 실행.
+브로커 실보유 vs DB open 포지션을 3-way 비교하여 완전 동기화한다:
+- Case 1 (DB only)  : DB에 있지만 브로커에 없는 포지션 → closed 처리
+- Case 2 (broker only): 브로커에 있지만 DB에 없는 포지션 → 신규 생성 (strategy=manual)
+- Case 3 (mismatch) : 수량·평균단가가 다른 포지션 → DB 갱신
+
+9:00–16:00 KST 매시 정각 + 15:50 KST EOD 실행.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy import select, update
 
-from src.core.enums import ExitReason, OrderStatus
+from src.core.enums import ExitReason, OrderStatus, StrategyType
 from src.db.models.execution import Order
 from src.db.models.strategy import PositionRecord
 
@@ -33,6 +37,10 @@ if TYPE_CHECKING:
 
     from src.broker.registry import BrokerRegistry
     from src.execution.fill_finalizer import FillFinalizer
+    from src.strategy.position_manager import PositionManager
+
+# 브로커에서 신규 발견된 포지션의 기본 손절 비율 (평균단가 대비)
+_DEFAULT_STOP_PCT = Decimal("0.05")
 
 logger = structlog.get_logger(__name__)
 
@@ -133,19 +141,22 @@ class OrderReconciler:
 class ReconcileResult:
     """PositionReconciler.reconcile() 결과."""
 
-    closed_count: int = 0           # 닫은 포지션 수
+    closed_count: int = 0           # 닫은 포지션 수 (DB only)
     order_corrected_count: int = 0  # 보정한 주문 수
     broker_symbol_count: int = 0    # 브로커 실제 보유 종목 수 (전 계좌 합산)
     db_open_count: int = 0          # 정리 전 DB open 포지션 수
+    created_count: int = 0          # 브로커에만 있어서 신규 생성한 포지션 수
+    qty_updated_count: int = 0      # 수량·단가 불일치로 갱신한 포지션 수
 
 
 class PositionReconciler:
-    """브로커 실보유 vs DB open 포지션 정합성 검증 + 주문 보정.
+    """브로커 실보유 vs DB open 포지션 양방향 동기화.
 
     Parameters
     ----------
     broker_registry: 계좌별 BrokerInterface
     session_factory: DB 세션 팩토리
+    position_manager: PositionRecord CRUD 관리자 (신규 생성·수량 갱신용)
     """
 
     def __init__(
@@ -153,15 +164,18 @@ class PositionReconciler:
         *,
         broker_registry: BrokerRegistry,
         session_factory: async_sessionmaker[AsyncSession],
+        position_manager: PositionManager | None = None,
     ) -> None:
         self._registry = broker_registry
         self._session_factory = session_factory
+        self._position_manager = position_manager
 
     async def reconcile(self) -> ReconcileResult:
-        """전 계좌에 대해 브로커-DB 포지션 정합성 검증.
+        """전 계좌에 대해 브로커-DB 포지션 3-way 동기화.
 
-        브로커에 없는 DB open 포지션 → closed (exit_reason=reconciled, pnl=0).
-        해당 포지션에 연결된 FILLED 주문 → CANCELLED로 보정.
+        - Case 1 (DB only)  : closed 처리 (exit_reason=reconciled)
+        - Case 2 (broker only): 신규 PositionRecord 생성 (strategy=manual)
+        - Case 3 (mismatch) : quantity·avg_cost DB 갱신
         """
         result = ReconcileResult()
 
@@ -177,6 +191,8 @@ class PositionReconciler:
         logger.info(
             "position_reconciler.done",
             closed=result.closed_count,
+            created=result.created_count,
+            qty_updated=result.qty_updated_count,
             order_corrected=result.order_corrected_count,
             broker_symbols=result.broker_symbol_count,
             db_open=result.db_open_count,
@@ -190,8 +206,8 @@ class PositionReconciler:
 
         assert isinstance(broker, BrokerInterface)
         broker_positions = await broker.get_positions()
-        broker_symbols = {p.symbol for p in broker_positions}
-        result.broker_symbol_count += len(broker_symbols)
+        broker_by_symbol = {p.symbol: p for p in broker_positions}
+        result.broker_symbol_count += len(broker_by_symbol)
 
         async with self._session_factory() as session:
             rows = await session.execute(
@@ -204,12 +220,13 @@ class PositionReconciler:
 
         result.db_open_count += len(open_positions)
         today = datetime.now(UTC).date()
+        db_by_symbol = {pos.symbol: pos for pos in open_positions}
 
+        # Case 1: DB에 있지만 브로커에 없는 포지션 → closed
         for pos in open_positions:
-            if pos.symbol in broker_symbols:
+            if pos.symbol in broker_by_symbol:
                 continue
 
-            # 브로커에 없는 포지션 → 닫기
             async with self._session_factory() as session:
                 record = (
                     await session.execute(
@@ -235,9 +252,63 @@ class PositionReconciler:
                 symbol=pos.symbol,
             )
 
-            # 연결된 FILLED 주문 → CANCELLED로 보정
             corrected = await self._correct_linked_orders(pos.id)
             result.order_corrected_count += corrected
+
+        # Case 2: 브로커에 있지만 DB에 없는 포지션 → 신규 생성
+        if self._position_manager is not None:
+            for symbol, bp in broker_by_symbol.items():
+                if symbol in db_by_symbol:
+                    continue
+
+                entry_date = (
+                    bp.entry_date.date()
+                    if isinstance(bp.entry_date, datetime)
+                    else today
+                )
+                stop_loss = bp.average_cost * (Decimal("1") - _DEFAULT_STOP_PCT)
+                await self._position_manager.create(
+                    symbol=symbol,
+                    strategy_type=StrategyType.MANUAL.value,
+                    quantity=bp.quantity,
+                    entry_price=bp.average_cost,
+                    stop_loss_price=stop_loss,
+                    account_id=account_id,
+                )
+                result.created_count += 1
+                logger.warning(
+                    "position_reconciler.created_missing",
+                    account_id=account_id,
+                    symbol=symbol,
+                    quantity=bp.quantity,
+                    avg_cost=str(bp.average_cost),
+                )
+
+        # Case 3: 양쪽에 있지만 수량·단가가 다른 포지션 → DB 갱신
+        if self._position_manager is not None:
+            for symbol, bp in broker_by_symbol.items():
+                db_pos = db_by_symbol.get(symbol)
+                if db_pos is None:
+                    continue
+                if db_pos.quantity == bp.quantity and db_pos.avg_cost == bp.average_cost:
+                    continue
+
+                await self._position_manager.update_quantity(
+                    db_pos.id,
+                    quantity=bp.quantity,
+                    avg_cost=bp.average_cost,
+                )
+                result.qty_updated_count += 1
+                logger.info(
+                    "position_reconciler.qty_updated",
+                    account_id=account_id,
+                    position_id=db_pos.id,
+                    symbol=symbol,
+                    old_qty=db_pos.quantity,
+                    new_qty=bp.quantity,
+                    old_avg_cost=str(db_pos.avg_cost),
+                    new_avg_cost=str(bp.average_cost),
+                )
 
     async def _correct_linked_orders(self, position_id: int) -> int:
         """position_id에 연결된 FILLED 주문을 CANCELLED로 보정."""

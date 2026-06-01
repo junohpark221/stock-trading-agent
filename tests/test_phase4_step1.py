@@ -52,7 +52,7 @@ class TestStrategyType:
             StrategyType("invalid")
 
     def test_all_members(self):
-        assert len(StrategyType) == 2
+        assert len(StrategyType) == 3
 
 
 class TestExitReason:

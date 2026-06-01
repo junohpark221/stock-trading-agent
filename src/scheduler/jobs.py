@@ -314,6 +314,9 @@ async def job_stop_loss_check(
     monitor: TradingMonitor,
     account_id: str = "default",
     account_label: str = "",
+    market_open: str = "09:00",
+    market_close: str = "15:30",
+    holidays: str = "",
 ) -> None:
     """손절/익절/트레일링 스톱 체크 + 자동 청산 + 근접 알림. 5분 간격. 계좌별 실행.
 
@@ -323,6 +326,10 @@ async def job_stop_loss_check(
     3. exit_signals 수집 → ExitExecutionService로 일괄 청산
     4. TradingMonitor.check_all() → 근접/편중/예산/낙폭 알림
     """
+    if not _is_market_open(market_open=market_open, market_close=market_close, holidays=holidays):
+        logger.debug("job.stop_loss_check.skip", reason="market_closed", account_id=account_id)
+        return
+
     positions = await position_manager.get_open(account_id=account_id)
     if not positions:
         logger.debug("job.stop_loss_check.skip", reason="no_open_positions", account_id=account_id)

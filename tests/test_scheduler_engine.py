@@ -425,6 +425,8 @@ class TestJobStopLossCheck:
             portfolio_service=portfolio_service,
             broker=broker,
             monitor=monitor,
+            market_open="00:00",
+            market_close="23:59",
         )
 
         exit_service.process_exit_signals.assert_not_awaited()
@@ -450,6 +452,8 @@ class TestJobStopLossCheck:
             monitor=monitor,
             account_id="acct-1",
             account_label="공격형 (1234)",
+            market_open="00:00",
+            market_close="23:59",
         )
 
         position_manager.get_open.assert_awaited_once_with(account_id="acct-1")
@@ -514,6 +518,8 @@ class TestJobStopLossCheck:
             monitor=monitor,
             account_id="acct-1",
             account_label="공격형 (1234)",
+            market_open="00:00",
+            market_close="23:59",
         )
 
         exit_service.process_exit_signals.assert_awaited_once()

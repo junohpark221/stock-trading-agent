@@ -333,6 +333,8 @@ class TestJobAccountParams:
             monitor=monitor,
             account_id="acct-1",
             account_label="공격형 (1234)",
+            market_open="00:00",
+            market_close="23:59",
         )
 
         position_manager.get_open.assert_awaited_once_with(account_id="acct-1")

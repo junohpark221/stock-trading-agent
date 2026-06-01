@@ -383,6 +383,7 @@ async def test_stop_loss_check_auto_execution(
     scheduler, session_factory, broker, mock_send
 ):
     """손절 체크 → 자동 청산: 현재가 < stop_loss → 포지션 closed."""
+    from unittest.mock import patch
     from sqlalchemy import select
 
     from src.core.enums import MarketType, PositionStatus
@@ -435,9 +436,10 @@ async def test_stop_loss_check_auto_execution(
         entry_date=datetime.now(timezone.utc),
     )
 
-    # 3. stop_loss_check 실행
+    # 3. stop_loss_check 실행 (장 시간 외 실행 차단 우회)
     mock_send.reset_mock()
-    await scheduler.run_job_now("stop_loss_check")
+    with patch("src.scheduler.jobs._is_market_open", return_value=True):
+        await scheduler.run_job_now("stop_loss_check")
 
     # 4. DB 재조회 — 포지션 closed 확인
     async with session_factory() as session:

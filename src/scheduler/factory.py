@@ -575,7 +575,7 @@ class SchedulerFactory:
             engine.register_job(
                 "market_data_collect",
                 partial(job_market_data_collect, provider=provider, symbols=watchlist_symbols),
-                CronTrigger(hour=md_h, minute=md_m, timezone="UTC"),
+                CronTrigger(day_of_week="mon-fri", hour=md_h, minute=md_m, timezone="UTC"),
             )
 
         # weekly_report (통합 리포트, account_id 없음)
@@ -763,6 +763,9 @@ class SchedulerFactory:
                 monitor=ctx.monitor,
                 account_id=aid,
                 account_label=ctx.account_label,
+                market_open=s.MARKET_OPEN_TIME,
+                market_close=s.MARKET_CLOSE_TIME,
+                holidays=s.KR_HOLIDAYS,
             ),
             IntervalTrigger(minutes=s.STOP_LOSS_CHECK_INTERVAL_MIN),
         )

@@ -60,7 +60,7 @@ _SYSTEM_PROMPT = (
 
 _USER_PROMPT_TEMPLATE = (
     "다음 종목의 최신 뉴스/이슈를 웹검색으로 확인해주세요.\n\n"
-    "종목코드: {symbol}\n"
+    "종목코드: {symbol_line}\n"
     "주문방향: {side}\n\n"
     "## 확인 항목\n"
     "1. 긴급 공시 (상장폐지, 관리종목 지정, 투자주의 환기종목 등)\n"
@@ -108,6 +108,7 @@ class WebSearchVerifier:
         session_id: uuid.UUID,
         parent_decision_id: uuid.UUID | None = None,
         is_stop_loss: bool = False,
+        company_name: str | None = None,
     ) -> WebVerification:
         """종목에 대한 최종 웹 검증을 수행한다.
 
@@ -131,7 +132,12 @@ class WebSearchVerifier:
             logger.info("web_verify.skipped", reason="stop_loss", symbol=symbol)
             return self._safe_default(symbol, summary="손절 주문 — 웹 검증 생략")
 
-        # 3. 캐시 체크 (같은 종목+방향의 최근 검증 결과 재사용)
+        # 3. 매도 주문 + 매도 스킵 설정 (오진 방지: 종목코드만으론 LLM 웹검색 정확도 낮음)
+        if side == OrderSide.SELL and self._settings.WEB_VERIFY_SKIP_ON_SELL:
+            logger.info("web_verify.skipped", reason="sell_order", symbol=symbol)
+            return self._safe_default(symbol, summary="매도 주문 — 웹 검증 생략")
+
+        # 4. 캐시 체크 (같은 종목+방향의 최근 검증 결과 재사용)
         cache_key = f"{symbol}:{side.value}"
         if self._cache is not None:
             try:
@@ -142,9 +148,9 @@ class WebSearchVerifier:
             except Exception:
                 pass  # 캐시 실패 시 무시, LLM 호출로 진행
 
-        # 4. LLM 웹검색 호출
+        # 5. LLM 웹검색 호출
         try:
-            messages = self._build_messages(symbol, side)
+            messages = self._build_messages(symbol, side, company_name)
             parsed, routing_result = await self._llm_router.route_structured(
                 agent_type=AgentType.WEB_VERIFIER,
                 messages=messages,
@@ -226,14 +232,17 @@ class WebSearchVerifier:
                 symbol, summary="웹 검증 실패 — fail-open 기본값 적용"
             )
 
-    def _build_messages(self, symbol: str, side: OrderSide) -> list[LLMMessage]:
+    def _build_messages(
+        self, symbol: str, side: OrderSide, company_name: str | None
+    ) -> list[LLMMessage]:
         """웹검색 프롬프트를 구성한다."""
         side_kr = _SIDE_KR.get(side, str(side))
+        symbol_line = f"{symbol} ({company_name})" if company_name else symbol
         return [
             LLMMessage(role=MessageRole.SYSTEM, content=_SYSTEM_PROMPT),
             LLMMessage(
                 role=MessageRole.USER,
-                content=_USER_PROMPT_TEMPLATE.format(symbol=symbol, side=side_kr),
+                content=_USER_PROMPT_TEMPLATE.format(symbol_line=symbol_line, side=side_kr),
             ),
         ]
 

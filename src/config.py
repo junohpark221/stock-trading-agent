@@ -112,6 +112,7 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: str = ""
     WEB_VERIFY_ENABLED: bool = True
     WEB_VERIFY_SKIP_ON_STOP_LOSS: bool = True
+    WEB_VERIFY_SKIP_ON_SELL: bool = True
     AUTO_EXECUTE_MAX_PORTFOLIO_PCT: float = 5.0
     USE_MOCK_BROKER: bool = False
 

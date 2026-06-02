@@ -459,8 +459,8 @@ class SwingTradingStrategy(Strategy):
 
         # ── 2. 트레일링 스톱 ──
         # 수익률이 TRAILING_ACTIVATE_PCT(3%) 이상일 때 활성화
-        # 진입 후 최고가 대비 TRAILING_TRAIL_PCT(2%) 하락하면 수익 보호 청산
-        # 포지션 트레이딩(ATR 기반 동적)과 달리 고정 2% 비율 사용
+        # 진입 후 최고가 대비 TRAILING_TRAIL_PCT(5%) 하락하면 수익 보호 청산
+        # 포지션 트레이딩(ATR 기반 동적)과 달리 고정 5% 비율 사용
         if unrealized_pnl_pct >= self.TRAILING_ACTIVATE_PCT:
             # 진입 후 최고가 조회
             ohlcv_list = await self._broker.get_daily_ohlcv(

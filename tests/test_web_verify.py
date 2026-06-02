@@ -75,6 +75,7 @@ def mock_settings():
     settings = MagicMock()
     settings.WEB_VERIFY_ENABLED = True
     settings.WEB_VERIFY_SKIP_ON_STOP_LOSS = True
+    settings.WEB_VERIFY_SKIP_ON_SELL = False  # 기존 테스트는 SELL에서도 LLM 호출 기대
     return settings
 
 
@@ -393,3 +394,82 @@ async def test_prompt_sell_side(verifier, mock_router, session_id):
     user_content = mock_router.route_structured.call_args.kwargs["messages"][1].content
     assert "000660" in user_content
     assert "매도" in user_content
+
+
+# ---------------------------------------------------------------------------
+# 9. WEB_VERIFY_SKIP_ON_SELL — 매도 스킵 동작 확인
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_sell_skip_returns_safe(verifier, mock_settings, mock_router, session_id):
+    """WEB_VERIFY_SKIP_ON_SELL=True이면 SELL 주문은 즉시 SAFE 반환."""
+    mock_settings.WEB_VERIFY_SKIP_ON_SELL = True
+
+    result = await verifier.verify(
+        symbol="005930", side=OrderSide.SELL, session_id=session_id
+    )
+
+    assert result.result == WebVerifyResult.SAFE
+    assert "매도" in result.summary
+    mock_router.route_structured.assert_not_called()
+
+
+@pytest.mark.asyncio()
+async def test_sell_skip_disabled_calls_llm(verifier, mock_settings, mock_router, session_id):
+    """WEB_VERIFY_SKIP_ON_SELL=False이면 SELL도 LLM 검증 수행."""
+    mock_settings.WEB_VERIFY_SKIP_ON_SELL = False
+    parsed = _WebVerifyOutput(
+        result="safe", summary="정상", issues=[], news_count=2, reasoning="이상 없음"
+    )
+    mock_router.route_structured.return_value = (parsed, _make_routing_result(parsed))
+
+    result = await verifier.verify(
+        symbol="005930", side=OrderSide.SELL, session_id=session_id
+    )
+
+    assert result.result == WebVerifyResult.SAFE
+    mock_router.route_structured.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 10. company_name 프롬프트 포함 확인
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_prompt_includes_company_name(verifier, mock_router, session_id):
+    """company_name이 전달되면 프롬프트에 '종목코드 (회사명)' 형태로 포함."""
+    parsed = _WebVerifyOutput(
+        result="safe", summary="정상", issues=[], news_count=3, reasoning="이상 없음"
+    )
+    mock_router.route_structured.return_value = (parsed, _make_routing_result(parsed))
+
+    await verifier.verify(
+        symbol="005930",
+        side=OrderSide.BUY,
+        session_id=session_id,
+        company_name="삼성전자",
+    )
+
+    user_content = mock_router.route_structured.call_args.kwargs["messages"][1].content
+    assert "005930 (삼성전자)" in user_content
+
+
+@pytest.mark.asyncio()
+async def test_prompt_without_company_name(verifier, mock_router, session_id):
+    """company_name이 없으면 프롬프트에 종목코드만 포함."""
+    parsed = _WebVerifyOutput(
+        result="safe", summary="정상", issues=[], news_count=3, reasoning="이상 없음"
+    )
+    mock_router.route_structured.return_value = (parsed, _make_routing_result(parsed))
+
+    await verifier.verify(
+        symbol="005930",
+        side=OrderSide.BUY,
+        session_id=session_id,
+    )
+
+    user_content = mock_router.route_structured.call_args.kwargs["messages"][1].content
+    assert "005930" in user_content
+    assert "005930 (" not in user_content  # 회사명 괄호 없음

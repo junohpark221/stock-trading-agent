@@ -303,12 +303,12 @@ class TestCheckExitConditions:
         entry_date = date.today() - timedelta(days=5)
         position = _make_position_record(entry_date=entry_date)
 
-        # 진입 후 최고가 74000 → 트레일링 스톱 = 74000 × 0.98 = 72520
-        # 현재가 72500 < 72520 → 트레일링 발동
+        # 진입 후 최고가 77000 → 트레일링 스톱 = 77000 × 0.95 = 73150
+        # 현재가 72500 < 73150 → 트레일링 발동
         ohlcv_after_entry = []
         for i in range(5):
             d = entry_date + timedelta(days=i)
-            high_val = 74000 if i == 2 else 72000  # 3일차에 고점
+            high_val = 77000 if i == 2 else 72000  # 3일차에 고점
             ohlcv_after_entry.append(
                 OHLCV(
                     symbol="005930",
@@ -796,7 +796,7 @@ class TestConstants:
         assert Decimal("3.0") == SwingTradingStrategy.STOP_LOSS_PCT
         assert Decimal("5.0") == SwingTradingStrategy.TAKE_PROFIT_PCT
         assert Decimal("3.0") == SwingTradingStrategy.TRAILING_ACTIVATE_PCT
-        assert Decimal("2.0") == SwingTradingStrategy.TRAILING_TRAIL_PCT
+        assert Decimal("5.0") == SwingTradingStrategy.TRAILING_TRAIL_PCT
         assert SwingTradingStrategy.MAX_HOLDING_DAYS == 10
 
     def test_exit_price_calculation(self):

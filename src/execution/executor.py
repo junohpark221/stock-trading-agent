@@ -226,6 +226,17 @@ class OrderExecutor:
             )
 
         try:
+            # 0. 회사명 조회 (웹 검증 프롬프트 정확도 향상)
+            company_name: str | None = None
+            try:
+                async with self._session_factory() as _sess:
+                    _row = await _sess.execute(
+                        select(StockMaster.name).where(StockMaster.symbol == symbol)
+                    )
+                    company_name = _row.scalar()
+            except Exception:
+                logger.warning("executor.company_name_lookup_failed", symbol=symbol)
+
             # 1. 주문 생성 (PENDING)
             order = await self._create_order(
                 symbol=symbol,
@@ -256,6 +267,7 @@ class OrderExecutor:
                     session_id=session_id,
                     parent_decision_id=parent_decision_id,
                     is_stop_loss=False,
+                    company_name=company_name,
                 )
                 # web_verify 결과 + BLOCKED 시 status를 한 번에 업데이트
                 web_update: dict = {

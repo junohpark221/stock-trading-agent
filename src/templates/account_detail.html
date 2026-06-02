@@ -80,9 +80,25 @@
     {% endif %}
 </section>
 
+{% if sync_msg %}
+<article style="background:#e8f5e9;border-left:3px solid #2e7d32;padding:0.5rem 1rem;">
+    <strong>동기화:</strong> {{ sync_msg }}
+</article>
+{% endif %}
+{% if sync_error %}
+<article style="background:#ffe9e9;border-left:3px solid #d93025;padding:0.5rem 1rem;">
+    <strong>동기화 실패:</strong> {{ sync_error }}
+</article>
+{% endif %}
+
 <!-- 보유 포지션 -->
 <section>
-    <h2>보유 포지션 ({{ positions|length }}개)</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+        <h2 style="margin:0">보유 포지션 ({{ positions|length }}개)</h2>
+        <form method="post" action="/admin/accounts/{{ account.id }}/sync-positions">
+            <button type="submit" class="outline secondary" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem;">포지션 동기화</button>
+        </form>
+    </div>
     {% if positions %}
     <figure>
         <table>
@@ -119,7 +135,12 @@
 
 <!-- 미체결 주문 -->
 <section>
-    <h2>미체결 주문 ({{ pending_orders|length }}건)</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+        <h2 style="margin:0">미체결 주문 ({{ pending_orders|length }}건)</h2>
+        <form method="post" action="/admin/accounts/{{ account.id }}/sync-orders">
+            <button type="submit" class="outline secondary" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem;">미체결 정리</button>
+        </form>
+    </div>
     {% if pending_orders %}
     <figure>
         <table>

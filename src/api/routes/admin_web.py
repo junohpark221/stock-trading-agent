@@ -362,6 +362,8 @@ async def account_detail(
     account_id: str,
     order_success: str | None = Query(None),
     order_error: str | None = Query(None),
+    sync_msg: str | None = Query(None),
+    sync_error: str | None = Query(None),
     session: AsyncSession = Depends(get_db_session),
 ):
     """GET /admin/accounts/{account_id} — 계좌 상세: 정보 + 잔고 + 포지션 + 수동 주문."""
@@ -382,6 +384,8 @@ async def account_detail(
         "pending_orders": pending_orders,
         "manual_order_success": order_success,
         "manual_order_error": order_error,
+        "sync_msg": sync_msg,
+        "sync_error": sync_error,
     })
 
 
@@ -1178,6 +1182,106 @@ async def decision_session_detail(
         "chain": chain,
         "session_id": str(session_id),
     })
+
+
+# ── Account Sync ─────────────────────────────────────────────────────────
+
+
+@router.post("/accounts/{account_id}/sync-positions", dependencies=[Depends(require_admin)])
+async def account_sync_positions(account_id: str):
+    """POST /admin/accounts/{account_id}/sync-positions — 브로커-DB 포지션 즉시 동기화."""
+    from src.execution.reconciler import PositionReconciler
+    from src.main import get_broker_registry
+
+    try:
+        reconciler = PositionReconciler(
+            broker_registry=get_broker_registry(),
+            session_factory=get_session_factory(),
+        )
+        result = await reconciler.reconcile_for_account(account_id)
+        msg = (
+            f"포지션 동기화 완료 — "
+            f"정리 {result.closed_count}건, "
+            f"신규 {result.created_count}건, "
+            f"수량보정 {result.qty_updated_count}건"
+        )
+        logger.info("admin.sync_positions", account_id=account_id, **vars(result))
+        return RedirectResponse(
+            f"/admin/accounts/{account_id}?sync_msg={msg}", status_code=303
+        )
+    except Exception as exc:
+        logger.exception("admin.sync_positions.failed", account_id=account_id)
+        return RedirectResponse(
+            f"/admin/accounts/{account_id}?sync_error={exc}", status_code=303
+        )
+
+
+@router.post("/accounts/{account_id}/sync-orders", dependencies=[Depends(require_admin)])
+async def account_sync_orders(account_id: str):
+    """POST /admin/accounts/{account_id}/sync-orders — 미체결 주문 즉시 정리.
+
+    - 이전 날 접수 또는 broker_order_id 없는 pending/submitted → cancelled
+    - 오늘 접수 + broker_order_id 있음 → KIS 실 상태로 갱신
+    """
+    from src.main import get_broker_registry
+
+    try:
+        broker_registry = get_broker_registry()
+        broker = broker_registry.get_all().get(account_id)
+        today = datetime.now(UTC).date()
+        cancelled_count = 0
+        updated_count = 0
+
+        async with get_session_factory()() as session:
+            rows = await session.execute(
+                select(Order).where(
+                    Order.account_id == account_id,
+                    Order.status.in_(["pending", "submitted"]),
+                )
+            )
+            orders: list[Order] = list(rows.scalars().all())
+
+            for order in orders:
+                order_date = order.created_at.date() if order.created_at else None
+
+                if not order.broker_order_id or (order_date and order_date < today):
+                    # 브로커 미접수이거나 이전 날 주문 — 만료 처리
+                    order.status = "cancelled"
+                    cancelled_count += 1
+                elif broker is not None and order_date == today:
+                    # 오늘 접수 + broker_order_id 있음 — KIS에서 실 상태 조회
+                    try:
+                        result = await broker.get_order_status(
+                            order.broker_order_id, order_date=order_date
+                        )
+                        new_status = result.status.value.lower()
+                        if new_status != order.status:
+                            order.status = new_status
+                            updated_count += 1
+                    except Exception:
+                        logger.warning(
+                            "admin.sync_orders.status_check_failed",
+                            order_id=order.id,
+                            broker_order_id=order.broker_order_id,
+                        )
+
+            await session.commit()
+
+        msg = f"미체결 정리 완료 — 취소처리 {cancelled_count}건, 상태갱신 {updated_count}건"
+        logger.info(
+            "admin.sync_orders",
+            account_id=account_id,
+            cancelled=cancelled_count,
+            updated=updated_count,
+        )
+        return RedirectResponse(
+            f"/admin/accounts/{account_id}?sync_msg={msg}", status_code=303
+        )
+    except Exception as exc:
+        logger.exception("admin.sync_orders.failed", account_id=account_id)
+        return RedirectResponse(
+            f"/admin/accounts/{account_id}?sync_error={exc}", status_code=303
+        )
 
 
 # ── Cleanup ──────────────────────────────────────────────────────────────

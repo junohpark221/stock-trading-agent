@@ -199,6 +199,19 @@ class PositionReconciler:
         )
         return result
 
+    async def reconcile_for_account(self, account_id: str) -> ReconcileResult:
+        """단일 계좌만 브로커-DB 3-way 동기화 (백오피스 수동 트리거용)."""
+        result = ReconcileResult()
+        broker = self._registry.get_all().get(account_id)
+        if broker is None:
+            logger.warning("position_reconciler.account_not_found", account_id=account_id)
+            return result
+        try:
+            await self._reconcile_account(account_id, broker, result)
+        except Exception:
+            logger.exception("position_reconciler.account_failed", account_id=account_id)
+        return result
+
     async def _reconcile_account(
         self, account_id: str, broker: object, result: ReconcileResult,
     ) -> None:

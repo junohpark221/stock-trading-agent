@@ -321,6 +321,53 @@ class PositionManager:
             new_stop_loss=str(new_stop_loss),
         )
 
+    async def update_highest_price(
+        self, position_id: int, price: Decimal
+    ) -> None:
+        """고점(high water mark) 갱신 — 트레일링 스탑 기준가 추적용.
+
+        Parameters
+        ----------
+        position_id: 포지션 ID
+        price: 새 고점 가격
+
+        Raises
+        ------
+        DatabaseError: 포지션을 찾을 수 없거나 이미 청산된 경우
+        """
+        try:
+            async with self._session_factory() as session:
+                stmt = select(PositionRecord).where(
+                    PositionRecord.id == position_id
+                )
+                result = await session.execute(stmt)
+                record = result.scalar_one_or_none()
+
+                if record is None:
+                    raise DatabaseError(
+                        f"Position not found: id={position_id}"
+                    )
+
+                if record.status == "closed":
+                    raise DatabaseError(
+                        f"Cannot update closed position: id={position_id}"
+                    )
+
+                record.highest_price = price
+                await session.commit()
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Highest price update failed: {exc}"
+            ) from exc
+
+        logger.info(
+            "position.highest_price_updated",
+            id=position_id,
+            highest_price=str(price),
+        )
+
     async def update_quantity(
         self,
         position_id: int,

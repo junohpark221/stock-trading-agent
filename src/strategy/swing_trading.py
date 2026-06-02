@@ -11,7 +11,7 @@ Strategy ABC를 상속하여 단기 스윙 트레이딩을 수행한다.
     - 기술 조건: RSI 과매도 반전, MACD 골든크로스, BB 하단 반등
     - 손절: 고정 3%
     - 익절: 고정 5%
-    - 트레일링: 수익 3% 후 고점 대비 2% 트레일
+    - 트레일링: 수익 3% 후 고점 대비 5% 트레일
     - 최대 보유: 10 거래일
 """
 
@@ -90,8 +90,8 @@ class SwingTradingStrategy(Strategy):
     # 트레일링 스톱 설정
     # 수익률이 3% 이상일 때 트레일링 스톱 활성화
     TRAILING_ACTIVATE_PCT: Decimal = Decimal("3.0")
-    # 진입 후 최고가 대비 2% 하락 시 청산 (고정 비율)
-    TRAILING_TRAIL_PCT: Decimal = Decimal("2.0")
+    # 진입 후 최고가 대비 5% 하락 시 청산 (고정 비율)
+    TRAILING_TRAIL_PCT: Decimal = Decimal("5.0")
 
     # 최대 보유 기간 (거래일 기준)
     MAX_HOLDING_DAYS: int = 10

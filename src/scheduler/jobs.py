@@ -353,6 +353,12 @@ async def job_stop_loss_check(
             else:
                 unrealized_pnl_pct = _ZERO
 
+            # 트레일링 스탑용 고점(high water mark) 갱신
+            if position.trailing_stop_pct is not None:
+                if position.highest_price is None or current_price > position.highest_price:
+                    await position_manager.update_highest_price(position.id, current_price)
+                    position.highest_price = current_price  # 루프 내 로컬 캐시 동기화
+
             # 4가지 청산 조건 체크
             signal = exit_checker.check_stop_loss(position, current_price, unrealized_pnl_pct)
             if signal:
@@ -361,14 +367,25 @@ async def job_stop_loss_check(
 
             signal = exit_checker.check_take_profit(position, current_price, unrealized_pnl_pct)
             if signal:
-                exit_signals.append(signal)
-                continue
+                if position.trailing_stop_pct is not None:
+                    # 트레일링 스탑 설정 시: 익절가 도달을 트레일링 스탑 모드 전환으로 취급.
+                    # 즉시 매도하지 않고 고점 추적을 계속하여 추가 상승을 노린다.
+                    logger.info(
+                        "job.take_profit_to_trailing",
+                        symbol=position.symbol,
+                        current_price=str(current_price),
+                        take_profit_price=str(position.take_profit_price),
+                        trailing_stop_pct=str(position.trailing_stop_pct),
+                    )
+                    # trailing stop 체크로 fall-through
+                else:
+                    exit_signals.append(signal)
+                    continue
 
             # 트레일링 스톱 (trailing_stop_pct가 설정된 경우만)
             if position.trailing_stop_pct is not None:
-                # trailing_stop_price = 최고가 * (1 - trailing_stop_pct/100)
-                # 간이 계산: entry_price 기준 (실제 high water mark는 별도 추적 필요)
-                trailing_stop_price = position.entry_price * (
+                baseline = position.highest_price or position.entry_price
+                trailing_stop_price = baseline * (
                     Decimal("1") - position.trailing_stop_pct / _HUNDRED
                 )
                 signal = exit_checker.check_trailing_stop(

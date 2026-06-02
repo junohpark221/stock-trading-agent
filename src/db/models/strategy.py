@@ -51,6 +51,7 @@ class PositionRecord(TimestampMixin, Base):
     stop_loss_price: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     take_profit_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2), nullable=True)
     trailing_stop_pct: Mapped[Decimal | None] = mapped_column(Numeric(7, 4), nullable=True)
+    highest_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 2), nullable=True)
     max_holding_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="open")

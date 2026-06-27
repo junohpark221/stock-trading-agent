@@ -190,8 +190,8 @@
     <form method="post" action="/admin/accounts/{{ account.id }}/orders">
         <div class="grid">
             <label>
-                종목코드
-                <input type="text" name="symbol" placeholder="005930" required pattern="[0-9A-Za-z]+" autocomplete="off">
+                종목코드 (매수 시)
+                <input type="text" name="symbol" placeholder="005930" pattern="[0-9A-Za-z]+" autocomplete="off">
             </label>
             <label>
                 수량
@@ -202,6 +202,15 @@
                 <input type="number" name="price" min="0" step="1" placeholder="현재가">
             </label>
         </div>
+        <label>
+            매도 대상 포지션 (매도 시 필수 · 부분 매도 시 수량 지정)
+            <select name="position_id">
+                <option value="">— 매수 주문은 선택 불필요 —</option>
+                {% for pos in positions %}
+                <option value="{{ pos.id }}">{{ pos.symbol }} · {{ "{:,}".format(pos.quantity) }}주 보유 @ {{ "{:,.0f}".format(pos.avg_cost) }}원</option>
+                {% endfor %}
+            </select>
+        </label>
         <div class="grid">
             <button type="submit" name="side" value="buy">매수</button>
             <button type="submit" name="side" value="sell" class="secondary">매도</button>

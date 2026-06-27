@@ -262,6 +262,96 @@ class TestClose:
 
 
 # ===========================================================================
+# reduce (F-03 부분 청산)
+# ===========================================================================
+
+
+class TestReduce:
+    """부분 청산 테스트 (F-03)."""
+
+    @pytest.mark.asyncio
+    async def test_reduce_partial_keeps_open(self) -> None:
+        """부분 청산 — 잔여 수량 open 유지 + 부분 realized_pnl."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(avg_cost=Decimal("70000"), quantity=100)
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)
+
+        await manager.reduce(
+            1,
+            exit_quantity=40,
+            exit_price=Decimal("75000"),
+            exit_reason=ExitReason.MANUAL,
+        )
+
+        # realized_pnl = (75000-70000) × 40 = 200,000, 잔여 60주 open
+        assert record.realized_pnl == Decimal("200000")
+        assert record.quantity == 60
+        assert record.status == "open"
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reduce_accumulates_realized_pnl(self) -> None:
+        """기존 realized_pnl에 부분 손익이 누적된다."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(
+            avg_cost=Decimal("70000"), quantity=100, realized_pnl=Decimal("50000")
+        )
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)
+
+        await manager.reduce(
+            1, exit_quantity=10, exit_price=Decimal("80000"),
+            exit_reason=ExitReason.MANUAL,
+        )
+
+        # 50,000 + (80000-70000)×10 = 150,000
+        assert record.realized_pnl == Decimal("150000")
+        assert record.quantity == 90
+
+    @pytest.mark.asyncio
+    async def test_reduce_full_closes(self) -> None:
+        """잔여 이상 청산 요청 → 전량 청산(status=closed), 보유분 기준 손익."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(avg_cost=Decimal("70000"), quantity=100)
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)
+
+        await manager.reduce(
+            1, exit_quantity=100, exit_price=Decimal("75000"),
+            exit_reason=ExitReason.MANUAL,
+        )
+
+        assert record.status == "closed"
+        assert record.realized_pnl == Decimal("500000")  # 100주 기준
+        assert record.exit_price == Decimal("75000")
+
+    @pytest.mark.asyncio
+    async def test_reduce_invalid_quantity(self) -> None:
+        """exit_quantity<=0 → DatabaseError."""
+        factory, _ = _mock_session_factory()
+        manager = PositionManager(factory)
+        with pytest.raises(DatabaseError, match="Invalid exit_quantity"):
+            await manager.reduce(
+                1, exit_quantity=0, exit_price=Decimal("75000"),
+                exit_reason=ExitReason.MANUAL,
+            )
+
+    @pytest.mark.asyncio
+    async def test_reduce_already_closed(self) -> None:
+        """이미 청산된 포지션 → DatabaseError."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(status="closed")
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)
+        with pytest.raises(DatabaseError, match="already closed"):
+            await manager.reduce(
+                1, exit_quantity=10, exit_price=Decimal("75000"),
+                exit_reason=ExitReason.MANUAL,
+            )
+
+
+# ===========================================================================
 # get_open
 # ===========================================================================
 

@@ -240,6 +240,12 @@ class PositionReconciler:
             if pos.symbol in broker_by_symbol:
                 continue
 
+            # F-07: 청산가를 진입가로 대용(PnL=0)하지 않고, 폐기 시점 시장가로
+            # 실현손익을 계산한다. 시장가 조회 실패 시 진입가로 폴백한다.
+            # exit_reason=RECONCILED 플래그로 추정 청산임을 표기해
+            # 성과·세금·학습 집계에서 구분 가능하게 둔다.
+            exit_price = await self._resolve_orphan_exit_price(broker, pos)
+
             async with self._session_factory() as session:
                 record = (
                     await session.execute(
@@ -252,17 +258,22 @@ class PositionReconciler:
                 if record is None:
                     continue
                 record.status = "closed"
-                record.exit_price = record.entry_price
+                record.exit_price = exit_price
                 record.exit_date = today
                 record.exit_reason = ExitReason.RECONCILED.value
-                record.realized_pnl = Decimal("0")
+                record.realized_pnl = (
+                    exit_price - record.avg_cost
+                ) * record.quantity
                 await session.commit()
+                realized_pnl = record.realized_pnl
             result.closed_count += 1
             logger.warning(
                 "position_reconciler.closed_orphan",
                 account_id=account_id,
                 position_id=pos.id,
                 symbol=pos.symbol,
+                exit_price=str(exit_price),
+                realized_pnl=str(realized_pnl),
             )
 
             corrected = await self._correct_linked_orders(pos.id)
@@ -322,6 +333,26 @@ class PositionReconciler:
                     old_avg_cost=str(db_pos.avg_cost),
                     new_avg_cost=str(bp.average_cost),
                 )
+
+    async def _resolve_orphan_exit_price(
+        self, broker: object, pos: PositionRecord,
+    ) -> Decimal:
+        """고아 포지션 폐기용 청산가 — 시장가 우선, 실패 시 진입가 폴백 (F-07)."""
+        from src.broker.base import BrokerInterface
+
+        if isinstance(broker, BrokerInterface):
+            try:
+                price_info = await broker.get_price(pos.symbol)
+                current = price_info.current_price
+                if current and current > 0:
+                    return current
+            except Exception:
+                logger.warning(
+                    "position_reconciler.orphan_price_fetch_failed",
+                    symbol=pos.symbol,
+                    position_id=pos.id,
+                )
+        return pos.entry_price
 
     async def _correct_linked_orders(self, position_id: int) -> int:
         """position_id에 연결된 FILLED 주문을 CANCELLED로 보정."""

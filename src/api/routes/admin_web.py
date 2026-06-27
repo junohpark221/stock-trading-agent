@@ -404,8 +404,8 @@ async def account_manual_order(
     from urllib.parse import quote
 
     from src.api.routes.orders import _build_executor, _resolve_account_label
-    from src.core.enums import DecisionAction, OrderSide
-    from src.core.models import TradeDecision
+    from src.core.enums import DecisionAction, ExitReason
+    from src.core.models import ExitSignal, TradeDecision
 
     account = await session.get(Account, account_id)
     if account is None:
@@ -423,11 +423,12 @@ async def account_manual_order(
     side_raw = str(form.get("side", "")).strip().lower()
     qty_raw = str(form.get("quantity", "")).strip()
     price_raw = str(form.get("price", "")).strip()
+    position_id_raw = str(form.get("position_id", "")).strip()
 
-    if not symbol:
-        return _redirect_error("종목코드는 필수입니다")
     if side_raw not in ("buy", "sell"):
         return _redirect_error("side는 buy 또는 sell이어야 합니다")
+    if side_raw == "buy" and not symbol:
+        return _redirect_error("종목코드는 필수입니다")
     try:
         quantity = int(qty_raw)
     except ValueError:
@@ -443,6 +444,29 @@ async def account_manual_order(
             return _redirect_error(f"가격이 올바르지 않습니다: {price_raw}")
         if price <= 0:
             return _redirect_error("가격은 0보다 커야 합니다")
+
+    # B-01: 매도는 진입 경로(execute_entry) 오용을 막고, 선택한 기존 포지션을
+    # 정식 청산 경로(execute_exit)로 청산한다. position_id 필수.
+    position: PositionRecord | None = None
+    if side_raw == "sell":
+        if not position_id_raw:
+            return _redirect_error("매도는 대상 포지션을 선택해야 합니다")
+        try:
+            position_id = int(position_id_raw)
+        except ValueError:
+            return _redirect_error(f"포지션 ID가 올바르지 않습니다: {position_id_raw}")
+        position = await session.get(PositionRecord, position_id)
+        if (
+            position is None
+            or position.status != "open"
+            or position.account_id != account_id
+        ):
+            return _redirect_error("유효한 open 포지션이 아닙니다")
+        symbol = position.symbol  # 포지션 기준으로 종목 확정
+        if quantity > position.quantity:
+            return _redirect_error(
+                f"매도 수량({quantity:,})이 보유 수량({position.quantity:,})을 초과합니다"
+            )
 
     broker = None
     try:
@@ -461,27 +485,52 @@ async def account_manual_order(
             if price is None or price <= 0:
                 return _redirect_error("현재가가 유효하지 않습니다")
 
-        side = OrderSide.BUY if side_raw == "buy" else OrderSide.SELL
-        action = DecisionAction.BUY if side == OrderSide.BUY else DecisionAction.SELL
-
-        trade_decision = TradeDecision(
-            symbol=symbol,
-            action=action,
-            confidence=Decimal("1.0"),
-            quantity=quantity,
-            price=price,
-            reasoning=f"Backoffice manual order by admin ({account_id})",
-        )
-
         account_label = await _resolve_account_label(account_id)
-        result = await executor.execute_entry(
-            trade_decision=trade_decision,
-            session_id=uuid4(),
-            strategy_type="manual",
-            account_id=account_id,
-            account_label=account_label,
-            manual=True,
-        )
+
+        if side_raw == "sell":
+            assert position is not None
+            avg_cost = position.avg_cost or price
+            pnl_pct = (
+                (price - avg_cost) / avg_cost * Decimal("100")
+                if avg_cost > 0
+                else Decimal("0")
+            )
+            exit_signal = ExitSignal(
+                symbol=symbol,
+                reason=ExitReason.MANUAL,
+                urgency="immediate",
+                current_price=price,
+                unrealized_pnl_pct=pnl_pct,
+                recommended_action=DecisionAction.SELL,
+                reasoning=f"Backoffice manual exit by admin ({account_id})",
+            )
+            result = await executor.execute_exit(
+                exit_signal=exit_signal,
+                position=position,
+                session_id=uuid4(),
+                account_id=account_id,
+                account_label=account_label,
+                broker=broker,
+                exit_quantity=quantity,
+                manual=True,
+            )
+        else:
+            trade_decision = TradeDecision(
+                symbol=symbol,
+                action=DecisionAction.BUY,
+                confidence=Decimal("1.0"),
+                quantity=quantity,
+                price=price,
+                reasoning=f"Backoffice manual order by admin ({account_id})",
+            )
+            result = await executor.execute_entry(
+                trade_decision=trade_decision,
+                session_id=uuid4(),
+                strategy_type="manual",
+                account_id=account_id,
+                account_label=account_label,
+                manual=True,
+            )
 
     except HTTPException as exc:
         return _redirect_error(str(exc.detail))
@@ -1192,11 +1241,15 @@ async def account_sync_positions(account_id: str):
     """POST /admin/accounts/{account_id}/sync-positions — 브로커-DB 포지션 즉시 동기화."""
     from src.execution.reconciler import PositionReconciler
     from src.main import get_broker_registry
+    from src.strategy.position_manager import PositionManager
 
     try:
+        # B-03: position_manager 주입 → 풀 3-way(Case 2 신규 생성·Case 3 수량보정)
+        # 보장. 미주입 시 Case 1(DB-only 청산)만 동작해 스케줄러와 동작이 달라진다.
         reconciler = PositionReconciler(
             broker_registry=get_broker_registry(),
             session_factory=get_session_factory(),
+            position_manager=PositionManager(get_session_factory()),
         )
         result = await reconciler.reconcile_for_account(account_id)
         msg = (
@@ -1223,15 +1276,19 @@ async def account_sync_orders(account_id: str):
     - 이전 날 접수 또는 broker_order_id 없는 pending/submitted → cancelled
     - 오늘 접수 + broker_order_id 있음 → KIS 실 상태로 갱신
     """
-    from src.main import get_broker_registry
+    from src.config import get_settings
+    from src.execution.fill_finalizer import FillFinalizer
+    from src.execution.reconciler import OrderReconciler
+    from src.main import get_broker_registry, get_telegram_bot
+    from src.strategy.position_manager import PositionManager
 
     try:
-        broker_registry = get_broker_registry()
-        broker = broker_registry.get_all().get(account_id)
         today = datetime.now(UTC).date()
         cancelled_count = 0
-        updated_count = 0
 
+        # 1) 취소측: broker_order_id 없음 또는 전일 접수 → cancelled (DB만 갱신).
+        #    실제 브로커 취소는 cancel_order(B-05) 구현 후속. 한국장 당일주문은
+        #    미취소 시 KIS가 자동 만료하므로 전일분 DB 정리는 대체로 안전.
         async with get_session_factory()() as session:
             rows = await session.execute(
                 select(Order).where(
@@ -1240,39 +1297,39 @@ async def account_sync_orders(account_id: str):
                 )
             )
             orders: list[Order] = list(rows.scalars().all())
-
             for order in orders:
                 order_date = order.created_at.date() if order.created_at else None
-
                 if not order.broker_order_id or (order_date and order_date < today):
-                    # 브로커 미접수이거나 이전 날 주문 — 만료 처리
                     order.status = "cancelled"
                     cancelled_count += 1
-                elif broker is not None and order_date == today:
-                    # 오늘 접수 + broker_order_id 있음 — KIS에서 실 상태 조회
-                    try:
-                        result = await broker.get_order_status(
-                            order.broker_order_id, order_date=order_date
-                        )
-                        new_status = result.status.value.lower()
-                        if new_status != order.status:
-                            order.status = new_status
-                            updated_count += 1
-                    except Exception:
-                        logger.warning(
-                            "admin.sync_orders.status_check_failed",
-                            order_id=order.id,
-                            broker_order_id=order.broker_order_id,
-                        )
-
             await session.commit()
 
-        msg = f"미체결 정리 완료 — 취소처리 {cancelled_count}건, 상태갱신 {updated_count}건"
+        # 2) 체결측 (B-02): 인라인 상태 문자열 갱신 제거. 스케줄러와 동일한 정식
+        #    경로(OrderReconciler→FillFinalizer)로 오늘 접수 SUBMITTED 주문의 체결을
+        #    확정한다 — 체결기록·포지션·position_id를 정상 생성하고, SUBMITTED 가드
+        #    영구 스킵으로 인한 정합성 손상을 제거한다. (run은 전 계좌 대상이나
+        #    멱등하며 스케줄러 job_reconcile_open_orders와 동일하다.)
+        finalizer = FillFinalizer(
+            session_factory=get_session_factory(),
+            position_manager=PositionManager(get_session_factory()),
+            telegram_bot=get_telegram_bot(),
+            settings=get_settings(),
+        )
+        reconciler = OrderReconciler(
+            broker_registry=get_broker_registry(),
+            fill_finalizer=finalizer,
+        )
+        processed = await reconciler.run(target_date=today)
+
+        msg = (
+            f"미체결 정리 완료 — 취소처리 {cancelled_count}건, "
+            f"체결확정 점검 {processed}건"
+        )
         logger.info(
             "admin.sync_orders",
             account_id=account_id,
             cancelled=cancelled_count,
-            updated=updated_count,
+            processed=processed,
         )
         return RedirectResponse(
             f"/admin/accounts/{account_id}?sync_msg={msg}", status_code=303
@@ -1292,10 +1349,13 @@ async def cleanup_orphaned_positions(request: Request):
     """POST /admin/cleanup-orphaned-positions — 브로커-DB 포지션 정합성 검증."""
     from src.execution.reconciler import PositionReconciler
     from src.main import get_broker_registry
+    from src.strategy.position_manager import PositionManager
 
+    # B-03: position_manager 주입 → 풀 3-way 보장 (스케줄러와 동일 경로)
     reconciler = PositionReconciler(
         broker_registry=get_broker_registry(),
         session_factory=get_session_factory(),
+        position_manager=PositionManager(get_session_factory()),
     )
     result = await reconciler.reconcile()
 

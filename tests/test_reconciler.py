@@ -135,7 +135,48 @@ async def test_reconcile_closes_orphan():
     # 닫힌 DB 레코드에 상태/사유 설정 확인
     assert db_pos.status == "closed"
     assert db_pos.exit_reason == ExitReason.RECONCILED.value
+    # 시세 조회 실패(await 불가) → 진입가 폴백 → PnL 0 (F-07 폴백 경로)
     assert db_pos.realized_pnl == Decimal("0")
+    assert db_pos.exit_price == db_pos.entry_price
+
+
+@pytest.mark.asyncio
+async def test_reconcile_orphan_uses_market_price():
+    """F-07: 고아 폐기 시 시장가로 청산가·실현손익을 기록한다."""
+    from src.broker.base import BrokerInterface
+
+    db_pos = _make_db_position(
+        "005930", position_id=1, quantity=10,
+        avg_cost=Decimal("50000"), entry_price=Decimal("50000"),
+    )
+    broker = MagicMock(spec=BrokerInterface)
+    broker.get_positions = AsyncMock(return_value=[])  # 브로커 미보유
+    broker.get_price = AsyncMock(
+        return_value=MagicMock(current_price=Decimal("60000"))
+    )
+    registry = _make_registry(broker)
+
+    session = AsyncMock()
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.all.return_value = [db_pos]
+    execute_result.scalar_one_or_none.return_value = db_pos
+    session.execute = AsyncMock(return_value=execute_result)
+    session.commit = AsyncMock()
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=session)
+    factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    reconciler = PositionReconciler(
+        broker_registry=registry, session_factory=factory, position_manager=None,
+    )
+    with patch.object(reconciler, "_correct_linked_orders", AsyncMock(return_value=0)):
+        await reconciler.reconcile()
+
+    assert db_pos.status == "closed"
+    assert db_pos.exit_price == Decimal("60000")
+    # realized_pnl = (60000 - 50000) × 10 = 100,000
+    assert db_pos.realized_pnl == Decimal("100000")
+    assert db_pos.exit_reason == ExitReason.RECONCILED.value
 
 
 # ---------------------------------------------------------------------------

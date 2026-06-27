@@ -168,6 +168,86 @@ class PositionManager:
         )
         return record
 
+    async def reduce(
+        self,
+        position_id: int,
+        *,
+        exit_quantity: int,
+        exit_price: Decimal,
+        exit_reason: ExitReason,
+        exit_session_id: UUID | None = None,
+    ) -> PositionRecord:
+        """부분 청산 (F-03) — exit_quantity 만큼만 청산하고 잔여는 open 유지.
+
+        체결 수량만큼의 부분 `realized_pnl`을 기존 값에 **누적**한다(부분→전량
+        순차 청산 시 손익이 사라지지 않게). `exit_quantity`가 잔여 수량 이상이면
+        전량 청산(status='closed', exit_price/date 기록)으로 처리한다.
+
+        Parameters
+        ----------
+        position_id: 포지션 ID
+        exit_quantity: 이번에 청산된 수량 (>0)
+        exit_price: 청산가
+        exit_reason: 청산 사유 (ExitReason)
+        exit_session_id: decision_log 연결 세션 ID (선택)
+
+        Raises
+        ------
+        DatabaseError: 포지션을 찾을 수 없거나 이미 청산됐거나 수량이 잘못된 경우
+        """
+        if exit_quantity <= 0:
+            raise DatabaseError(f"Invalid exit_quantity: {exit_quantity}")
+        try:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(PositionRecord).where(PositionRecord.id == position_id)
+                )
+                record = result.scalar_one_or_none()
+
+                if record is None:
+                    raise DatabaseError(f"Position not found: id={position_id}")
+                if record.status == "closed":
+                    raise DatabaseError(f"Position already closed: id={position_id}")
+
+                prior_pnl = record.realized_pnl or Decimal("0")
+
+                if exit_quantity >= record.quantity:
+                    # 잔여 이상 청산 요청 — 전량 청산으로 마감.
+                    # 실현손익은 실제 보유 수량 기준(과청산 방지), 수량은 청산
+                    # 시점 보유분을 보존(closed 포지션 관례 — close()와 동일).
+                    realized = (exit_price - record.avg_cost) * record.quantity
+                    record.realized_pnl = prior_pnl + realized
+                    record.status = "closed"
+                    record.exit_price = exit_price
+                    record.exit_date = date.today()
+                    record.exit_reason = exit_reason.value
+                    record.exit_session_id = exit_session_id
+                    fully_closed = True
+                else:
+                    # 부분 청산 — 잔여 수량으로 open 유지 (avg_cost 불변)
+                    realized = (exit_price - record.avg_cost) * exit_quantity
+                    record.realized_pnl = prior_pnl + realized
+                    record.quantity -= exit_quantity
+                    fully_closed = False
+
+                await session.commit()
+                await session.refresh(record)
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(f"Position reduce failed: {exc}") from exc
+
+        logger.info(
+            "position.reduced",
+            id=record.id,
+            symbol=record.symbol,
+            exit_quantity=exit_quantity,
+            remaining=record.quantity,
+            fully_closed=fully_closed,
+            realized_pnl=str(record.realized_pnl),
+        )
+        return record
+
     # ── Read ──────────────────────────────────────────────────────────────
 
     async def get_open(

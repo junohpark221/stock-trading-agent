@@ -697,6 +697,13 @@ class OrderExecutor:
         fill_price = order_result.filled_price or price
         fill_quantity = order_result.filled_quantity or quantity
         commission = order_result.commission
+        # F-03: 부분 체결이면 최종 상태를 PARTIALLY_FILLED로 (체결 수량 기준 포지션 생성)
+        final_status = (
+            OrderStatus.PARTIALLY_FILLED
+            if order_result.status == OrderStatus.PARTIALLY_FILLED
+            or fill_quantity < quantity
+            else OrderStatus.FILLED
+        )
 
         await self._record_execution(
             order_id=order.id,
@@ -743,7 +750,7 @@ class OrderExecutor:
             )
             await self._update_order(
                 order.id,
-                status=OrderStatus.FILLED,
+                status=final_status,
                 broker_order_id=order_result.order_id,
                 filled_quantity=fill_quantity,
                 filled_price=fill_price,
@@ -760,7 +767,7 @@ class OrderExecutor:
 
         await self._update_order(
             order.id,
-            status=OrderStatus.FILLED,
+            status=final_status,
             broker_order_id=order_result.order_id,
             filled_quantity=fill_quantity,
             filled_price=fill_price,
@@ -820,10 +827,13 @@ class OrderExecutor:
         account_id: str = "default",
         account_label: str = "",
         broker: BrokerInterface | None = None,
+        exit_quantity: int | None = None,
+        manual: bool = False,
     ) -> ExecutionResult:
         """청산 주문 실행.
 
         ExitSignal → Web 검증 → 승인 → 브로커 주문 → 포지션 청산.
+        manual=True면 웹검증/승인을 생략한다(백오피스 수동 청산).
 
         Parameters
         ----------
@@ -845,7 +855,10 @@ class OrderExecutor:
             else OrderType.LIMIT
         )
         price = exit_signal.current_price
+        # 부분 청산 지원(B-01 수동 매도): 지정 수량이 없거나 잔량 초과면 전량.
         quantity = position.quantity
+        if exit_quantity is not None and 0 < exit_quantity < position.quantity:
+            quantity = exit_quantity
         decision_ids: list[UUID] = []
         order: Order | None = None
         effective_broker = broker or self._broker
@@ -866,14 +879,21 @@ class OrderExecutor:
                 position_id=position.id,
             )
 
-            # 3. Web 검증
-            verification = await self._web_verifier.verify(
-                symbol=symbol,
-                side=side,
-                session_id=session_id,
-                parent_decision_id=parent_decision_id,
-                is_stop_loss=is_stop_loss,
-            )
+            # 3. Web 검증 — manual=True면 생략(백오피스 수동 청산)
+            if manual:
+                verification = WebVerification(
+                    symbol=symbol,
+                    result=WebVerifyResult.SAFE,
+                    summary="수동 청산: 웹검증 생략",
+                )
+            else:
+                verification = await self._web_verifier.verify(
+                    symbol=symbol,
+                    side=side,
+                    session_id=session_id,
+                    parent_decision_id=parent_decision_id,
+                    is_stop_loss=is_stop_loss,
+                )
             await self._update_order(
                 order.id,
                 web_verify_result=verification.result.value,
@@ -907,17 +927,20 @@ class OrderExecutor:
                     error=f"Web 검증 차단: {verification.summary}",
                 )
 
-            # 4. 포트폴리오 상태 + 승인
-            portfolio_state = await self._portfolio_service.get_current_state()
-            approval_status = await self._approval_manager.request_approval(
-                trade_decision=trade_decision,
-                order_id=order.id,
-                session_id=session_id,
-                portfolio_state=portfolio_state,
-                web_verification=verification,
-                account_id=account_id,
-                account_label=account_label,
-            )
+            # 4. 포트폴리오 상태 + 승인 — manual=True면 생략하고 자동 승인
+            if manual:
+                approval_status = ApprovalStatus.AUTO_APPROVED
+            else:
+                portfolio_state = await self._portfolio_service.get_current_state()
+                approval_status = await self._approval_manager.request_approval(
+                    trade_decision=trade_decision,
+                    order_id=order.id,
+                    session_id=session_id,
+                    portfolio_state=portfolio_state,
+                    web_verification=verification,
+                    account_id=account_id,
+                    account_label=account_label,
+                )
 
             if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
                 await self._update_order(order.id, status=OrderStatus.CANCELLED)
@@ -1124,6 +1147,15 @@ class OrderExecutor:
         fill_price = order_result.filled_price or price
         fill_quantity = order_result.filled_quantity or quantity
         commission = order_result.commission
+        # F-03: 주문 상태는 주문 수량 대비 체결 여부로, 포지션 청산은 포지션 잔량
+        # 대비 체결 수량으로 판단한다(부분 매도 시 잔량 open 유지).
+        final_status = (
+            OrderStatus.PARTIALLY_FILLED
+            if order_result.status == OrderStatus.PARTIALLY_FILLED
+            or fill_quantity < quantity
+            else OrderStatus.FILLED
+        )
+        position_partial = fill_quantity < position.quantity
 
         await self._record_execution(
             order_id=order.id,
@@ -1135,12 +1167,21 @@ class OrderExecutor:
         )
 
         try:
-            await self._position_manager.close(
-                position.id,
-                exit_price=fill_price,
-                exit_reason=reason,
-                exit_session_id=session_id,
-            )
+            if position_partial:
+                await self._position_manager.reduce(
+                    position.id,
+                    exit_quantity=fill_quantity,
+                    exit_price=fill_price,
+                    exit_reason=reason,
+                    exit_session_id=session_id,
+                )
+            else:
+                await self._position_manager.close(
+                    position.id,
+                    exit_price=fill_price,
+                    exit_reason=reason,
+                    exit_session_id=session_id,
+                )
         except Exception:
             logger.critical(
                 "executor.position_close_failed",
@@ -1156,7 +1197,7 @@ class OrderExecutor:
 
         await self._update_order(
             order.id,
-            status=OrderStatus.FILLED,
+            status=final_status,
             broker_order_id=order_result.order_id,
             filled_quantity=fill_quantity,
             filled_price=fill_price,

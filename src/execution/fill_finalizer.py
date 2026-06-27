@@ -23,6 +23,7 @@ from src.core.enums import ApprovalStatus, ExitReason, OrderSide, OrderStatus
 from src.db.models.account import Account
 from src.db.models.execution import Execution, Order
 from src.db.models.strategy import PositionRecord
+from src.execution.fees import estimate_commission
 
 _TERMINAL_NON_FILL = frozenset({
     OrderStatus.CANCELLED.value,
@@ -89,12 +90,22 @@ class FillFinalizer:
         fill_quantity = event.filled_quantity if event.filled_quantity > 0 else order.quantity
         executed_at = event.timestamp
 
+        # F-01: ExecutionEvent에는 수수료 필드가 없으므로 거래대금 기반으로 추정.
+        commission = estimate_commission(
+            OrderSide(order.side),
+            fill_price=fill_price,
+            fill_quantity=fill_quantity,
+            buy_pct=self._settings.COMMISSION_BUY_PCT,
+            sell_pct=self._settings.COMMISSION_SELL_PCT,
+        )
+
         await self._apply_fill(
             order=order,
             fill_price=fill_price,
             fill_quantity=fill_quantity,
-            commission=Decimal(0),
+            commission=commission,
             executed_at=executed_at,
+            is_partial=fill_quantity < order.quantity,
         )
 
     async def finalize_from_order_result(
@@ -122,11 +133,22 @@ class FillFinalizer:
             fill_quantity=fill_quantity,
             commission=order_result.commission or Decimal(0),
             executed_at=datetime.now(UTC),
+            is_partial=status == OrderStatus.PARTIALLY_FILLED
+            or fill_quantity < order.quantity,
         )
 
     async def mark_expired(self, order: Order) -> None:
         """EOD sweep — 미체결 주문을 CANCELLED(expired)로 정리."""
         if order.status != OrderStatus.SUBMITTED.value:
+            return
+
+        # F-02: 원자적 선점. 만료 처리 직전 WS/reconciler가 체결을 확정했다면
+        # claim이 실패(rowcount 0)하므로 만료/고아청산을 건너뛴다.
+        if not await self._claim_order(
+            order.id,
+            target=OrderStatus.CANCELLED,
+            rejection_reason="장 마감 미체결 — 자동 취소",
+        ):
             return
 
         # 고아 포지션 정리: WS/reconciler가 조기 생성한 포지션이 있으면 닫기
@@ -141,11 +163,6 @@ class FillFinalizer:
                     exc_info=True,
                 )
 
-        await self._update_order(
-            order.id,
-            status=OrderStatus.CANCELLED,
-            rejection_reason="장 마감 미체결 — 자동 취소",
-        )
         account_label = await self._get_account_label(order.account_id)
         await self._notify_safe(MessageTemplates.rejection_notification(
             account_label=account_label,
@@ -165,7 +182,24 @@ class FillFinalizer:
         fill_quantity: int,
         commission: Decimal,
         executed_at: datetime,
+        is_partial: bool = False,
     ) -> None:
+        # F-03: 부분 체결은 FILLED와 분리. 최종 상태는 PARTIALLY_FILLED.
+        final_status = (
+            OrderStatus.PARTIALLY_FILLED if is_partial else OrderStatus.FILLED
+        )
+        # F-02: 행 잠금 기반 원자적 선점(claim). WS·reconciler가 거의 동시에
+        # 같은 SUBMITTED 주문을 관측해도, SUBMITTED→(PARTIALLY_)FILLED 조건부
+        # UPDATE에서 rowcount==1 을 얻은 단 하나의 caller만 체결 후처리를 수행한다.
+        # (Execution/Position 이중 생성 방지)
+        if not await self._claim_order(order.id, target=final_status):
+            logger.info(
+                "fill_finalizer.fill_already_claimed",
+                order_id=order.id,
+                broker_order_id=order.broker_order_id,
+            )
+            return
+
         await self._record_execution(
             order_id=order.id,
             broker_order_id=order.broker_order_id or "",
@@ -186,6 +220,7 @@ class FillFinalizer:
                 commission=commission,
                 executed_at=executed_at,
                 account_label=account_label,
+                final_status=final_status,
             )
         else:
             await self._close_exit_position(
@@ -195,6 +230,7 @@ class FillFinalizer:
                 commission=commission,
                 executed_at=executed_at,
                 account_label=account_label,
+                final_status=final_status,
             )
 
     async def _create_entry_position(
@@ -206,6 +242,7 @@ class FillFinalizer:
         commission: Decimal,
         executed_at: datetime,
         account_label: str,
+        final_status: OrderStatus = OrderStatus.FILLED,
     ) -> None:
         account = await self._get_account(order.account_id)
         strategy_type = account.strategy_type if account else "swing"
@@ -239,7 +276,7 @@ class FillFinalizer:
 
         await self._update_order(
             order.id,
-            status=OrderStatus.FILLED,
+            status=final_status,
             filled_quantity=fill_quantity,
             filled_price=fill_price,
             commission=commission,
@@ -264,15 +301,28 @@ class FillFinalizer:
         commission: Decimal,
         executed_at: datetime,
         account_label: str,
+        final_status: OrderStatus = OrderStatus.FILLED,
     ) -> None:
         if order.position_id:
             try:
-                await self._position_manager.close(
-                    order.position_id,
-                    exit_price=fill_price,
-                    exit_reason=ExitReason.MANUAL,
-                    exit_session_id=order.session_id,
-                )
+                # F-03: 포지션 잔량 대비 체결 수량으로 부분/전량을 판단한다.
+                # 잔량이 남으면 부분 청산(open 유지), 아니면 전량 청산.
+                pos_qty = await self._get_open_position_quantity(order.position_id)
+                if pos_qty is not None and fill_quantity < pos_qty:
+                    await self._position_manager.reduce(
+                        order.position_id,
+                        exit_quantity=fill_quantity,
+                        exit_price=fill_price,
+                        exit_reason=ExitReason.MANUAL,
+                        exit_session_id=order.session_id,
+                    )
+                else:
+                    await self._position_manager.close(
+                        order.position_id,
+                        exit_price=fill_price,
+                        exit_reason=ExitReason.MANUAL,
+                        exit_session_id=order.session_id,
+                    )
             except Exception:
                 logger.critical(
                     "fill_finalizer.position_close_failed",
@@ -287,7 +337,7 @@ class FillFinalizer:
 
         await self._update_order(
             order.id,
-            status=OrderStatus.FILLED,
+            status=final_status,
             filled_quantity=fill_quantity,
             filled_price=fill_price,
             commission=commission,
@@ -306,9 +356,11 @@ class FillFinalizer:
         self, order: Order, *, reason: str, cancelled: bool = False,
     ) -> None:
         status = OrderStatus.CANCELLED if cancelled else OrderStatus.REJECTED
-        await self._update_order(
-            order.id, status=status, rejection_reason=reason,
-        )
+        # F-02: 거부/취소도 원자적 선점으로 처리해 동시 fill 확정·중복 알림을 차단
+        if not await self._claim_order(
+            order.id, target=status, rejection_reason=reason
+        ):
+            return
         account_label = await self._get_account_label(order.account_id)
         await self._notify_safe(MessageTemplates.rejection_notification(
             account_label=account_label,
@@ -378,6 +430,17 @@ class FillFinalizer:
             )
             return result.scalar_one_or_none()
 
+    async def _get_open_position_quantity(self, position_id: int) -> int | None:
+        """open 포지션의 현재 수량 (없거나 closed면 None) — 부분/전량 청산 판단용."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PositionRecord.quantity).where(
+                    PositionRecord.id == position_id,
+                    PositionRecord.status == "open",
+                ),
+            )
+            return result.scalar_one_or_none()
+
     async def _get_submitted_orders_for_date(
         self, target_date: date,
     ) -> list[Order]:
@@ -402,6 +465,27 @@ class FillFinalizer:
                 update(Order).where(Order.id == order_id).values(**fields),
             )
             await session.commit()
+
+    async def _claim_order(
+        self, order_id: int, *, target: OrderStatus, **fields: object
+    ) -> bool:
+        """SUBMITTED→target 으로의 원자적 상태 전이(선점).
+
+        단일 조건부 UPDATE이므로 DB가 동시 호출을 직렬화한다. 첫 호출만
+        rowcount==1을 얻고, 나머지는 WHERE 불일치로 0을 받아 후처리를 건너뛴다.
+        WS↔reconciler↔EOD sweep 간 이중 확정(TOCTOU)을 차단한다.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(Order)
+                .where(
+                    Order.id == order_id,
+                    Order.status == OrderStatus.SUBMITTED.value,
+                )
+                .values(status=target.value, **fields),
+            )
+            await session.commit()
+        return (result.rowcount or 0) == 1
 
     async def _record_execution(
         self,

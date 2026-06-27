@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     TAKE_PROFIT_PERCENT: float = 5.0
     DAILY_LOSS_LIMIT_KRW: int = 500_000
 
+    # 수수료/세금 추정율 (%). WS 체결통보에는 수수료 필드가 없어(F-01) 거래대금 기반
+    # 추정치를 적용한다. 매수=증권사 수수료, 매도=수수료+거래세(0.18%) 포함.
+    COMMISSION_BUY_PCT: float = 0.015
+    COMMISSION_SELL_PCT: float = 0.195
+
     # ── Phase 4: Risk Management + Position Sizing ────────────────────
     RISK_CHECK_ENABLED: bool = True
     RISK_PER_TRADE_PCT: float = 2.0          # 1건당 리스크 비율 (총 자산 대비 %)

@@ -643,3 +643,106 @@ class TestManualOrderHandler:
 
         assert r.status_code == 303
         assert "order_error" in r.headers.get("location", "")
+
+
+class TestSyncOrders:
+    """POST /admin/accounts/{id}/sync-orders — 미체결 정리 (B-05 브로커 취소)."""
+
+    @staticmethod
+    def _order(*, broker_order_id, days_ago=0, status="submitted", oid=1):
+        from datetime import UTC, datetime, timedelta
+
+        o = MagicMock()
+        o.id = oid
+        o.broker_order_id = broker_order_id
+        o.created_at = datetime.now(UTC) - timedelta(days=days_ago)
+        o.status = status
+        return o
+
+    @staticmethod
+    def _patches(orders, broker):
+        """sync_orders 내부 의존성 패치 컨텍스트 리스트."""
+        from conftest import AsyncContextManagerMock
+
+        session = AsyncMock()
+        exec_result = MagicMock()
+        exec_result.scalars.return_value.all.return_value = orders
+        session.execute = AsyncMock(return_value=exec_result)
+        session.commit = AsyncMock()
+        factory = MagicMock(return_value=AsyncContextManagerMock(session))
+
+        registry = MagicMock()
+        registry.get = MagicMock(return_value=broker)
+
+        reconciler = MagicMock()
+        reconciler.run = AsyncMock(return_value=0)
+
+        return [
+            patch("src.api.routes.admin_web.get_session_factory",
+                  MagicMock(return_value=factory)),
+            patch("src.main.get_broker_registry", MagicMock(return_value=registry)),
+            patch("src.main.get_telegram_bot", MagicMock(return_value=None)),
+            patch("src.execution.fill_finalizer.FillFinalizer", MagicMock()),
+            patch("src.execution.reconciler.OrderReconciler",
+                  MagicMock(return_value=reconciler)),
+            patch("src.strategy.position_manager.PositionManager", MagicMock()),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_today_order_cancelled_via_broker(self):
+        order = self._order(broker_order_id="BRK123", days_ago=0)
+        broker = MagicMock()
+        broker.cancel_order = AsyncMock(return_value=True)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in self._patches([order], broker):
+                stack.enter_context(p)
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/sync-orders", follow_redirects=False
+                )
+
+        assert r.status_code == 303
+        broker.cancel_order.assert_awaited_once_with("BRK123")
+        assert order.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_today_order_left_when_broker_cancel_fails(self):
+        order = self._order(broker_order_id="BRK123", days_ago=0)
+        broker = MagicMock()
+        broker.cancel_order = AsyncMock(return_value=False)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in self._patches([order], broker):
+                stack.enter_context(p)
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/sync-orders", follow_redirects=False
+                )
+
+        assert r.status_code == 303
+        broker.cancel_order.assert_awaited_once_with("BRK123")
+        # 오취소 방지 — 상태 유지(체결 확정은 §2 reconciler에 위임)
+        assert order.status == "submitted"
+
+    @pytest.mark.asyncio
+    async def test_prior_day_order_db_only_no_broker_call(self):
+        order = self._order(broker_order_id="BRK999", days_ago=2)
+        broker = MagicMock()
+        broker.cancel_order = AsyncMock(return_value=True)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in self._patches([order], broker):
+                stack.enter_context(p)
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/sync-orders", follow_redirects=False
+                )
+
+        assert r.status_code == 303
+        # 전일 주문은 DB-only cancelled — 브로커 취소 미호출
+        broker.cancel_order.assert_not_awaited()
+        assert order.status == "cancelled"

@@ -38,6 +38,7 @@ from src.broker.kis.models import (
     KISOrderOutput,
     KISPriceOutput,
     KISPsblOrderOutput,
+    KISRvseCnclPsblOutput,
     _to_decimal,
     _to_int,
 )
@@ -525,9 +526,117 @@ class KISClient(BrokerInterface):
             timestamp=datetime.now(),
         )
 
+    async def _fetch_cancelable_orders(self) -> list[KISRvseCnclPsblOutput]:
+        """Paginate TTTC0084R to collect all cancelable/amendable orders.
+
+        주식정정취소가능주문조회. 정정취소 TR 호출에 필요한
+        ``KRX_FWDG_ORD_ORGNO``(=``ord_gno_brno``)·``psbl_qty``·``ord_dvsn_cd``를
+        원주문번호(``odno``)로 역조회하기 위해 사용한다.
+
+        Pagination mirrors :meth:`_fetch_balance_pages` (``tr_cont`` + ``ctx_area_*``).
+        """
+        all_orders: list[KISRvseCnclPsblOutput] = []
+        tr_cont_req = ""
+        ctx_fk = ""
+        ctx_nk = ""
+
+        for _page in range(_MAX_BALANCE_PAGES):
+            params: dict[str, str] = {
+                "CANO": self._cano,
+                "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                "INQR_DVSN_1": "0",   # 0: 주문
+                "INQR_DVSN_2": "0",   # 0: 전체(매도+매수)
+                "CTX_AREA_FK100": ctx_fk,
+                "CTX_AREA_NK100": ctx_nk,
+            }
+
+            data = await self._request(
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
+                "TTTC0084R",
+                params=params,
+                tr_cont=tr_cont_req,
+            )
+
+            for raw in data.get("output", []):
+                all_orders.append(KISRvseCnclPsblOutput.model_validate(raw))
+
+            resp_tr_cont = data.get("_tr_cont", "")
+            if resp_tr_cont in ("M", "F"):
+                tr_cont_req = "N"
+                ctx_fk = data.get("ctx_area_fk100", "")
+                ctx_nk = data.get("ctx_area_nk100", "")
+            else:
+                break
+
+        return all_orders
+
     async def cancel_order(self, order_id: str) -> bool:
-        """Cancel a pending order (not implemented in MVP)."""
-        raise NotImplementedError("cancel_order is not supported in MVP scope")
+        """Cancel a pending order via KIS 정정취소 (``order-rvsecncl``).
+
+        경로 A — 취소 시점에 정정취소가능주문조회로 ``order_id``(원주문번호)를 매칭해
+        ``KRX_FWDG_ORD_ORGNO``·``ORD_DVSN``·취소가능수량·단가를 얻어 전량 취소한다.
+        ``KRX_FWDG_ORD_ORGNO``를 영속화하지 않아도 되므로 추상 시그니처를 유지한다.
+
+        Returns:
+            ``True``  — 취소 TR 접수 성공.
+            ``False`` — 취소 대상 아님(이미 체결/취소/만료로 가능목록에 없거나
+                        ``psbl_qty<=0``), 또는 KIS 업무 거부(``KISResponseError``).
+
+        Raises:
+            인프라성 예외(``APIError``/``RateLimitError``/``TokenExpiredError``)는
+            삼키지 않고 그대로 전파한다 — 살아있는 주문을 잘못 취소로 오기록하지
+            않기 위함(Safety-First).
+        """
+        cancelable = await self._fetch_cancelable_orders()
+        target = next((o for o in cancelable if o.odno == order_id), None)
+        if target is None or _to_int(target.psbl_qty) <= 0:
+            logger.info(
+                "kis_cancel_order_not_cancelable",
+                order_id=order_id,
+                reason="not_in_cancelable_list" if target is None else "no_psbl_qty",
+            )
+            return False
+
+        body: dict[str, str] = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "KRX_FWDG_ORD_ORGNO": target.ord_gno_brno,
+            "ORGN_ODNO": order_id,
+            "ORD_DVSN": target.ord_dvsn_cd,
+            "RVSE_CNCL_DVSN_CD": "02",   # 02: 취소
+            "ORD_QTY": target.psbl_qty,
+            "ORD_UNPR": target.ord_unpr,
+            "QTY_ALL_ORD_YN": "Y",       # 잔량 전부 취소
+            "EXCG_ID_DVSN_CD": "KRX",
+        }
+        tr_id = "VTTC0013U" if self._is_paper() else "TTTC0013U"
+
+        try:
+            await self._request(
+                "POST",
+                "/uapi/domestic-stock/v1/trading/order-rvsecncl",
+                tr_id,
+                body=body,
+            )
+        except KISResponseError as exc:
+            # 업무 거부(예: 직전 체결 레이스로 취소 불가) — 오취소 방지 차원에서
+            # False만 반환하고 호출측이 reconcile로 실제 상태를 확정하게 둔다.
+            logger.warning(
+                "kis_cancel_order_rejected",
+                order_id=order_id,
+                msg_cd=exc.msg_cd,
+                msg1=exc.msg1,
+            )
+            return False
+
+        logger.info(
+            "kis_cancel_order_submitted",
+            order_id=order_id,
+            quantity=target.psbl_qty,
+            symbol=target.pdno,
+        )
+        return True
 
     async def get_order_status(
         self, broker_order_id: str, *, order_date: date | None = None

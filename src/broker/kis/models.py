@@ -146,6 +146,28 @@ class KISOrderOutput(BaseModel):
     ORD_TMD: str = ""              # 주문시각 (HHMMSS)
 
 
+# ── 정정취소가능주문조회 (TTTC0084R output 배열) ─────────────────────
+
+
+class KISRvseCnclPsblOutput(BaseModel):
+    """Cancelable/amendable order — ``TTTC0084R`` ``output`` array element.
+
+    KIS 엔드포인트 ``/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl``.
+    정정취소 TR(``order-rvsecncl``) 호출 전 필수 파라미터를 원주문번호(``odno``)로
+    역조회하기 위해 사용한다.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    odno: str = ""             # 주문번호 (= broker_order_id 매칭 키)
+    ord_gno_brno: str = ""     # 주문채번지점번호 (→ KRX_FWDG_ORD_ORGNO)
+    ord_dvsn_cd: str = ""      # 주문구분코드 (→ ORD_DVSN)
+    psbl_qty: str = ""         # 정정취소 가능수량
+    ord_unpr: str = ""         # 주문단가
+    sll_buy_dvsn_cd: str = ""  # 매도매수구분코드 (로깅용)
+    pdno: str = ""             # 종목코드 (로깅용)
+
+
 # ── 잔고 — 보유종목 (TTTC8434R output1 배열) ─────────────────────────
 
 

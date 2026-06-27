@@ -1286,9 +1286,19 @@ async def account_sync_orders(account_id: str):
         today = datetime.now(UTC).date()
         cancelled_count = 0
 
-        # 1) 취소측: broker_order_id 없음 또는 전일 접수 → cancelled (DB만 갱신).
-        #    실제 브로커 취소는 cancel_order(B-05) 구현 후속. 한국장 당일주문은
-        #    미취소 시 KIS가 자동 만료하므로 전일분 DB 정리는 대체로 안전.
+        # 1) 취소측 (B-05):
+        #    - broker_order_id 없음 또는 전일 접수 → cancelled (DB만 갱신).
+        #      전일 국내주문은 KIS가 자동 만료하고, broker_order_id가 없으면 취소
+        #      TR 호출이 불가하므로 DB 정리만 한다.
+        #    - 당일 + broker_order_id 보유 → 실제 브로커 취소(cancel_order) 시도 후
+        #      성공시에만 cancelled. 실패/예외 시에는 건드리지 않고 아래 §2
+        #      reconciler가 실제 상태(체결 등)를 확정하게 둔다(살아있는 주문 오취소 방지).
+        try:
+            broker = get_broker_registry().get(account_id)
+        except Exception:
+            broker = None
+            logger.warning("admin.sync_orders.no_broker", account_id=account_id)
+
         async with get_session_factory()() as session:
             rows = await session.execute(
                 select(Order).where(
@@ -1299,7 +1309,25 @@ async def account_sync_orders(account_id: str):
             orders: list[Order] = list(rows.scalars().all())
             for order in orders:
                 order_date = order.created_at.date() if order.created_at else None
-                if not order.broker_order_id or (order_date and order_date < today):
+                is_prior = bool(order_date and order_date < today)
+                if not order.broker_order_id or is_prior:
+                    order.status = "cancelled"
+                    cancelled_count += 1
+                    continue
+                # 당일 + broker_order_id 보유 → 실 브로커 취소 시도
+                if broker is None:
+                    continue
+                try:
+                    ok = await broker.cancel_order(order.broker_order_id)
+                except Exception:
+                    logger.exception(
+                        "admin.sync_orders.cancel_failed",
+                        account_id=account_id,
+                        order_id=order.id,
+                        broker_order_id=order.broker_order_id,
+                    )
+                    continue
+                if ok:
                     order.status = "cancelled"
                     cancelled_count += 1
             await session.commit()

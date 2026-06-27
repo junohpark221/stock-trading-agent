@@ -774,11 +774,141 @@ class TestKISClientPlaceOrder:
         assert "SLL_TYPE" in body
         assert result.side == OrderSide.SELL
 
+    def _cancelable_row(self, **overrides):
+        row = {
+            "odno": "12345",
+            "ord_gno_brno": "00950",
+            "ord_dvsn_cd": "00",
+            "psbl_qty": "10",
+            "ord_unpr": "75000",
+            "sll_buy_dvsn_cd": "02",
+            "pdno": "005930",
+        }
+        row.update(overrides)
+        return row
+
     @pytest.mark.asyncio
-    async def test_cancel_raises(self):
+    async def test_cancel_order_success_builds_cancel_body(self):
         client = _make_kis_client()
-        with pytest.raises(NotImplementedError):
+        client._is_paper = lambda: False  # type: ignore[method-assign]
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {"output": [self._cancelable_row()], "_tr_cont": ""},
+                {"output": {}, "_tr_cont": ""},
+            ]
+        )
+
+        assert await client.cancel_order("12345") is True
+        assert client._request.await_count == 2
+
+        # 1번째: 정정취소가능주문조회(GET)
+        first = client._request.call_args_list[0]
+        assert first.args[0] == "GET"
+        assert "inquire-psbl-rvsecncl" in first.args[1]
+        assert first.args[2] == "TTTC0084R"
+
+        # 2번째: 정정취소(POST) — body 검증
+        second = client._request.call_args_list[1]
+        assert second.args[0] == "POST"
+        assert "order-rvsecncl" in second.args[1]
+        assert second.args[2] == "TTTC0013U"  # 실전
+        body = second.kwargs["body"]
+        assert body["RVSE_CNCL_DVSN_CD"] == "02"
+        assert body["QTY_ALL_ORD_YN"] == "Y"
+        assert body["EXCG_ID_DVSN_CD"] == "KRX"
+        assert body["KRX_FWDG_ORD_ORGNO"] == "00950"
+        assert body["ORGN_ODNO"] == "12345"
+        assert body["ORD_DVSN"] == "00"
+        assert body["ORD_QTY"] == "10"
+        assert body["ORD_UNPR"] == "75000"
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_paper_uses_demo_tr_id(self):
+        client = _make_kis_client()
+        client._is_paper = lambda: True  # type: ignore[method-assign]
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {"output": [self._cancelable_row()], "_tr_cont": ""},
+                {"output": {}, "_tr_cont": ""},
+            ]
+        )
+
+        assert await client.cancel_order("12345") is True
+        assert client._request.call_args_list[1].args[2] == "VTTC0013U"
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_not_in_cancelable_list_returns_false(self):
+        client = _make_kis_client()
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            return_value={"output": [self._cancelable_row(odno="99999")], "_tr_cont": ""}
+        )
+
+        assert await client.cancel_order("12345") is False
+        # 취소 TR(POST)은 호출되지 않음 — 조회 1회만
+        assert client._request.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_no_psbl_qty_returns_false(self):
+        client = _make_kis_client()
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "output": [self._cancelable_row(psbl_qty="0")],
+                "_tr_cont": "",
+            }
+        )
+
+        assert await client.cancel_order("12345") is False
+        assert client._request.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_kis_rejection_returns_false(self):
+        client = _make_kis_client()
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {"output": [self._cancelable_row()], "_tr_cont": ""},
+                KISResponseError(msg_cd="APBK1234", msg1="취소 불가", tr_id="TTTC0013U"),
+            ]
+        )
+
+        # 업무 거부는 삼켜서 False 반환(호출측 reconcile에 위임)
+        assert await client.cancel_order("12345") is False
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_infra_error_propagates(self):
+        client = _make_kis_client()
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {"output": [self._cancelable_row()], "_tr_cont": ""},
+                RateLimitError("rate limited"),
+            ]
+        )
+
+        # 인프라 예외는 전파(오취소 방지)
+        with pytest.raises(RateLimitError):
             await client.cancel_order("12345")
+
+    @pytest.mark.asyncio
+    async def test_fetch_cancelable_orders_paginates(self):
+        client = _make_kis_client()
+        client._request = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {
+                    "output": [self._cancelable_row(odno="A")],
+                    "_tr_cont": "M",
+                    "ctx_area_fk100": "FK",
+                    "ctx_area_nk100": "NK",
+                },
+                {"output": [self._cancelable_row(odno="B")], "_tr_cont": ""},
+            ]
+        )
+
+        rows = await client._fetch_cancelable_orders()
+        assert [r.odno for r in rows] == ["A", "B"]
+        # 2번째 호출에 연속조회 컨텍스트가 실렸는지
+        second = client._request.call_args_list[1]
+        assert second.kwargs["params"]["CTX_AREA_FK100"] == "FK"
+        assert second.kwargs["params"]["CTX_AREA_NK100"] == "NK"
+        assert second.kwargs["tr_cont"] == "N"
 
     @pytest.mark.asyncio
     async def test_order_result_fields(self):

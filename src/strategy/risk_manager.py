@@ -8,7 +8,7 @@ SELL/HOLD 액션은 항상 통과 (리스크 감소는 항상 허용).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -39,6 +39,50 @@ class _RuleResult:
     violation: str | None = None       # 위반 규칙명 (None = 통과)
     warning: str | None = None         # 비위반 경고
     max_quantity: int | None = None    # 수량 제약 (None = 제약 없음)
+
+
+@dataclass
+class BatchReservation:
+    """한 배치 매수 실행 동안 누적되는 in-flight(접수·미체결) 진입 예약.
+
+    배치 루프(`_execute_buy_decisions`)가 1회 호출 동안 소유하며, 각 진입을 접수할
+    때마다 누적된다. 후속 후보의 누적 한도 검증
+    (``MAX_DAILY_TRADES`` / ``MAX_PORTFOLIO_POSITIONS`` / ``SECTOR_CONCENTRATION``)에
+    이 예약분을 더해, 같은 배치 안에서 한도가 동시 돌파되는 것을 막는다 (F-04).
+
+    배치 경로는 지정가 주문이라 ``execute_entry`` 내에서 동기 체결·포지션 생성이
+    없어 DB 카운트와 겹치지 않는다. 예약은 배치 종료와 함께 폐기되고, 다음 배치는
+    DB(`PositionRecord`) 카운트가 이어받으므로 이중 카운트가 발생하지 않는다.
+    """
+
+    trade_count: int = 0
+    new_symbols: set[str] = field(default_factory=set)
+    sector_added_value: dict[str, Decimal] = field(default_factory=dict)
+
+    def reserve(
+        self,
+        symbol: str,
+        sector: str,
+        value: Decimal,
+        *,
+        is_new_holding: bool,
+    ) -> None:
+        """이번 배치의 진입 1건을 예약에 누적한다.
+
+        Parameters
+        ----------
+        symbol: 진입 종목 코드.
+        sector: 종목 섹터 (집중도 누적용; 빈 문자열이면 "기타"로 취급되지 않고
+            그대로 키로 사용 — check()의 섹터 조회와 동일 키를 써야 함).
+        value: 추가 거래대금 (수량 × 단가).
+        is_new_holding: 보유에 없던 신규 종목이면 True (보유 종목 수 누적).
+        """
+        self.trade_count += 1
+        if is_new_holding:
+            self.new_symbols.add(symbol)
+        self.sector_added_value[sector] = (
+            self.sector_added_value.get(sector, Decimal(0)) + value
+        )
 
 
 class AlgoRiskManager:
@@ -72,10 +116,15 @@ class AlgoRiskManager:
         sector: str,
         *,
         account_id: str = "default",
+        reservation: BatchReservation | None = None,
     ) -> RiskCheckResult:
         """8개 리스크 규칙을 순회하여 매매 가능 여부를 판정한다.
 
         SELL/HOLD → 즉시 통과. BUY → 8개 규칙 검증 후 수량 조정.
+
+        ``reservation``이 주어지면 같은 배치에서 이미 접수한 진입(in-flight)을 누적
+        반영하여 ``MAX_HOLDINGS`` / ``MAX_DAILY_TRADES`` / ``SECTOR_CONCENTRATION``
+        한도를 검증한다 (F-04 배치 동시 돌파 방지). None이면 기존 동작과 동일.
         """
         # SELL/HOLD은 항상 통과 (리스크 감소는 항상 허용)
         if action in (SignalAction.SELL, SignalAction.HOLD):
@@ -123,12 +172,14 @@ class AlgoRiskManager:
         results: list[_RuleResult] = [
             self._check_position_sizing(state, quantity, price, stop_loss_price),
             self._check_max_position(state, symbol, quantity, price),
-            self._check_max_holdings(state, symbol),
-            self._check_sector_concentration(state, symbol, quantity, price, sector),
+            self._check_max_holdings(state, symbol, reservation),
+            self._check_sector_concentration(
+                state, symbol, quantity, price, sector, reservation
+            ),
             self._check_max_drawdown(state),
             self._check_daily_loss_limit(state),
             await self._check_correlation(state, symbol),
-            self._check_daily_trades(state),
+            self._check_daily_trades(state, reservation),
         ]
 
         # violations, warnings 수집
@@ -247,11 +298,16 @@ class AlgoRiskManager:
         self,
         state: PortfolioState,
         symbol: str,
+        reservation: BatchReservation | None = None,
     ) -> _RuleResult:
         """보유 종목 수가 MAX_PORTFOLIO_POSITIONS 이상이면 신규 종목 진입 차단."""
         current_symbols = {p.symbol for p in state.positions}
 
-        # 기존 종목 추가매수는 허용
+        # 같은 배치에서 이미 접수한 신규 종목도 보유로 누적 (F-04)
+        if reservation is not None:
+            current_symbols = current_symbols | reservation.new_symbols
+
+        # 기존 종목(또는 이번 배치 신규 종목) 추가매수는 허용
         if symbol in current_symbols:
             return _RuleResult()
 
@@ -271,9 +327,17 @@ class AlgoRiskManager:
         quantity: int,
         price: Decimal,
         sector: str,
+        reservation: BatchReservation | None = None,
     ) -> _RuleResult:
         """동일 섹터 비중 합산이 SECTOR_CONCENTRATION_PCT를 초과하면 위반."""
         current_pct = state.sector_allocations.get(sector, Decimal(0))
+
+        # 같은 배치에서 이미 접수한 동일 섹터 거래대금을 비중에 누적 (F-04)
+        if reservation is not None:
+            reserved_value = reservation.sector_added_value.get(sector, Decimal(0))
+            if reserved_value > Decimal(0):
+                current_pct += reserved_value / state.total_value * Decimal(100)
+
         additional_pct = (Decimal(quantity) * price) / state.total_value * Decimal(100)
         new_pct = current_pct + additional_pct
 
@@ -375,9 +439,18 @@ class AlgoRiskManager:
 
     # ── Rule 8: 일일 거래 횟수 ───────────────────────────────────────────
 
-    def _check_daily_trades(self, state: PortfolioState) -> _RuleResult:
+    def _check_daily_trades(
+        self,
+        state: PortfolioState,
+        reservation: BatchReservation | None = None,
+    ) -> _RuleResult:
         """당일 거래 횟수가 MAX_DAILY_TRADES 이상이면 차단."""
-        if state.daily_trade_count >= self._settings.MAX_DAILY_TRADES:
+        count = state.daily_trade_count
+        # 같은 배치에서 이미 접수한 진입 건수를 누적 (F-04)
+        if reservation is not None:
+            count += reservation.trade_count
+
+        if count >= self._settings.MAX_DAILY_TRADES:
             return _RuleResult(
                 violation="MAX_DAILY_TRADES",
                 max_quantity=0,

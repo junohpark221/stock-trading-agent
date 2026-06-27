@@ -18,6 +18,7 @@ import structlog
 from src.core.enums import DecisionAction
 from src.data.collector import collect_daily_ohlcv
 from src.notification.templates import MessageTemplates
+from src.strategy.risk_manager import BatchReservation
 
 if TYPE_CHECKING:
     from src.agent.orchestrator import PipelineOrchestrator
@@ -152,6 +153,9 @@ async def _execute_buy_decisions(
         if not buy_decisions:
             return 0
 
+    # 배치 누적 한도 게이트용 in-flight 예약 (F-04). 이 배치에서 접수한 진입을
+    # 누적해 후속 후보의 MAX_HOLDINGS/MAX_DAILY_TRADES/섹터 한도 검증에 반영한다.
+    reservation = BatchReservation()
     executed = 0
     for td in buy_decisions:
         try:
@@ -161,6 +165,7 @@ async def _execute_buy_decisions(
                 strategy_type=strategy_type,
                 account_id=account_id,
                 account_label=account_label,
+                batch_reservation=reservation,
             )
             if exec_result.success:
                 executed += 1

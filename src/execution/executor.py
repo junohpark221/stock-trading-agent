@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from src.notification.telegram import TelegramBot
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
-    from src.strategy.risk_manager import AlgoRiskManager
+    from src.strategy.risk_manager import AlgoRiskManager, BatchReservation
 
 logger = structlog.get_logger(__name__)
 
@@ -189,6 +189,7 @@ class OrderExecutor:
         account_label: str = "",
         broker: BrokerInterface | None = None,
         manual: bool = False,
+        batch_reservation: BatchReservation | None = None,
     ) -> ExecutionResult:
         """진입 주문 실행.
 
@@ -202,6 +203,9 @@ class OrderExecutor:
         parent_decision_id: 부모 decision_log ID.
         analysis_summary: 분석 요약 (승인 메시지에 표시).
         manual: True면 웹검증/승인 플로우를 생략(관리자 수동 주문). Cash gate와 포지션 생성은 유지.
+        batch_reservation: 배치 매수 시 같은 배치의 in-flight 진입을 누적하는 예약
+            (F-04). 주어지면 승인 요청 전에 누적 한도 게이트를 적용하고, 접수(미체결)
+            성공 시 예약에 누적한다. 수동/단건 주문은 None(게이트 스킵).
         """
         side = _ACTION_TO_SIDE.get(trade_decision.action, OrderSide.BUY)
         symbol = trade_decision.symbol
@@ -210,6 +214,9 @@ class OrderExecutor:
         decision_ids: list[UUID] = []
         order: Order | None = None
         effective_broker = broker or self._broker
+        # 배치 예약 누적용 — 게이트에서 결정되고 접수 성공 시 reserve()에 사용
+        sector = ""
+        is_new_holding = False
 
         # 입력 검증 — 주문 생성 전에 조기 반환
         if quantity <= 0:
@@ -304,6 +311,77 @@ class OrderExecutor:
             if verification.result == WebVerifyResult.WARNING:
                 logger.warning("executor.web_verify_warning", symbol=symbol, summary=verification.summary)
 
+            # 2-b. 배치 누적 한도 게이트 (F-04) — 승인 요청 전에 같은 배치의 in-flight
+            # 예약을 반영해 MAX_HOLDINGS / MAX_DAILY_TRADES / 섹터 집중도를 검증한다.
+            # 차단 시 승인을 요청하지 않고 즉시 거부(헛 승인 방지). 수동 주문은 스킵.
+            if batch_reservation is not None and not manual and side == OrderSide.BUY:
+                sector = await self._lookup_sector(symbol)
+                state_snapshot = await self._portfolio_service.get_current_state()
+                held = {
+                    p.symbol for p in state_snapshot.positions
+                } | batch_reservation.new_symbols
+                is_new_holding = symbol not in held
+
+                gate_result = await self._risk_manager.check(
+                    symbol=symbol,
+                    action=SignalAction.BUY,
+                    quantity=quantity,
+                    price=price,
+                    stop_loss_price=trade_decision.stop_loss_price,
+                    sector=sector,
+                    account_id=account_id,
+                    reservation=batch_reservation,
+                )
+
+                if not gate_result.passed or gate_result.adjusted_quantity <= 0:
+                    reason = (
+                        f"배치 누적 리스크 한도 차단: {', '.join(gate_result.violations)}"
+                    )
+                    await self._update_order(
+                        order.id,
+                        status=OrderStatus.CANCELLED,
+                        rejection_reason=reason,
+                    )
+                    await self._notify_safe(MessageTemplates.rejection_notification(
+                        account_label=account_label,
+                        symbol=symbol, name=symbol, side=side,
+                        reason=reason, stage="risk_blocked",
+                    ))
+                    did = await self._record_decision_safe(
+                        session_id=session_id, stage=DecisionStage.EXECUTION,
+                        decision=DecisionAction.REJECT, symbol=symbol,
+                        reasoning=reason,
+                        parent_id=parent_decision_id,
+                        account_id=account_id,
+                        data_snapshot={
+                            "order_id": order.id,
+                            "violations": gate_result.violations,
+                            "batch_trade_count": batch_reservation.trade_count,
+                        },
+                    )
+                    if did:
+                        decision_ids.append(did)
+                    return self._fail_result(
+                        order=order, symbol=symbol, side=side, quantity=quantity,
+                        web_verify_result=verification.result, decision_ids=decision_ids,
+                        error=reason,
+                    )
+
+                # 섹터 한도 등으로 수량이 축소된 경우 반영 후 진행
+                if gate_result.adjusted_quantity < quantity:
+                    logger.info(
+                        "executor.batch_gate.shrink",
+                        symbol=symbol,
+                        original_qty=quantity,
+                        adjusted_qty=gate_result.adjusted_quantity,
+                        account_id=account_id,
+                    )
+                    quantity = gate_result.adjusted_quantity
+                    trade_decision = trade_decision.model_copy(
+                        update={"quantity": quantity}
+                    )
+                    await self._update_order(order.id, quantity=quantity)
+
             # 3-4-5. 포트폴리오 상태 + 승인 요청 + 수량 변경 — manual=True면 전체 생략
             if manual:
                 approval_status = ApprovalStatus.AUTO_APPROVED
@@ -353,20 +431,11 @@ class OrderExecutor:
                     # 포트폴리오 상태 갱신 (승인 대기 중 변경 반영)
                     portfolio_state = await self._portfolio_service.get_current_state()
 
-                    # sector 조회 (리스크 재검증에 필요)
-                    sector = ""
-                    try:
-                        async with self._session_factory() as _sess:
-                            _row = await _sess.execute(
-                                select(StockMaster.sector).where(
-                                    StockMaster.symbol == symbol
-                                )
-                            )
-                            sector = _row.scalar() or ""
-                    except Exception:
-                        logger.warning("executor.sector_lookup_failed", symbol=symbol)
+                    # sector 조회 (리스크 재검증에 필요; 배치 게이트에서 이미 조회됐으면 재사용)
+                    if not sector:
+                        sector = await self._lookup_sector(symbol)
 
-                    # 리스크 재검증
+                    # 리스크 재검증 (배치 예약 누적 반영)
                     risk_result = await self._risk_manager.check(
                         symbol=symbol,
                         action=SignalAction.BUY if side == OrderSide.BUY else SignalAction.SELL,
@@ -374,6 +443,7 @@ class OrderExecutor:
                         price=price,
                         stop_loss_price=trade_decision.stop_loss_price,
                         sector=sector,
+                        reservation=batch_reservation,
                     )
 
                     if not risk_result.passed:
@@ -592,6 +662,11 @@ class OrderExecutor:
                         broker_order_id=order_result.order_id,
                         timeout_sec=self._settings.ORDER_FILL_TIMEOUT_SEC,
                     )
+                    self._reserve_batch_entry(
+                        batch_reservation, symbol=symbol, sector=sector,
+                        quantity=effective_quantity, price=price,
+                        is_new_holding=is_new_holding,
+                    )
                     return self._pending_result(
                         order=order, order_result=order_result,
                         symbol=symbol, side=side, quantity=effective_quantity,
@@ -625,6 +700,11 @@ class OrderExecutor:
                         order_id=order.id,
                         broker_order_id=order_result.order_id,
                     )
+                    self._reserve_batch_entry(
+                        batch_reservation, symbol=symbol, sector=sector,
+                        quantity=effective_quantity, price=price,
+                        is_new_holding=is_new_holding,
+                    )
                     return self._pending_result(
                         order=order, order_result=order_result,
                         symbol=symbol, side=side, quantity=effective_quantity,
@@ -647,6 +727,11 @@ class OrderExecutor:
                 )
 
             # 6-e. WS 미연결 — 체결은 reconciler가 처리
+            self._reserve_batch_entry(
+                batch_reservation, symbol=symbol, sector=sector,
+                quantity=effective_quantity, price=price,
+                is_new_holding=is_new_holding,
+            )
             return self._pending_result(
                 order=order, order_result=order_result,
                 symbol=symbol, side=side, quantity=effective_quantity,
@@ -1308,6 +1393,43 @@ class OrderExecutor:
                 select(Order).where(Order.id == order_id)
             )
             return result.scalar_one_or_none()
+
+    def _reserve_batch_entry(
+        self,
+        reservation: BatchReservation | None,
+        *,
+        symbol: str,
+        sector: str,
+        quantity: int,
+        price: Decimal,
+        is_new_holding: bool,
+    ) -> None:
+        """접수(미체결) 진입을 배치 예약에 누적한다 (F-04).
+
+        체결 전 in-flight 상태에서만 호출한다. 동기 체결(즉시 FILLED)은 DB에
+        ``PositionRecord``가 생성되어 다음 후보가 DB로 카운트하므로 예약하지 않는다
+        (이중 카운트 방지). ``reservation``이 None이면 no-op.
+        """
+        if reservation is None:
+            return
+        reservation.reserve(
+            symbol,
+            sector,
+            Decimal(quantity) * price,
+            is_new_holding=is_new_holding,
+        )
+
+    async def _lookup_sector(self, symbol: str) -> str:
+        """StockMaster에서 종목 섹터를 조회한다. 실패/미존재 시 빈 문자열."""
+        try:
+            async with self._session_factory() as session:
+                row = await session.execute(
+                    select(StockMaster.sector).where(StockMaster.symbol == symbol)
+                )
+                return row.scalar() or ""
+        except Exception:
+            logger.warning("executor.sector_lookup_failed", symbol=symbol)
+            return ""
 
     async def _record_execution(
         self,

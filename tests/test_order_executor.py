@@ -1327,3 +1327,107 @@ async def test_execute_entry_manual_still_enforces_cash_gate(
     assert "현금" in result.error or "cash" in result.error.lower()
     mock_broker.place_order.assert_not_awaited()
     mock_position_manager.create.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# F-04: 배치 in-flight 예약(BatchReservation) 게이트 + 누적
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batch_gate_blocks_before_approval(
+    executor, mock_risk_manager, mock_approval_manager, mock_broker,
+):
+    """배치 게이트가 차단하면 승인 요청/브로커 주문 없이 즉시 거부."""
+    from src.strategy.risk_manager import BatchReservation
+
+    # 게이트 단계의 리스크 체크가 차단을 반환
+    mock_risk_manager.check = AsyncMock(
+        return_value=_make_risk_check(passed=False, qty=0)
+    )
+    reservation = BatchReservation()
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.SWING.value,
+        batch_reservation=reservation,
+    )
+
+    assert result.success is False
+    # 승인 요청·브로커 주문 모두 미발생 (헛 승인 방지)
+    mock_approval_manager.request_approval.assert_not_awaited()
+    mock_broker.place_order.assert_not_awaited()
+    # 차단됐으므로 예약은 누적되지 않음
+    assert reservation.trade_count == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_reservation_accumulates_on_pending(
+    executor, mock_broker, mock_position_manager,
+):
+    """접수(SUBMITTED, 미체결) 성공 시 예약에 누적된다."""
+    from src.strategy.risk_manager import BatchReservation
+
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(status=OrderStatus.SUBMITTED),
+    )
+    reservation = BatchReservation()
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(symbol="005930"),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.SWING.value,
+        batch_reservation=reservation,
+    )
+
+    assert result.success is True
+    assert result.pending is True
+    mock_position_manager.create.assert_not_awaited()
+    # in-flight 진입이 예약에 누적
+    assert reservation.trade_count == 1
+    assert "005930" in reservation.new_symbols
+
+
+@pytest.mark.asyncio
+async def test_batch_reservation_not_accumulated_on_immediate_fill(
+    executor, mock_broker, mock_position_manager,
+):
+    """즉시 체결(FILLED)은 DB 포지션이 생성되므로 예약하지 않는다(이중 카운트 방지)."""
+    from src.strategy.risk_manager import BatchReservation
+
+    # 기본 _make_order_result는 FILLED
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(status=OrderStatus.FILLED),
+    )
+    reservation = BatchReservation()
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(symbol="005930"),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.SWING.value,
+        batch_reservation=reservation,
+    )
+
+    assert result.success is True
+    mock_position_manager.create.assert_awaited()  # DB 포지션 생성됨
+    # DB가 카운트를 이어받으므로 예약은 누적되지 않음
+    assert reservation.trade_count == 0
+    assert reservation.new_symbols == set()
+
+
+@pytest.mark.asyncio
+async def test_batch_reservation_none_skips_gate(
+    executor, mock_risk_manager, mock_approval_manager, mock_broker,
+):
+    """batch_reservation=None이면 게이트를 건너뛰고 기존 승인 경로를 탄다."""
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(),
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.SWING.value,
+        batch_reservation=None,
+    )
+
+    assert result.success is True
+    # 게이트가 없으므로 승인은 정상 요청됨
+    mock_approval_manager.request_approval.assert_awaited()

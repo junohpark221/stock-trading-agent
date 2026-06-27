@@ -12,7 +12,7 @@ import pytest
 
 from src.core.enums import PositionStatus, SignalAction
 from src.core.models import PortfolioState, Position
-from src.strategy.risk_manager import AlgoRiskManager
+from src.strategy.risk_manager import AlgoRiskManager, BatchReservation
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -525,3 +525,130 @@ async def test_zero_price():
     assert result.passed is False
     assert "INVALID_PRICE" in result.violations
     assert result.adjusted_quantity == 0
+
+
+# ---------------------------------------------------------------------------
+# F-04: 배치 in-flight 예약(BatchReservation) 누적 한도 검증
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reservation_none_keeps_existing_behavior():
+    """reservation=None이면 기존 동작과 동일(보유 0 → 신규 통과)."""
+    mgr = _make_manager()
+    result = await mgr.check(
+        "005930", SignalAction.BUY, 10, Decimal("70000"), Decimal("66000"),
+        "전기전자", reservation=None,
+    )
+    assert "MAX_HOLDINGS" not in result.violations
+    assert "MAX_DAILY_TRADES" not in result.violations
+
+
+@pytest.mark.asyncio
+async def test_reservation_holdings_pushes_over_limit():
+    """DB 보유 4 + 예약 신규 1 = 5(한도) → 다음 신규 종목 차단."""
+    positions = [_make_position(f"10{i}000") for i in range(4)]  # 보유 4종목
+    state = _make_state(positions=positions)
+    mgr = _make_manager(state=state)  # MAX_PORTFOLIO_POSITIONS=5
+
+    reservation = BatchReservation()
+    reservation.reserve(
+        "888888", "전기전자", Decimal("1000000"), is_new_holding=True
+    )  # 배치 신규 1종목 → 합 5
+
+    result = await mgr.check(
+        "999999", SignalAction.BUY, 10, Decimal("70000"), Decimal("66000"),
+        "전기전자", reservation=reservation,
+    )
+    assert "MAX_HOLDINGS" in result.violations
+    assert result.adjusted_quantity == 0
+
+
+@pytest.mark.asyncio
+async def test_reservation_holdings_addon_to_reserved_symbol_allowed():
+    """이번 배치에서 예약한 종목의 추가매수는 보유로 간주되어 통과."""
+    positions = [_make_position(f"10{i}000") for i in range(4)]
+    state = _make_state(positions=positions)
+    mgr = _make_manager(state=state)
+
+    reservation = BatchReservation()
+    reservation.reserve(
+        "888888", "전기전자", Decimal("1000000"), is_new_holding=True
+    )
+
+    # 예약 신규집합에 이미 있는 888888 추가 → 신규 보유 증가 아님 → 허용
+    result = await mgr.check(
+        "888888", SignalAction.BUY, 10, Decimal("70000"), Decimal("66000"),
+        "전기전자", reservation=reservation,
+    )
+    assert "MAX_HOLDINGS" not in result.violations
+
+
+@pytest.mark.asyncio
+async def test_reservation_daily_trades_accumulates():
+    """DB 당일거래 3 + 예약 2 = 5(한도) → 다음 진입 차단."""
+    state = _make_state(daily_trade_count=3)
+    mgr = _make_manager(state=state)  # MAX_DAILY_TRADES=5
+
+    reservation = BatchReservation()
+    reservation.reserve("100000", "전기전자", Decimal("500000"), is_new_holding=True)
+    reservation.reserve("200000", "전기전자", Decimal("500000"), is_new_holding=True)
+
+    result = await mgr.check(
+        "005930", SignalAction.BUY, 10, Decimal("70000"), Decimal("66000"),
+        "전기전자", reservation=reservation,
+    )
+    assert "MAX_DAILY_TRADES" in result.violations
+    assert result.adjusted_quantity == 0
+
+
+@pytest.mark.asyncio
+async def test_reservation_daily_trades_below_limit_passes():
+    """DB 1 + 예약 1 = 2 < 5 → 통과."""
+    state = _make_state(daily_trade_count=1)
+    mgr = _make_manager(state=state)
+
+    reservation = BatchReservation()
+    reservation.reserve("100000", "전기전자", Decimal("500000"), is_new_holding=True)
+
+    result = await mgr.check(
+        "005930", SignalAction.BUY, 10, Decimal("70000"), Decimal("66000"),
+        "전기전자", reservation=reservation,
+    )
+    assert "MAX_DAILY_TRADES" not in result.violations
+
+
+@pytest.mark.asyncio
+async def test_reservation_sector_concentration_accumulates():
+    """섹터 현재 10% + 예약 거래대금 18% + 추가 5% = 33% > 30% → 위반."""
+    # total_value=100M. 예약 18% = 18,000,000
+    state = _make_state(sector_allocations={"전기전자": Decimal("10.0")})
+    mgr = _make_manager(state=state)  # SECTOR_CONCENTRATION_PCT=30
+
+    reservation = BatchReservation()
+    reservation.reserve(
+        "100000", "전기전자", Decimal("18000000"), is_new_holding=True
+    )
+
+    # 추가 ~5% (71주 * 70000 = 4,970,000)
+    result = await mgr.check(
+        "005930", SignalAction.BUY, 71, Decimal("70000"), Decimal("66000"),
+        "전기전자", reservation=reservation,
+    )
+    assert "SECTOR_CONCENTRATION" in result.violations
+
+
+@pytest.mark.asyncio
+async def test_reservation_other_sector_not_affected():
+    """예약이 다른 섹터면 대상 섹터 비중에 영향 없음 → 통과."""
+    state = _make_state(sector_allocations={"전기전자": Decimal("10.0")})
+    mgr = _make_manager(state=state)
+
+    reservation = BatchReservation()
+    reservation.reserve("100000", "바이오", Decimal("18000000"), is_new_holding=True)
+
+    result = await mgr.check(
+        "005930", SignalAction.BUY, 71, Decimal("70000"), Decimal("66000"),
+        "전기전자", reservation=reservation,
+    )
+    assert "SECTOR_CONCENTRATION" not in result.violations

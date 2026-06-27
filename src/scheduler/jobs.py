@@ -1,4 +1,4 @@
-"""Stateless job functions — 9개 스케줄 작업.
+"""Stateless job functions — 11개 스케줄 작업.
 
 각 함수는 keyword-only 인자로 의존성을 받는다.
 Step 8 SchedulerFactory에서 functools.partial로 바인딩하여

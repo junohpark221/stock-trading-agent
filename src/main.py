@@ -239,7 +239,7 @@ def create_app() -> FastAPI:
 
     return FastAPI(
         title="Stock Trading Agent",
-        version="0.2.0",
+        version="0.9.0",
         lifespan=lifespan,
         docs_url=None if is_prod else "/docs",
         redoc_url=None if is_prod else "/redoc",

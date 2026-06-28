@@ -7,7 +7,7 @@ Mode 2 (LLM_REPLAY) 백테스트에서 시그널 소스로 사용된다.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -18,12 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.enums import AgentType, DecisionAction, SignalAction
 from src.core.models import Signal
+from src.core.time import KST as _KST
 from src.db.models.llm import DecisionLog
 
 logger = structlog.get_logger(__name__)
-
-# 한국 표준시 (UTC+9) — decision_log.created_at → KST date 변환용
-_KST = timezone(timedelta(hours=9))
 
 # 시그널 변환 시 최소 확신도
 _MIN_CONFIDENCE = Decimal("0.5")

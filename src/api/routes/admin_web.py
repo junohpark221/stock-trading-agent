@@ -19,6 +19,7 @@ from src.api.routes.backtest import _execute_backtest
 from src.api.templates import templates
 from src.core.enums import BacktestMode, BacktestStatus, StrategyType
 from src.core.models import BacktestConfig
+from src.core.time import KST, to_kst, today_kst
 from src.db.models.account import Account, AccountCrypto
 from src.db.models.backtest import BacktestRun, BacktestTrade
 from src.db.models.llm import DecisionLog
@@ -655,7 +656,7 @@ async def performance_analysis(
 ):
     """GET /admin/performance — 성과 분석: 핵심 지표 + 전략별 + 월별."""
     # 날짜 기본값
-    _to = date.fromisoformat(to_date) if to_date else date.today()
+    _to = date.fromisoformat(to_date) if to_date else today_kst()
     _from = date.fromisoformat(from_date) if from_date else _to - timedelta(days=30)
 
     # 계좌 목록 (필터 드롭다운용)
@@ -1164,11 +1165,11 @@ async def decisions_log(
         stmt = stmt.where(DecisionLog.stage == stage)
         count_stmt = count_stmt.where(DecisionLog.stage == stage)
     if _from:
-        dt_from = datetime.combine(_from, datetime.min.time())
+        dt_from = datetime.combine(_from, datetime.min.time(), tzinfo=KST)
         stmt = stmt.where(DecisionLog.created_at >= dt_from)
         count_stmt = count_stmt.where(DecisionLog.created_at >= dt_from)
     if _to:
-        dt_to = datetime.combine(_to + timedelta(days=1), datetime.min.time())
+        dt_to = datetime.combine(_to + timedelta(days=1), datetime.min.time(), tzinfo=KST)
         stmt = stmt.where(DecisionLog.created_at < dt_to)
         count_stmt = count_stmt.where(DecisionLog.created_at < dt_to)
 
@@ -1283,7 +1284,7 @@ async def account_sync_orders(account_id: str):
     from src.strategy.position_manager import PositionManager
 
     try:
-        today = datetime.now(UTC).date()
+        today = today_kst()
         cancelled_count = 0
 
         # 1) 취소측 (B-05):
@@ -1308,7 +1309,9 @@ async def account_sync_orders(account_id: str):
             )
             orders: list[Order] = list(rows.scalars().all())
             for order in orders:
-                order_date = order.created_at.date() if order.created_at else None
+                order_date = (
+                    to_kst(order.created_at).date() if order.created_at else None
+                )
                 is_prior = bool(order_date and order_date < today)
                 if not order.broker_order_id or is_prior:
                     order.status = "cancelled"

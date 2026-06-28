@@ -144,7 +144,7 @@
 <!-- 미체결 주문 -->
 <section>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
-        <h2 style="margin:0">미체결 주문 ({{ pending_orders|length }}건) <small style="font-weight:normal;color:#888;">DB · 시스템 기록(submitted)</small></h2>
+        <h2 style="margin:0">미체결 주문 ({{ pending_orders|length }}건) <small style="font-weight:normal;color:#888;">DB · 시스템 기록(대기·접수)</small></h2>
         <form method="post" action="/admin/accounts/{{ account.id }}/sync-orders">
             <button type="submit" class="outline secondary" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem;">미체결 정리</button>
         </form>
@@ -169,7 +169,7 @@
                     <td>{{ "매수" if order.side == "buy" else "매도" }}</td>
                     <td>{{ "{:,}".format(order.quantity) }}</td>
                     <td>{{ "{:,.0f}".format(order.price) }}원</td>
-                    <td>{{ order.created_at.strftime("%H:%M:%S") if order.created_at else "-" }}</td>
+                    <td>{{ order.created_at | kst("%H:%M:%S") }}</td>
                     <td>{{ order.broker_order_id or "-" }}</td>
                 </tr>
                 {% endfor %}

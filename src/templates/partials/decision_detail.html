@@ -36,7 +36,7 @@
     <p>{{ d.reasoning }}</p>
 
     <small>
-        {{ d.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+        {{ d.created_at | kst('%Y-%m-%d %H:%M:%S') }}
         | {{ d.llm_model or "-" }}
         {% if d.llm_cost_usd %} | ${{ "{:.4f}".format(d.llm_cost_usd) }}{% endif %}
         {% if d.llm_tokens_in %} | {{ "{:,}".format(d.llm_tokens_in) }}+{{ "{:,}".format(d.llm_tokens_out or 0) }} tokens{% endif %}

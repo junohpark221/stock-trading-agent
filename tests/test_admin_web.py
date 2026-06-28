@@ -842,3 +842,69 @@ class TestSyncOrders:
         # 전일 주문은 DB-only cancelled — 브로커 취소 미호출
         broker.cancel_order.assert_not_awaited()
         assert order.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_kst_boundary_order_not_treated_as_prior_day(self):
+        """B-07: UTC 23:30(전일)=KST 당일 08:30 주문은 '전일'이 아니다.
+
+        과거 UTC 기준 판정에서는 UTC 날짜가 하루 빨라 prior-day로 오분류되어
+        브로커 취소 없이 DB-only cancelled 처리됐다. KST 기준으로 바로잡혀야 한다.
+        """
+        from datetime import UTC, datetime
+
+        order = MagicMock()
+        order.id = 1
+        order.broker_order_id = "BRK777"
+        # UTC 2026-06-27 23:30 → KST 2026-06-28 08:30
+        order.created_at = datetime(2026, 6, 27, 23, 30, tzinfo=UTC)
+        order.status = "submitted"
+
+        broker = MagicMock()
+        broker.cancel_order = AsyncMock(return_value=True)
+
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in self._patches([order], broker):
+                stack.enter_context(p)
+            # "오늘"을 KST 2026-06-28로 고정
+            stack.enter_context(patch(
+                "src.api.routes.admin_web.today_kst",
+                MagicMock(return_value=__import__("datetime").date(2026, 6, 28)),
+            ))
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/sync-orders", follow_redirects=False
+                )
+
+        assert r.status_code == 303
+        # KST 당일로 판정 → 전일 DB-only가 아니라 실제 브로커 취소 경로
+        broker.cancel_order.assert_awaited_once_with("BRK777")
+        assert order.status == "cancelled"
+
+
+class TestPendingOrdersScope:
+    """B-06: 표시(get_pending_orders)와 정리(sync-orders) 대상 status 일치."""
+
+    @pytest.mark.asyncio
+    async def test_get_pending_orders_includes_pending_and_submitted(self):
+        from conftest import AsyncContextManagerMock
+
+        from src.report.data_fetcher import ReportDataFetcher
+
+        captured: dict = {}
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = []
+        session = AsyncMock()
+
+        async def _exec(stmt):
+            captured["stmt"] = stmt
+            return result
+
+        session.execute = AsyncMock(side_effect=_exec)
+        factory = MagicMock(return_value=AsyncContextManagerMock(session))
+
+        await ReportDataFetcher(factory).get_pending_orders()
+
+        sql = str(captured["stmt"].compile(compile_kwargs={"literal_binds": True}))
+        assert "'pending'" in sql
+        assert "'submitted'" in sql

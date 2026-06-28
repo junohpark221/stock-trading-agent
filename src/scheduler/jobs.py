@@ -11,11 +11,11 @@ import uuid
 from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 import structlog
 
 from src.core.enums import DecisionAction
+from src.core.time import KST as _KST
 from src.data.collector import collect_daily_ohlcv
 from src.notification.templates import MessageTemplates
 from src.strategy.risk_manager import BatchReservation
@@ -42,7 +42,6 @@ logger = structlog.get_logger(__name__)
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
 _Q2 = Decimal("0.01")
-_KST = ZoneInfo("Asia/Seoul")
 
 
 # ── Token / Data Collection ────────────────────────────────────────────

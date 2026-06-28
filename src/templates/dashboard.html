@@ -104,7 +104,7 @@
             <tbody>
                 {% for order in recent_orders %}
                 <tr>
-                    <td>{{ order.created_at.strftime("%H:%M:%S") }}</td>
+                    <td>{{ order.created_at | kst("%H:%M:%S") }}</td>
                     <td>{{ order.account_id }}</td>
                     <td>{{ order.symbol }}</td>
                     <td>{{ "매수" if order.side == "buy" else "매도" }}</td>

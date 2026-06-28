@@ -11,9 +11,10 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 import structlog
-from sqlalchemy import Date, func, select
+from sqlalchemy import select
 
 from src.core.enums import OrderStatus
+from src.core.time import kst_day_range
 from src.db.models.execution import Execution, Order
 from src.db.models.strategy import PortfolioSnapshot, PositionRecord
 
@@ -87,11 +88,12 @@ class ReportDataFetcher:
     async def get_todays_orders(
         self, *, account_id: str | None = None,
     ) -> list[Order]:
-        """오늘 생성된 주문 목록 (created_at::date = today)."""
+        """오늘(KST) 생성된 주문 목록 (created_at이 KST 당일 경계 내)."""
+        start, end = kst_day_range()
         async with self._session_factory() as session:
             stmt = (
                 select(Order)
-                .where(func.cast(Order.created_at, Date) == date.today())
+                .where(Order.created_at >= start, Order.created_at < end)
                 .order_by(Order.created_at.asc())
             )
             if account_id is not None:
@@ -102,11 +104,19 @@ class ReportDataFetcher:
     async def get_pending_orders(
         self, *, account_id: str | None = None,
     ) -> list[Order]:
-        """현재 미체결 주문 (status='submitted')."""
+        """현재 미체결 주문 (status in pending/submitted).
+
+        '미체결 정리'(sync-orders)가 실제로 다루는 대상(pending+submitted)과
+        표시 범위를 일치시킨다(B-06).
+        """
         async with self._session_factory() as session:
             stmt = (
                 select(Order)
-                .where(Order.status == OrderStatus.SUBMITTED.value)
+                .where(
+                    Order.status.in_(
+                        [OrderStatus.PENDING.value, OrderStatus.SUBMITTED.value]
+                    )
+                )
                 .order_by(Order.created_at.asc())
             )
             if account_id is not None:
@@ -117,11 +127,12 @@ class ReportDataFetcher:
     async def get_todays_executions(
         self, *, account_id: str | None = None,
     ) -> list[Execution]:
-        """오늘 체결된 거래 (executed_at::date = today)."""
+        """오늘(KST) 체결된 거래 (executed_at이 KST 당일 경계 내)."""
+        start, end = kst_day_range()
         async with self._session_factory() as session:
             stmt = (
                 select(Execution)
-                .where(func.cast(Execution.executed_at, Date) == date.today())
+                .where(Execution.executed_at >= start, Execution.executed_at < end)
                 .order_by(Execution.executed_at.asc())
             )
             if account_id is not None:

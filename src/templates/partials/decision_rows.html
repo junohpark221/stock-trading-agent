@@ -17,7 +17,7 @@
         <tbody>
             {% for d in decisions %}
             <tr>
-                <td>{{ d.created_at.strftime('%m-%d %H:%M') }}</td>
+                <td>{{ d.created_at | kst('%m-%d %H:%M') }}</td>
                 <td>{{ d.symbol or "-" }}</td>
                 <td>
                     {% if d.stage == 'market_analysis' %}

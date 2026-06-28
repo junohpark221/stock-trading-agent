@@ -283,7 +283,7 @@ async def test_execute_order_success(mock_build, client):
     mock_executor = MagicMock()
     mock_executor.execute_entry = AsyncMock(return_value=_execution_result(success=True))
     mock_broker = AsyncMock()
-    mock_build.return_value = (mock_executor, mock_broker)
+    mock_build.return_value = (mock_executor, mock_broker, True, AsyncMock())
 
     resp = await client.post("/api/orders/execute", json={
         "symbol": "005930",
@@ -307,7 +307,7 @@ async def test_execute_order_failure(mock_build, client):
         return_value=_execution_result(success=False, error="Web 검증 차단")
     )
     mock_broker = AsyncMock()
-    mock_build.return_value = (mock_executor, mock_broker)
+    mock_build.return_value = (mock_executor, mock_broker, True, AsyncMock())
 
     resp = await client.post("/api/orders/execute", json={
         "symbol": "005930",
@@ -482,3 +482,163 @@ async def test_approval_respond_modify_no_quantity(client, mock_db_session):
     )
     assert resp.status_code == 400
     assert "modified_quantity" in resp.json()["detail"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# B-09 · _acquire_broker — 공유 BrokerRegistry 재사용 / 폴백
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_acquire_broker_reuses_registry():
+    """레지스트리에 등록된 계좌 → 재사용, owned=False(disconnect 금지)."""
+    from src.api.routes import orders as orders_mod
+
+    sentinel = object()
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=sentinel)
+
+    with patch("src.main.get_broker_registry", return_value=reg):
+        broker, owned = await orders_mod._acquire_broker("acc-1")
+
+    assert broker is sentinel
+    assert owned is False
+    reg.get.assert_called_once_with("acc-1")
+
+
+@pytest.mark.asyncio
+async def test_acquire_broker_lazy_registers_unknown_multi_account():
+    """미등록 멀티계좌 → DB 자격증명으로 register, owned=False."""
+    from src.api.routes import orders as orders_mod
+
+    reg = MagicMock()
+    reg.get = MagicMock(side_effect=KeyError("no"))
+    registered = object()
+    reg.register = AsyncMock(return_value=registered)
+    creds = object()
+
+    with (
+        patch("src.main.get_broker_registry", return_value=reg),
+        patch.object(orders_mod, "_build_account_credentials",
+                     AsyncMock(return_value=creds)),
+        patch("src.config.get_settings",
+              return_value=MagicMock(USE_MOCK_BROKER=False)),
+    ):
+        broker, owned = await orders_mod._acquire_broker("acc-1")
+
+    assert broker is registered
+    assert owned is False
+    reg.register.assert_awaited_once_with(creds)
+
+
+@pytest.mark.asyncio
+async def test_acquire_broker_fallback_when_registry_uninitialized():
+    """레지스트리 미초기화(RuntimeError) → 요청 단위 폴백, owned=True."""
+    from src.api.routes import orders as orders_mod
+
+    fallback = object()
+    with (
+        patch("src.main.get_broker_registry", side_effect=RuntimeError("not init")),
+        patch.object(orders_mod, "_build_account_broker",
+                     AsyncMock(return_value=fallback)),
+    ):
+        broker, owned = await orders_mod._acquire_broker("acc-1")
+
+    assert broker is fallback
+    assert owned is True
+
+
+@pytest.mark.asyncio
+async def test_acquire_broker_default_account_falls_back():
+    """default 레거시 계좌는 register 대상 아님 → 폴백(owned=True)."""
+    from src.api.routes import orders as orders_mod
+
+    reg = MagicMock()
+    reg.get = MagicMock(side_effect=KeyError("no"))
+    reg.register = AsyncMock()
+    fallback = object()
+
+    with (
+        patch("src.main.get_broker_registry", return_value=reg),
+        patch("src.config.get_settings",
+              return_value=MagicMock(USE_MOCK_BROKER=False)),
+        patch.object(orders_mod, "_build_account_broker",
+                     AsyncMock(return_value=fallback)),
+    ):
+        broker, owned = await orders_mod._acquire_broker("default")
+
+    assert (broker, owned) == (fallback, True)
+    reg.register.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# B-08 · _confirm_fill — 동기 단기 체결 확인
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _order_result(status: OrderStatus, **kw) -> "object":
+    from src.core.enums import OrderType
+    from src.core.models import OrderResult
+
+    return OrderResult(
+        order_id=kw.get("order_id", "KIS1"),
+        symbol="005930",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=10,
+        price=Decimal("70000"),
+        status=status,
+        filled_quantity=kw.get("filled_quantity", 10),
+        filled_price=kw.get("filled_price", Decimal("70000")),
+        timestamp=datetime.now(UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_finalizes_on_terminal():
+    """종료상태(FILLED) 확인 시 finalize 호출 후 OrderResult 반환."""
+    from tests.conftest import AsyncContextManagerMock
+
+    from src.api.routes import orders as orders_mod
+
+    filled = _order_result(OrderStatus.FILLED)
+    broker = AsyncMock()
+    broker.get_order_status = AsyncMock(return_value=filled)
+    finalizer = AsyncMock()
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=MagicMock())  # Order ORM
+    session_factory = MagicMock(return_value=AsyncContextManagerMock(session))
+
+    with patch("src.db.session.get_session_factory", return_value=session_factory):
+        out = await orders_mod._confirm_fill(
+            broker=broker, finalizer=finalizer,
+            order_id=42, broker_order_id="KIS1", timeout_sec=5,
+        )
+
+    assert out is filled
+    finalizer.finalize_from_order_result.assert_awaited_once()
+    broker.get_order_status.assert_awaited_once_with("KIS1")
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_returns_none_on_timeout():
+    """타임아웃까지 SUBMITTED 유지 시 None(폴백) 반환, finalize 미호출."""
+    import asyncio
+
+    from src.api.routes import orders as orders_mod
+
+    pending = _order_result(OrderStatus.SUBMITTED)
+    broker = AsyncMock()
+    broker.get_order_status = AsyncMock(return_value=pending)
+    finalizer = AsyncMock()
+
+    with patch.object(asyncio, "sleep", AsyncMock()):
+        out = await orders_mod._confirm_fill(
+            broker=broker, finalizer=finalizer,
+            order_id=42, broker_order_id="KIS1", timeout_sec=3,
+        )
+
+    assert out is None
+    finalizer.finalize_from_order_result.assert_not_called()
+    assert broker.get_order_status.await_count == 3

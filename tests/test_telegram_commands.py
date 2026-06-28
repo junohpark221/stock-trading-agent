@@ -370,7 +370,7 @@ class TestCmdBuySell:
             patch("src.notification.commands.resolve_account",
                   AsyncMock(return_value=("acc-1", "테스트"))),
             patch("src.api.routes.orders._build_executor",
-                  AsyncMock(return_value=(executor, broker))),
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
             patch("src.api.routes.orders._resolve_account_label",
                   AsyncMock(return_value="테스트 (1234)")),
         ):

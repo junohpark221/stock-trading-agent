@@ -184,7 +184,7 @@
 <!-- 수동 주문 -->
 <section>
     <h2>수동 주문</h2>
-    <p><small>승인 생략 즉시 집행. 가격을 비우면 현재가로 지정가 주문을 낸다.</small></p>
+    <p><small>승인 생략 즉시 집행. 지정가는 가격을 비우면 현재가로 낸다. 시장가 선택 시 가격은 무시된다. 매수 접수 후 잠시 체결을 확인해 결과를 안내한다.</small></p>
     {% if manual_order_error %}
     <article style="background:#ffe9e9;border-left:3px solid #d93025;padding:0.5rem 1rem;">
         <strong>주문 실패:</strong> {{ manual_order_error }}
@@ -206,7 +206,14 @@
                 <input type="number" name="quantity" min="1" step="1" required>
             </label>
             <label>
-                가격 (비우면 현재가)
+                주문유형 (매수)
+                <select name="order_type">
+                    <option value="limit">지정가</option>
+                    <option value="market">시장가</option>
+                </select>
+            </label>
+            <label>
+                가격 (지정가·비우면 현재가)
                 <input type="number" name="price" min="0" step="1" placeholder="현재가">
             </label>
         </div>

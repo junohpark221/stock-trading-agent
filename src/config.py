@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     KIS_WS_APPROVAL_URL_PAPER: str = "https://openapivts.koreainvestment.com:29443/oauth2/Approval"
     ORDER_FILL_TIMEOUT_SEC: int = 1800    # WS 체결 대기 타임아웃 (30분). 초과 시 reconciler 처리.
     WS_RECONNECT_BACKOFF_MAX_SEC: int = 60
+    # B-08: 수동 주문 접수 직후 동기 체결 확인 상한(초). HTTP 요청을 이만큼 블록하며
+    # ~1초 간격 폴링한다. 초과 시 "접수·대기"로 폴백(이후 WS/reconciler가 확정).
+    # ORDER_FILL_TIMEOUT_SEC(WS용)와 혼동 금지 — 동기 HTTP 확인 전용.
+    MANUAL_ORDER_CONFIRM_TIMEOUT_SEC: int = 5
 
     # Reconcile 잡 — WS 누락 주문 정리 (KST 기준)
     RECONCILE_MIDDAY_TIME: str = "12:00"   # 장중 mid-day sweep

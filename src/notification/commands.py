@@ -602,8 +602,9 @@ async def _run_manual_order(message: Message, side: str) -> None:
     account_id, account_label = account
 
     broker = None
+    owned = False
     try:
-        executor, broker = await _build_executor(account_id)
+        executor, broker, owned, _finalizer = await _build_executor(account_id)
 
         if price is None:
             try:
@@ -651,7 +652,7 @@ async def _run_manual_order(message: Message, side: str) -> None:
         )
         return
     finally:
-        if broker:
+        if owned and broker:
             try:
                 await broker.disconnect()
             except Exception:

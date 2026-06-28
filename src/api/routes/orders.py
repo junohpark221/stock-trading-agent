@@ -10,6 +10,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -46,18 +47,45 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 # ── Executor Factory ─────────────────────────────────────────────────
 
 
+async def _build_account_credentials(account_id: str):
+    """accounts 테이블에서 Fernet 복호화한 AccountCredentials를 조립(멀티 계좌)."""
+    from src.broker.credentials import AccountCredentials
+    from src.config import get_settings
+    from src.db.models.account import Account, AccountCrypto
+    from src.db.session import get_session_factory
+
+    settings = get_settings()
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        account = await session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
+
+    enc_key = settings.ACCOUNT_ENCRYPTION_KEY
+    if not enc_key:
+        raise HTTPException(status_code=500, detail="ACCOUNT_ENCRYPTION_KEY not configured")
+
+    return AccountCredentials(
+        account_id=account.id,
+        app_key=AccountCrypto.decrypt(account.kis_app_key_enc, enc_key),
+        app_secret=AccountCrypto.decrypt(account.kis_app_secret_enc, enc_key),
+        account_no=account.kis_account_no,
+        account_prod=account.kis_account_prod,
+        is_paper=account.kis_is_paper,
+        hts_id=account.kis_hts_id,
+    )
+
+
 async def _build_account_broker(account_id: str):
     """계좌별 브로커 인스턴스 생성 후 connect. USE_MOCK_BROKER면 InMemoryBroker.
 
     account_id="default"는 레거시 env var 기반. 그 외는 accounts 테이블에서
     Fernet으로 복호화한 AccountCredentials로 KISClient.from_credentials() 호출.
-    호출자가 disconnect() 책임을 진다.
+    요청 단위 폴백 빌더 — 호출자가 disconnect() 책임을 진다(B-09: 공유 레지스트리
+    재사용이 불가능한 경우에만 사용). 평상시 경로는 `_acquire_broker` 참고.
     """
-    from src.broker.credentials import AccountCredentials
     from src.config import get_settings
     from src.data.cache import get_cache
-    from src.db.models.account import Account, AccountCrypto
-    from src.db.session import get_session_factory
 
     settings = get_settings()
     cache = get_cache()
@@ -77,28 +105,116 @@ async def _build_account_broker(account_id: str):
         return broker
 
     # 멀티 계좌 — accounts 테이블에서 복호화 후 credentials 경로
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        account = await session.get(Account, account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail=f"Account not found: {account_id}")
-
-    enc_key = settings.ACCOUNT_ENCRYPTION_KEY
-    if not enc_key:
-        raise HTTPException(status_code=500, detail="ACCOUNT_ENCRYPTION_KEY not configured")
-
-    credentials = AccountCredentials(
-        account_id=account.id,
-        app_key=AccountCrypto.decrypt(account.kis_app_key_enc, enc_key),
-        app_secret=AccountCrypto.decrypt(account.kis_app_secret_enc, enc_key),
-        account_no=account.kis_account_no,
-        account_prod=account.kis_account_prod,
-        is_paper=account.kis_is_paper,
-        hts_id=account.kis_hts_id,
-    )
+    credentials = await _build_account_credentials(account_id)
     broker = KISClient.from_credentials(credentials, cache)
     await broker.connect()
     return broker
+
+
+async def _acquire_broker(account_id: str) -> tuple[object, bool]:
+    """수동 주문/시세 조회용 브로커 확보. `(broker, owned)`를 반환한다. (B-09)
+
+    앱은 web+scheduler가 한 프로세스라 startup에 연결된 공유 `BrokerRegistry`
+    싱글톤을 재사용한다(요청마다 connect/disconnect로 인한 토큰 재발급·레이트리밋
+    부담 제거).
+
+    - 레지스트리에 등록된 계좌  → 재사용. `owned=False`(레지스트리 소유 →
+      **disconnect 금지**, 앱 shutdown의 `disconnect_all()`이 정리).
+    - 미등록 멀티 계좌          → DB 자격증명으로 lazy `register()` 후 재사용
+      (`owned=False`, 이후 요청에서도 재사용).
+    - 레지스트리 미초기화 / "default" 레거시 / mock → 요청 단위 생성(폴백,
+      `owned=True` → 호출자가 disconnect).
+    """
+    from src.config import get_settings
+
+    registry = None
+    try:
+        from src.main import get_broker_registry
+        registry = get_broker_registry()
+    except RuntimeError:
+        registry = None  # 스케줄러 비활성 등 — 레지스트리 미초기화
+
+    if registry is not None:
+        try:
+            return registry.get(account_id), False
+        except KeyError:
+            settings = get_settings()
+            if account_id != "default" and not settings.USE_MOCK_BROKER:
+                credentials = await _build_account_credentials(account_id)
+                broker = await registry.register(credentials)
+                return broker, False
+
+    # 폴백: 요청 단위 생성 (호출자 disconnect 책임)
+    broker = await _build_account_broker(account_id)
+    return broker, True
+
+
+async def _confirm_fill(
+    *,
+    broker,
+    finalizer,
+    order_id: int,
+    broker_order_id: str,
+    timeout_sec: int,
+):
+    """접수된 단일 주문의 체결을 동기적으로 짧게 확인한다. (B-08)
+
+    `timeout_sec` 동안 ~1초 간격으로 `get_order_status`를 폴링하고, 종료상태가
+    확인되면 reconciler와 동일한 공유 `FillFinalizer.finalize_from_order_result`
+    (멱등)로 DB를 확정한 뒤 그 종료 `OrderResult`를 반환한다. 미확정이면 None.
+    """
+    from src.db.session import get_session_factory
+
+    terminal = (
+        OrderStatus.FILLED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.REJECTED,
+        OrderStatus.CANCELLED,
+    )
+    attempts = max(1, timeout_sec)
+
+    for attempt in range(attempts):
+        try:
+            order_result = await broker.get_order_status(broker_order_id)
+        except Exception:
+            logger.warning(
+                "manual_order_confirm_status_failed",
+                order_id=order_id, broker_order_id=broker_order_id,
+            )
+            return None
+
+        if order_result.status in terminal:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                order = await session.get(Order, order_id)
+            if order is not None:
+                await finalizer.finalize_from_order_result(
+                    order=order, order_result=order_result,
+                )
+            return order_result
+
+        if attempt < attempts - 1:
+            await asyncio.sleep(1)
+
+    return None
+
+
+def _apply_confirmation(result, order_result):
+    """동기 체결 확인(OrderResult)을 ExecutionResult에 반영해 새 결과를 반환. (B-08)"""
+    status = order_result.status
+    if status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+        return result.model_copy(update={
+            "success": True,
+            "pending": False,
+            "fill_price": order_result.filled_price or result.fill_price,
+            "commission": order_result.commission or result.commission,
+        })
+    # REJECTED / CANCELLED — 접수 후 거부/취소 확인
+    return result.model_copy(update={
+        "success": False,
+        "pending": False,
+        "error": f"주문 {status.value}",
+    })
 
 
 async def _resolve_account_label(account_id: str) -> str:
@@ -124,13 +240,17 @@ async def _build_executor(account_id: str = "default"):
     """OrderExecutor + 전체 의존성 트리를 조립.
 
     strategy.py의 _build_strategy() 패턴과 동일.
-    (OrderExecutor, broker) 튜플을 반환하여 호출자가 disconnect 가능.
+    `(executor, broker, owned, finalizer)` 튜플을 반환한다.
+    - owned=True면 호출자가 broker.disconnect() 책임을 진다(요청 단위 폴백 브로커).
+      owned=False면 공유 레지스트리 소유이므로 disconnect 금지(B-09).
+    - finalizer는 B-08 동기 체결 확인(`_confirm_fill`)에 재사용한다.
     """
     from src.agent.decision_recorder import DecisionRecorder
     from src.config import get_settings
     from src.data.cache import get_cache
     from src.db.session import get_session_factory
     from src.execution.executor import OrderExecutor
+    from src.execution.fill_finalizer import FillFinalizer
     from src.execution.web_verify import WebSearchVerifier
     from src.llm.cost_tracker import CostTracker
     from src.llm.router import LLMRouter
@@ -143,8 +263,8 @@ async def _build_executor(account_id: str = "default"):
     session_factory = get_session_factory()
     cache = get_cache()
 
-    # 계좌별 브로커 — 요청 단위 생성/해제
-    broker = await _build_account_broker(account_id)
+    # 계좌별 브로커 — 공유 레지스트리 재사용(가능 시), 아니면 요청 단위 폴백 (B-09)
+    broker, owned = await _acquire_broker(account_id)
 
     # LLM
     cost_tracker = CostTracker(session_factory=session_factory, settings=settings)
@@ -191,7 +311,15 @@ async def _build_executor(account_id: str = "default"):
         session_factory=session_factory,
         settings=settings,
     )
-    return executor, broker
+
+    # B-08: reconciler와 동일한 체결 확정 경로를 동기 확인에 재사용
+    finalizer = FillFinalizer(
+        session_factory=session_factory,
+        position_manager=position_manager,
+        telegram_bot=telegram_bot,
+        settings=settings,
+    )
+    return executor, broker, owned, finalizer
 
 
 # ── GET /api/orders ──────────────────────────────────────────────────
@@ -316,9 +444,12 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
     manual=True면 웹검증/승인을 생략하고 즉시 브로커로 접수한다.
     price가 None이면 브로커 현재가로 지정가 주문을 낸다.
     """
+    from src.config import get_settings
+
     broker = None
+    owned = False
     try:
-        executor, broker = await _build_executor(req.account_id)
+        executor, broker, owned, finalizer = await _build_executor(req.account_id)
 
         # 가격 자동 보정 — 빈 값이면 현재가 조회
         price = req.price
@@ -362,6 +493,16 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
             manual=req.manual,
         )
 
+        # B-08: 접수분(pending)은 동기로 짧게 체결을 확인해 응답에 반영
+        if result.pending and result.broker_order_id:
+            confirmed = await _confirm_fill(
+                broker=broker, finalizer=finalizer,
+                order_id=result.order_id, broker_order_id=result.broker_order_id,
+                timeout_sec=get_settings().MANUAL_ORDER_CONFIRM_TIMEOUT_SEC,
+            )
+            if confirmed is not None:
+                result = _apply_confirmation(result, confirmed)
+
         return JSONResponse(
             content=result.model_dump(mode="json"),
             status_code=200 if result.success else 422,
@@ -373,7 +514,7 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
         logger.exception("execute_order_failed", symbol=req.symbol)
         raise HTTPException(status_code=500, detail="Internal server error") from None
     finally:
-        if broker:
+        if owned and broker:
             await broker.disconnect()
 
 
@@ -381,11 +522,12 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
 async def get_quote(account_id: str, symbol: str) -> JSONResponse:
     """현재가 조회 — 수동 주문 폼/커맨드 보조용.
 
-    계좌별 브로커로 broker.get_price(symbol)를 호출하고, 사용 후 disconnect한다.
+    공유 BrokerRegistry를 재사용하고(B-09), 폴백으로 생성한 경우에만 disconnect한다.
     """
     broker = None
+    owned = False
     try:
-        broker = await _build_account_broker(account_id)
+        broker, owned = await _acquire_broker(account_id)
         info = await broker.get_price(symbol)
         return JSONResponse(content={
             "symbol": symbol,
@@ -399,7 +541,7 @@ async def get_quote(account_id: str, symbol: str) -> JSONResponse:
         logger.exception("get_quote_failed", symbol=symbol, account_id=account_id)
         raise HTTPException(status_code=422, detail=f"현재가 조회 실패: {exc}") from exc
     finally:
-        if broker:
+        if owned and broker:
             await broker.disconnect()
 
 

@@ -619,7 +619,7 @@ class TestManualOrderHandler:
 
         with (
             patch("src.api.routes.orders._build_executor",
-                  AsyncMock(return_value=(executor, broker))),
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
             patch("src.api.routes.orders._resolve_account_label",
                   AsyncMock(return_value="테스트")),
         ):
@@ -674,7 +674,7 @@ class TestManualOrderHandler:
 
         with (
             patch("src.api.routes.orders._build_executor",
-                  AsyncMock(return_value=(executor, broker))),
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
             patch("src.api.routes.orders._resolve_account_label",
                   AsyncMock(return_value="테스트")),
         ):
@@ -721,7 +721,7 @@ class TestManualOrderHandler:
 
         with (
             patch("src.api.routes.orders._build_executor",
-                  AsyncMock(return_value=(executor, broker))),
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
             patch("src.api.routes.orders._resolve_account_label",
                   AsyncMock(return_value="테스트")),
         ):
@@ -739,6 +739,204 @@ class TestManualOrderHandler:
 
         assert r.status_code == 303
         assert "order_error" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_market_order_type_passed_through(self, mock_session):
+        """B-08: order_type=market 폼값이 TradeDecision.order_type=MARKET로 전달."""
+        from decimal import Decimal
+
+        from src.core.enums import (
+            ApprovalStatus,
+            OrderSide,
+            OrderType,
+            WebVerifyResult,
+        )
+        from src.core.models import ExecutionResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(
+            return_value=MagicMock(current_price=Decimal("70000")),
+        )
+        broker.disconnect = AsyncMock()
+
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True, order_id=50, broker_order_id="KIS50", symbol="005930",
+            side=OrderSide.BUY, quantity=10, fill_price=Decimal("70000"),
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930",
+                        "quantity": "10",
+                        "order_type": "market",
+                        "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        kwargs = executor.execute_entry.await_args.kwargs
+        assert kwargs["trade_decision"].order_type == OrderType.MARKET
+
+    @pytest.mark.asyncio
+    async def test_default_order_type_is_limit(self, mock_session):
+        """B-08: order_type 미지정 → 기존대로 LIMIT."""
+        from decimal import Decimal
+
+        from src.core.enums import (
+            ApprovalStatus,
+            OrderSide,
+            OrderType,
+            WebVerifyResult,
+        )
+        from src.core.models import ExecutionResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.disconnect = AsyncMock()
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True, order_id=51, broker_order_id="KIS51", symbol="005930",
+            side=OrderSide.BUY, quantity=10, fill_price=Decimal("70000"),
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930", "quantity": "10",
+                        "price": "70000", "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        kwargs = executor.execute_entry.await_args.kwargs
+        assert kwargs["trade_decision"].order_type == OrderType.LIMIT
+
+    @pytest.mark.asyncio
+    async def test_pending_order_confirmed_filled_shows_filled(self, mock_session):
+        """B-08: 접수분이 동기 확인에서 FILLED → '체결' 안내."""
+        from datetime import UTC, datetime
+        from decimal import Decimal
+        from urllib.parse import unquote
+
+        from src.core.enums import (
+            ApprovalStatus,
+            OrderSide,
+            OrderStatus,
+            OrderType,
+            WebVerifyResult,
+        )
+        from src.core.models import ExecutionResult, OrderResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.disconnect = AsyncMock()
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True, pending=True, order_id=60, broker_order_id="KIS60",
+            symbol="005930", side=OrderSide.BUY, quantity=10,
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+        filled = OrderResult(
+            order_id="KIS60", symbol="005930", side=OrderSide.BUY,
+            order_type=OrderType.LIMIT, quantity=10, price=Decimal("70000"),
+            status=OrderStatus.FILLED, filled_quantity=10,
+            filled_price=Decimal("71000"), timestamp=datetime.now(UTC),
+        )
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+            patch("src.api.routes.orders._confirm_fill",
+                  AsyncMock(return_value=filled)),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930", "quantity": "10",
+                        "price": "70000", "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        loc = unquote(r.headers.get("location", ""))
+        assert "order_success" in loc
+        assert "체결" in loc
+        assert "대기" not in loc
+
+    @pytest.mark.asyncio
+    async def test_pending_order_confirm_timeout_shows_waiting(self, mock_session):
+        """B-08: 접수분이 타임아웃(미확정) → '체결 대기' 폴백."""
+        from decimal import Decimal
+        from urllib.parse import unquote
+
+        from src.core.enums import ApprovalStatus, OrderSide, WebVerifyResult
+        from src.core.models import ExecutionResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.disconnect = AsyncMock()
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True, pending=True, order_id=61, broker_order_id="KIS61",
+            symbol="005930", side=OrderSide.BUY, quantity=10,
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+            patch("src.api.routes.orders._confirm_fill",
+                  AsyncMock(return_value=None)),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930", "quantity": "10",
+                        "price": "70000", "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        loc = unquote(r.headers.get("location", ""))
+        assert "order_success" in loc
+        assert "체결 대기" in loc
 
 
 class TestSyncOrders:

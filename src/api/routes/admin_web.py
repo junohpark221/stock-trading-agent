@@ -404,8 +404,13 @@ async def account_manual_order(
     """
     from urllib.parse import quote
 
-    from src.api.routes.orders import _build_executor, _resolve_account_label
-    from src.core.enums import DecisionAction, ExitReason
+    from src.api.routes.orders import (
+        _build_executor,
+        _confirm_fill,
+        _resolve_account_label,
+    )
+    from src.config import get_settings
+    from src.core.enums import DecisionAction, ExitReason, OrderStatus, OrderType
     from src.core.models import ExitSignal, TradeDecision
 
     account = await session.get(Account, account_id)
@@ -425,6 +430,9 @@ async def account_manual_order(
     qty_raw = str(form.get("quantity", "")).strip()
     price_raw = str(form.get("price", "")).strip()
     position_id_raw = str(form.get("position_id", "")).strip()
+    # B-08: 주문유형 — 시장가(market) / 지정가(limit, 기본). 매수 경로에만 적용.
+    order_type_raw = str(form.get("order_type", "")).strip().lower()
+    order_type = OrderType.MARKET if order_type_raw == "market" else OrderType.LIMIT
 
     if side_raw not in ("buy", "sell"):
         return _redirect_error("side는 buy 또는 sell이어야 합니다")
@@ -470,8 +478,10 @@ async def account_manual_order(
             )
 
     broker = None
+    owned = False
+    confirmed = None
     try:
-        executor, broker = await _build_executor(account_id)
+        executor, broker, owned, finalizer = await _build_executor(account_id)
 
         if price is None:
             try:
@@ -520,6 +530,7 @@ async def account_manual_order(
                 symbol=symbol,
                 action=DecisionAction.BUY,
                 confidence=Decimal("1.0"),
+                order_type=order_type,
                 quantity=quantity,
                 price=price,
                 reasoning=f"Backoffice manual order by admin ({account_id})",
@@ -533,6 +544,14 @@ async def account_manual_order(
                 manual=True,
             )
 
+        # B-08: 접수분(pending)은 동기로 짧게 체결을 확인
+        if result.pending and result.broker_order_id:
+            confirmed = await _confirm_fill(
+                broker=broker, finalizer=finalizer,
+                order_id=result.order_id, broker_order_id=result.broker_order_id,
+                timeout_sec=get_settings().MANUAL_ORDER_CONFIRM_TIMEOUT_SEC,
+            )
+
     except HTTPException as exc:
         return _redirect_error(str(exc.detail))
     except Exception as exc:
@@ -541,24 +560,40 @@ async def account_manual_order(
         )
         return _redirect_error(f"주문 실행 오류: {exc}")
     finally:
-        if broker:
+        if owned and broker:
             try:
                 await broker.disconnect()
             except Exception:
                 logger.exception("manual_order_broker_disconnect_failed")
 
-    if result.success:
+    # B-08: 접수분(pending=True, success=True)은 동기 체결 확인 결과로 분기.
+    # pending이 success를 동반하므로 success보다 먼저 검사한다.
+    if result.pending:
+        if confirmed is not None:
+            if confirmed.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                fill_px = confirmed.filled_price or price
+                fill_qty = confirmed.filled_quantity or quantity
+                msg = f"{side_raw.upper()} {symbol} {fill_qty:,}주 @ {fill_px:,}원 체결"
+                return RedirectResponse(
+                    f"{redirect_base}?order_success={quote(msg)}", status_code=303,
+                )
+            # 접수 후 거부/취소 확인
+            return _redirect_error(
+                f"주문 {confirmed.status.value} (주문번호 {result.broker_order_id or '-'})"
+            )
+        # 타임아웃 — 체결 미확정
         msg = (
-            f"{side_raw.upper()} {symbol} {quantity:,}주 @ "
-            f"{result.fill_price or price:,}원 체결"
+            f"{side_raw.upper()} {symbol} {quantity:,}주 접수 완료 — 체결 대기 "
+            f"(주문번호 {result.broker_order_id or '-'})"
         )
         return RedirectResponse(
             f"{redirect_base}?order_success={quote(msg)}", status_code=303,
         )
-    if result.pending:
+    if result.success:
+        # 즉시 체결(mock/일부 실브로커 — pending 아님)
         msg = (
-            f"{side_raw.upper()} {symbol} {quantity:,}주 접수 완료 — 체결 대기 "
-            f"(주문번호 {result.broker_order_id or '-'})"
+            f"{side_raw.upper()} {symbol} {quantity:,}주 @ "
+            f"{result.fill_price or price:,}원 체결"
         )
         return RedirectResponse(
             f"{redirect_base}?order_success={quote(msg)}", status_code=303,

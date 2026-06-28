@@ -482,6 +482,48 @@ async def test_execute_entry_approval_timeout(executor, mock_approval_manager, m
 
 
 @pytest.mark.asyncio
+async def test_execute_entry_disapproved_cancels_stray_broker_order(
+    executor, mock_approval_manager, mock_broker
+):
+    """F-06: 거부/만료인데 broker_order_id가 있으면 broker.cancel_order 시도."""
+    mock_approval_manager.request_approval = AsyncMock(
+        return_value=ApprovalStatus.TIMEOUT
+    )
+    stray = MagicMock()
+    stray.broker_order_id = "KIS999"
+    executor._get_order = AsyncMock(return_value=stray)
+    td = _make_trade_decision()
+
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is False
+    mock_broker.place_order.assert_not_awaited()
+    mock_broker.cancel_order.assert_awaited_once_with("KIS999")
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_disapproved_no_broker_order_no_cancel(
+    executor, mock_approval_manager, mock_broker
+):
+    """F-06 회귀: 정상 흐름(broker_order_id 없음)에선 cancel_order 미호출."""
+    mock_approval_manager.request_approval = AsyncMock(
+        return_value=ApprovalStatus.REJECTED
+    )
+    td = _make_trade_decision()
+
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is False
+    mock_broker.cancel_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_execute_entry_modified_quantity_passes(
     executor, mock_risk_manager, mock_broker, fake_session
 ):

@@ -172,6 +172,38 @@ class FillFinalizer:
             stage="risk_blocked",
         ))
 
+    async def mark_disapproved_filled(self, order: Order) -> None:
+        """F-06: 승인 거부/만료됐는데 broker에서 체결된 주문 처리.
+
+        되돌릴 수 없는 체결이므로 자동 포지션 생성은 하지 않고, 고위험 표식 +
+        텔레그램 알림으로 사람 개입을 유도한다(Human-in-the-Loop). 정상 흐름에선
+        승인 거부 시 broker 접수 전에 차단되므로 도달하지 않는다.
+        """
+        # F-02 선점: WS/reconciler가 먼저 확정했다면 claim 실패(rowcount 0) → 건너뜀.
+        if not await self._claim_order(
+            order.id,
+            target=OrderStatus.CANCELLED,
+            rejection_reason="disapproved_but_filled",
+        ):
+            return
+
+        logger.critical(
+            "fill_finalizer.disapproved_order_filled",
+            order_id=order.id,
+            broker_order_id=order.broker_order_id,
+            approval_status=order.approval_status,
+            symbol=order.symbol,
+        )
+
+        account_label = await self._get_account_label(order.account_id)
+        await self._notify_safe(MessageTemplates.rejection_notification(
+            account_label=account_label,
+            symbol=order.symbol, name=order.symbol,
+            side=OrderSide(order.side),
+            reason="⚠️ 승인 거부/만료 주문이 체결됨 — 수동 점검 필요",
+            stage="risk_blocked",
+        ))
+
     # ── Internal: apply fill ──────────────────────────────────────────
 
     async def _apply_fill(

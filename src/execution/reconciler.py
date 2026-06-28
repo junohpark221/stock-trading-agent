@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy import select, update
 
-from src.core.enums import ExitReason, OrderStatus, StrategyType
+from src.core.enums import ApprovalStatus, ExitReason, OrderStatus, StrategyType
 from src.db.models.execution import Order
 from src.db.models.strategy import PositionRecord
 
@@ -119,6 +119,36 @@ class OrderReconciler:
             order.broker_order_id, order_date=target_date,
         )
         status = order_result.status
+
+        # F-06 게이트: 승인이 거부/만료된 주문은 절대 포지션화하지 않는다. 정상 흐름에선
+        # 승인 거부 시 broker 접수 전에 CANCELLED 처리되어 여기 도달하지 않지만(broker_order_id
+        # NULL), 향후 경로 재배치로 "승인 거부/만료인데 broker에 SUBMITTED로 살아있는" 주문이
+        # 생기면 finalize(포지션 생성)로 내려가기 전에 차단한다.
+        if order.approval_status in (
+            ApprovalStatus.REJECTED.value,
+            ApprovalStatus.TIMEOUT.value,
+        ):
+            logger.error(
+                "reconciler.disapproved_order_submitted",
+                order_id=order.id,
+                broker_order_id=order.broker_order_id,
+                approval=order.approval_status,
+                broker_status=status.value,
+            )
+            if status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+                # 이미 체결 — broker에서 되돌릴 수 없으므로 자동 포지션 생성 대신
+                # 고위험 알림 + 별도 표식으로 사람 개입을 유도한다(Human-in-the-Loop).
+                await self._finalizer.mark_disapproved_filled(order)
+            else:
+                # 미체결 — 취소 시도 후 만료 처리.
+                try:
+                    await broker.cancel_order(order.broker_order_id)
+                except Exception:
+                    logger.exception(
+                        "reconciler.disapproved_cancel_failed", order_id=order.id,
+                    )
+                await self._finalizer.mark_expired(order)
+            return
 
         # Terminal status → finalize via shared finalizer (idempotent)
         if status in (

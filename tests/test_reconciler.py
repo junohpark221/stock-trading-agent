@@ -7,15 +7,26 @@
 - position_manager=None 시 Case 2/3 스킵
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.core.enums import ExitReason, StrategyType
-from src.execution.reconciler import PositionReconciler, ReconcileResult
-
+from src.core.enums import (
+    ApprovalStatus,
+    ExitReason,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    StrategyType,
+)
+from src.core.models import OrderResult
+from src.execution.reconciler import (
+    OrderReconciler,
+    PositionReconciler,
+    ReconcileResult,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,7 +43,7 @@ def _make_broker_position(
     p.symbol = symbol
     p.quantity = quantity
     p.average_cost = average_cost
-    p.entry_date = entry_date or datetime(2026, 1, 1, tzinfo=timezone.utc)
+    p.entry_date = entry_date or datetime(2026, 1, 1, tzinfo=UTC)
     return p
 
 
@@ -337,3 +348,106 @@ def test_reconcile_result_defaults():
     assert r.order_corrected_count == 0
     assert r.broker_symbol_count == 0
     assert r.db_open_count == 0
+
+
+# ---------------------------------------------------------------------------
+# F-06: OrderReconciler — 승인 거부/만료 주문은 절대 포지션화하지 않는다
+# ---------------------------------------------------------------------------
+
+
+def _make_submitted_order(approval_status: str, account_id: str = "acc1") -> MagicMock:
+    order = MagicMock()
+    order.id = 1
+    order.account_id = account_id
+    order.symbol = "005930"
+    order.side = "buy"
+    order.status = OrderStatus.SUBMITTED.value
+    order.broker_order_id = "KIS-0001"
+    order.approval_status = approval_status
+    order.position_id = None
+    return order
+
+
+def _make_order_result(status: OrderStatus) -> OrderResult:
+    return OrderResult(
+        order_id="KIS-0001",
+        symbol="005930",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=10,
+        price=Decimal("70000"),
+        status=status,
+        filled_quantity=10 if status == OrderStatus.FILLED else 0,
+        filled_price=Decimal("70000") if status == OrderStatus.FILLED else None,
+        timestamp=datetime(2026, 6, 26, tzinfo=UTC),
+    )
+
+
+def _make_order_reconciler(broker: MagicMock, finalizer: AsyncMock) -> OrderReconciler:
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=broker)
+    return OrderReconciler(broker_registry=registry, fill_finalizer=finalizer)
+
+
+@pytest.mark.asyncio
+async def test_disapproved_filled_order_not_positioned():
+    """timeout 승인 + broker FILLED → 포지션 생성 대신 mark_disapproved_filled."""
+    broker = MagicMock()
+    broker.get_order_status = AsyncMock(
+        return_value=_make_order_result(OrderStatus.FILLED)
+    )
+    broker.cancel_order = AsyncMock(return_value=True)
+    finalizer = AsyncMock()
+    reconciler = _make_order_reconciler(broker, finalizer)
+
+    order = _make_submitted_order(ApprovalStatus.TIMEOUT.value)
+    await reconciler._reconcile_one(  # noqa: SLF001
+        order, eod=False, target_date=datetime(2026, 6, 26, tzinfo=UTC).date(),
+    )
+
+    finalizer.mark_disapproved_filled.assert_awaited_once_with(order)
+    finalizer.finalize_from_order_result.assert_not_awaited()
+    broker.cancel_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disapproved_unfilled_order_cancelled_and_expired():
+    """rejected 승인 + broker 미체결 → cancel_order 시도 후 mark_expired."""
+    broker = MagicMock()
+    broker.get_order_status = AsyncMock(
+        return_value=_make_order_result(OrderStatus.SUBMITTED)
+    )
+    broker.cancel_order = AsyncMock(return_value=True)
+    finalizer = AsyncMock()
+    reconciler = _make_order_reconciler(broker, finalizer)
+
+    order = _make_submitted_order(ApprovalStatus.REJECTED.value)
+    await reconciler._reconcile_one(  # noqa: SLF001
+        order, eod=False, target_date=datetime(2026, 6, 26, tzinfo=UTC).date(),
+    )
+
+    broker.cancel_order.assert_awaited_once_with("KIS-0001")
+    finalizer.mark_expired.assert_awaited_once_with(order)
+    finalizer.finalize_from_order_result.assert_not_awaited()
+    finalizer.mark_disapproved_filled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_approved_filled_order_finalizes_normally():
+    """승인 정상(approved) + FILLED → 기존 finalize 경로 그대로(회귀 0)."""
+    broker = MagicMock()
+    broker.get_order_status = AsyncMock(
+        return_value=_make_order_result(OrderStatus.FILLED)
+    )
+    broker.cancel_order = AsyncMock(return_value=True)
+    finalizer = AsyncMock()
+    reconciler = _make_order_reconciler(broker, finalizer)
+
+    order = _make_submitted_order(ApprovalStatus.APPROVED.value)
+    await reconciler._reconcile_one(  # noqa: SLF001
+        order, eod=False, target_date=datetime(2026, 6, 26, tzinfo=UTC).date(),
+    )
+
+    finalizer.finalize_from_order_result.assert_awaited_once()
+    finalizer.mark_disapproved_filled.assert_not_awaited()
+    broker.cancel_order.assert_not_awaited()

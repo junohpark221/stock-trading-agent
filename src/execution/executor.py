@@ -404,6 +404,26 @@ class OrderExecutor:
 
                 if approval_status in (ApprovalStatus.REJECTED, ApprovalStatus.TIMEOUT):
                     # ApprovalManager가 이미 DB 업데이트 + 텔레그램 알림 처리
+                    # F-06 방어: 정상 흐름에선 승인이 broker 접수보다 먼저라 broker_order_id가
+                    # NULL이지만, 향후 경로 재배치로 이미 접수된 주문이 있으면 broker에 살아
+                    # 있으므로 취소를 시도한다(best-effort). 취소 실패가 거부 처리를 막지 않는다.
+                    refreshed = await self._get_order(order.id)
+                    if refreshed and refreshed.broker_order_id:
+                        logger.warning(
+                            "executor.disapproved_order_has_broker_id",
+                            order_id=order.id,
+                            broker_order_id=refreshed.broker_order_id,
+                            approval=approval_status.value,
+                        )
+                        try:
+                            await effective_broker.cancel_order(
+                                refreshed.broker_order_id
+                            )
+                        except Exception:
+                            logger.exception(
+                                "executor.disapproved_order_cancel_failed",
+                                order_id=order.id,
+                            )
                     await self._update_order(order.id, status=OrderStatus.CANCELLED)
                     did = await self._record_decision_safe(
                         session_id=session_id, stage=DecisionStage.EXECUTION,

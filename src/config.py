@@ -166,6 +166,7 @@ class Settings(BaseSettings):
     TOKEN_REFRESH_TIME: str = "06:00"
     LLM_COST_REPORT_DAY: str = "mon"
     LLM_COST_REPORT_TIME: str = "09:00"
+    MEMORY_CLEANUP_TIME: str = "16:10"  # 만료 메모리 정리 (KST, 매일 1회)
 
     # 모니터링 임계치
     MONITOR_STOP_LOSS_PROXIMITY_PCT: float = 2.0     # 손절 근접 경고 (%)

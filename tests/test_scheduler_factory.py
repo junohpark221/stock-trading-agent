@@ -352,8 +352,8 @@ async def test_create_scheduler_no_accounts_no_key():
         )
 
     # 공통 작업: weekly, monthly, llm_cost + reconcile (midday, eod, positions, intraday)
-    # market_data_collect은 provider=None 이라 스킵
-    assert len(engine._job_fns) == 7
+    # + cleanup_expired_memories. market_data_collect은 provider=None 이라 스킵
+    assert len(engine._job_fns) == 8
     assert "weekly_report" in engine._job_fns
     assert "monthly_report" in engine._job_fns
     assert "llm_cost_report" in engine._job_fns
@@ -361,6 +361,7 @@ async def test_create_scheduler_no_accounts_no_key():
     assert "reconcile_open_orders_eod" in engine._job_fns
     assert "reconcile_positions" in engine._job_fns
     assert "sync_positions_intraday" in engine._job_fns
+    assert "cleanup_expired_memories" in engine._job_fns
 
 
 # ── main.py lifespan integration ─────────────────────────────────────────

@@ -15,7 +15,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.core.enums import JobStatus
 from src.scheduler.engine import SchedulerEngine
-from src.scheduler.jobs import job_daily_report, job_stop_loss_check
+from src.scheduler.jobs import (
+    job_cleanup_expired_memories,
+    job_daily_report,
+    job_stop_loss_check,
+)
 from tests.conftest import make_settings
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -693,3 +697,15 @@ class TestJobDailyReport:
         generator.generate_daily_report.assert_awaited_once_with(account_id="acct-1")
         mock_template.assert_called_once()
         assert mock_template.call_args[1]["account_label"] == "공격형 (1234)"
+
+
+class TestJobCleanupExpiredMemories:
+    @pytest.mark.asyncio
+    async def test_calls_cleanup_expired(self):
+        """memory_manager.cleanup_expired를 1회 호출한다."""
+        memory_manager = AsyncMock()
+        memory_manager.cleanup_expired = AsyncMock(return_value=3)
+
+        await job_cleanup_expired_memories(memory_manager=memory_manager)
+
+        memory_manager.cleanup_expired.assert_awaited_once_with()

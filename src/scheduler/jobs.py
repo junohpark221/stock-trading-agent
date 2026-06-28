@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from src.strategy.base import Strategy
     from src.strategy.batch_allocator import BatchBudgetAllocator
     from src.strategy.exit_checker import ExitConditionChecker
+    from src.strategy.memory_manager import AgentMemoryManager
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
 
@@ -582,3 +583,12 @@ async def job_reconcile_positions(
         broker_symbols=result.broker_symbol_count,
         db_open=result.db_open_count,
     )
+
+
+async def job_cleanup_expired_memories(
+    *,
+    memory_manager: AgentMemoryManager,
+) -> None:
+    """만료된 에이전트 학습 메모리 비활성화(is_active=False). Daily 1회."""
+    count = await memory_manager.cleanup_expired()
+    logger.info("job.cleanup_expired_memories.done", deactivated=count)

@@ -22,6 +22,7 @@ from src.db.models.account import Account, AccountCrypto
 from src.db.models.market_data import StockMaster
 from src.scheduler.engine import SchedulerEngine
 from src.scheduler.jobs import (
+    job_cleanup_expired_memories,
     job_daily_report,
     job_llm_cost_report,
     job_market_data_collect,
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from src.strategy.base import Strategy
     from src.strategy.batch_allocator import BatchBudgetAllocator
     from src.strategy.exit_checker import ExitConditionChecker
+    from src.strategy.memory_manager import AgentMemoryManager
     from src.strategy.portfolio_state import PortfolioStateService
     from src.strategy.position_manager import PositionManager
 
@@ -252,9 +254,11 @@ class SchedulerFactory:
         from src.execution.fill_finalizer import FillFinalizer
         from src.execution.reconciler import OrderReconciler, PositionReconciler
         from src.execution.stoploss_stream import StopLossStreamService
+        from src.strategy.memory_manager import AgentMemoryManager
         from src.strategy.position_manager import PositionManager
 
         shared_position_manager = PositionManager(session_factory)
+        memory_manager = AgentMemoryManager(session_factory)
         fill_finalizer = FillFinalizer(
             session_factory=session_factory,
             position_manager=shared_position_manager,
@@ -338,6 +342,7 @@ class SchedulerFactory:
             settings=settings,
             reconciler=reconciler,
             position_reconciler=position_reconciler,
+            memory_manager=memory_manager,
         )
 
         # 계좌별 작업 등록 (account_index로 배치 시차 실행)
@@ -592,6 +597,7 @@ class SchedulerFactory:
         settings: Settings,
         reconciler: OrderReconciler | None = None,
         position_reconciler: PositionReconciler | None = None,
+        memory_manager: AgentMemoryManager | None = None,
     ) -> None:
         """공통 작업 등록 (계좌 수에 무관하게 1회씩)."""
         s = settings
@@ -681,6 +687,15 @@ class SchedulerFactory:
                     day_of_week=rc_days, hour="9-16", minute=0,
                     timezone="Asia/Seoul",
                 ),
+            )
+
+        # cleanup_expired_memories — 만료 학습 메모리 비활성화 (매일 1회, 장 무관)
+        if memory_manager is not None:
+            mc_h, mc_m = SchedulerEngine._parse_time(s.MEMORY_CLEANUP_TIME)
+            engine.register_job(
+                "cleanup_expired_memories",
+                partial(job_cleanup_expired_memories, memory_manager=memory_manager),
+                CronTrigger(hour=mc_h, minute=mc_m, timezone="Asia/Seoul"),
             )
 
     @staticmethod

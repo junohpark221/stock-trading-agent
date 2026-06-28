@@ -33,6 +33,7 @@ _approval_manager: ApprovalManager | None = None
 _scheduler_engine: object | None = None  # SchedulerEngine (lazy import)
 _broker_registry: object | None = None  # BrokerRegistry (lazy import)
 _execution_stream: object | None = None  # ExecutionStreamManager (lazy import)
+_stoploss_stream: object | None = None  # StopLossStreamService (lazy import)
 logger = structlog.get_logger(__name__)
 
 
@@ -112,7 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""
     global _redis_client, _telegram_bot, _approval_manager
     global _scheduler_engine, _broker_registry
-    global _execution_stream
+    global _execution_stream, _stoploss_stream
 
     settings = get_settings()
     is_dev = settings.ENV == "development"
@@ -171,6 +172,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             _scheduler_engine,
             _broker_registry,
             _execution_stream,
+            _stoploss_stream,
         ) = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
@@ -190,6 +192,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await _execution_stream.start(pending_creds)
             log.info("execution_stream_started", accounts=len(pending_creds))
 
+        # F-05: 실시간 손절 체결가 WS 시작 (STOP_LOSS_WS_ENABLED일 때만 동작).
+        sl_creds = getattr(_stoploss_stream, "_pending_credentials", [])
+        if _stoploss_stream is not None:
+            await _stoploss_stream.start(sl_creds)
+
     log.info("app_started", env=settings.ENV)
 
     yield
@@ -199,6 +206,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await _scheduler_engine.stop()
         _scheduler_engine = None
         log.info("scheduler_stopped")
+
+    if _stoploss_stream is not None:
+        try:
+            await _stoploss_stream.stop()
+            log.info("stoploss_stream_stopped")
+        except Exception:
+            log.exception("stoploss_stream_stop_failed")
+        _stoploss_stream = None
 
     if _execution_stream is not None:
         try:

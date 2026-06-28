@@ -12,6 +12,7 @@ from Crypto.Util.Padding import pad
 from src.broker.kis.ws_codec import (
     aes_cbc_base64_decrypt,
     parse_execution_payload,
+    parse_price_payload,
     parse_subscription_response,
 )
 from src.core.enums import OrderSide
@@ -168,3 +169,57 @@ def test_parse_execution_payload_missing_odno_returns_none():
     fields = ["HTSID", "5012345601", "", "", "02", "", "", "", "005930",
               "10", "72000", "093045", "N", "2", "N"]
     assert parse_execution_payload("^".join(fields), account_id="default") is None
+
+
+# ── Realtime price payload (H0STCNT0) ────────────────────────────────
+
+
+def _price_record(
+    symbol: str = "005930", *, time: str = "093045", price: str = "71000",
+) -> list[str]:
+    """46-field H0STCNT0 record: [0]종목 [1]체결시간 [2]현재가 + 43 padding."""
+    rec = [symbol, time, price]
+    rec.extend(str(i) for i in range(46 - len(rec)))  # 나머지 43 필드 패딩
+    return rec
+
+
+def test_parse_price_payload_single_record():
+    payload = "^".join(_price_record(price="71000"))
+    tick = parse_price_payload(payload, count=1)
+
+    assert tick is not None
+    assert tick.symbol == "005930"
+    assert tick.price == Decimal("71000")
+    assert tick.time == "093045"
+
+
+def test_parse_price_payload_multi_record_uses_latest():
+    rec1 = _price_record(time="093045", price="71000")
+    rec2 = _price_record(time="093050", price="70500")
+    payload = "^".join(rec1 + rec2)
+    tick = parse_price_payload(payload, count=2)
+
+    assert tick is not None
+    assert tick.price == Decimal("70500")  # 최신 레코드
+    assert tick.time == "093050"
+
+
+def test_parse_price_payload_decimal_precision():
+    payload = "^".join(_price_record(price="71050"))
+    tick = parse_price_payload(payload, count=1)
+    assert isinstance(tick.price, Decimal)
+    assert tick.price == Decimal("71050")
+
+
+def test_parse_price_payload_zero_price_returns_none():
+    payload = "^".join(_price_record(price="0"))
+    assert parse_price_payload(payload, count=1) is None
+
+
+def test_parse_price_payload_empty_symbol_returns_none():
+    payload = "^".join(_price_record(symbol="", price="71000"))
+    assert parse_price_payload(payload, count=1) is None
+
+
+def test_parse_price_payload_malformed_returns_none():
+    assert parse_price_payload("005930^093045", count=1) is None

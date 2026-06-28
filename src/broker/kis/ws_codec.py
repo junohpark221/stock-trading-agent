@@ -10,6 +10,7 @@ KIS 실시간 체결통보 (H0STCNI0 실전 / H0STCNI9 모의) 페이로드는 s
 from __future__ import annotations
 
 from base64 import b64decode
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
@@ -147,8 +148,58 @@ def parse_execution_payload(
     )
 
 
+# ── Realtime price payload (H0STCNT0 국내주식 실시간체결가) ────────────
+
+
+@dataclass(frozen=True, slots=True)
+class PriceTick:
+    """국내주식 실시간 체결가 1건. (symbol, 현재가, 체결시간 HHMMSS)."""
+
+    symbol: str
+    price: Decimal
+    time: str
+
+
+# H0STCNT0 평문 페이로드(`^`-split) 필드 인덱스 — ws_domestic_stock.py menulist 기준.
+# 레코드당 46개 필드(유가증권단축종목코드 ~ 정적VI발동기준가).
+_PRICE_RECORD_WIDTH = 46
+_PRICE_IDX_SYMBOL = 0       # 유가증권단축종목코드
+_PRICE_IDX_TIME = 1         # 주식체결시간 (HHMMSS)
+_PRICE_IDX_PRICE = 2        # 주식현재가 (STCK_PRPR)
+
+
+def parse_price_payload(plaintext: str, *, count: int = 1) -> PriceTick | None:
+    """Parse H0STCNT0 plaintext `^`-split payload → 최신 체결가 PriceTick.
+
+    H0STCNT0는 평문(비암호화) 프레임이며, ``count`` 레코드가 연속 배치된다.
+    급변 시 한 프레임에 여러 체결이 묶여 오므로 **마지막(최신) 레코드**를 사용한다.
+    심볼/현재가가 비거나 0 이하이면 None.
+    """
+    fields = plaintext.split("^")
+    if len(fields) <= _PRICE_IDX_PRICE:
+        return None
+
+    # 레코드 폭 추정: count로 균등 분할되면 그 폭, 아니면 표준 46 또는 단일 레코드.
+    width = _PRICE_RECORD_WIDTH
+    if count > 0 and len(fields) % count == 0 and len(fields) // count > _PRICE_IDX_PRICE:
+        width = len(fields) // count
+
+    base = (count - 1) * width if count > 0 else 0
+    if base + _PRICE_IDX_PRICE >= len(fields):
+        base = 0  # 추정 실패 시 첫 레코드로 폴백
+
+    symbol = fields[base + _PRICE_IDX_SYMBOL].strip()
+    price = _to_decimal(fields[base + _PRICE_IDX_PRICE])
+    tick_time = fields[base + _PRICE_IDX_TIME].strip()
+    if not symbol or price <= 0:
+        return None
+    return PriceTick(symbol=symbol, price=price, time=tick_time)
+
+
 __all__ = [
     "aes_cbc_base64_decrypt",
     "parse_subscription_response",
     "parse_execution_payload",
+    "parse_price_payload",
+    "PriceTick",
 ]

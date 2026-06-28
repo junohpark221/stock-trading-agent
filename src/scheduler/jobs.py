@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from src.broker.kis.auth import KISAuth
     from src.data.providers.base import DataProvider
     from src.execution.executor import OrderExecutor
+    from src.execution.exit_coordinator import ExitCoordinator
     from src.execution.exit_executor import ExitExecutionService
     from src.execution.reconciler import OrderReconciler, PositionReconciler
     from src.notification.telegram import TelegramBot
@@ -321,6 +322,7 @@ async def job_stop_loss_check(
     market_open: str = "09:00",
     market_close: str = "15:30",
     holidays: str = "",
+    coordinator: ExitCoordinator | None = None,
 ) -> None:
     """손절/익절/트레일링 스톱 체크 + 자동 청산 + 근접 알림. 5분 간격. 계좌별 실행.
 
@@ -421,13 +423,45 @@ async def job_stop_loss_check(
     # 청산 시그널 실행
     if exit_signals:
         session_id = uuid.uuid4()
-        results = await exit_service.process_exit_signals(
-            exit_signals,
-            positions,
-            session_id=session_id,
-            account_id=account_id,
-            account_label=account_label,
-        )
+        sym_to_pos = {p.symbol: p for p in positions}
+
+        # 이중 청산 방지: WS(StopLossStreamService)/이전 사이클이 in-flight로 잡은
+        # 포지션은 스킵하고, 선점 성공한 것만 발주한다(coordinator 미주입 시 전량 발주).
+        signals_to_run = exit_signals
+        claimed_ids: dict[str, int] = {}
+        if coordinator is not None:
+            signals_to_run = []
+            for sig in exit_signals:
+                pos = sym_to_pos.get(sig.symbol)
+                if pos is None:
+                    signals_to_run.append(sig)  # 매칭 실패는 exit_service가 스킵
+                    continue
+                if await coordinator.try_claim(pos.id):
+                    claimed_ids[sig.symbol] = pos.id
+                    signals_to_run.append(sig)
+                else:
+                    logger.info(
+                        "job.stop_loss_check.skip_inflight",
+                        symbol=sig.symbol, account_id=account_id,
+                    )
+
+        results: list = []
+        try:
+            if signals_to_run:
+                results = await exit_service.process_exit_signals(
+                    signals_to_run,
+                    positions,
+                    session_id=session_id,
+                    account_id=account_id,
+                    account_label=account_label,
+                )
+        finally:
+            # 발주 실패(또는 예외) 클레임만 해제해 재시도 허용. 성공 클레임은 TTL까지 보유.
+            if coordinator is not None and claimed_ids:
+                failed = {r.symbol for r in results if not r.success}
+                for sym, pid in claimed_ids.items():
+                    if not results or sym in failed:
+                        await coordinator.release(pid)
         logger.info(
             "job.stop_loss_check.exit_executed",
             signal_count=len(exit_signals),

@@ -300,7 +300,7 @@ async def test_create_scheduler_mock_broker_legacy():
             ],
         )
 
-        engine, registry, _stream = await SchedulerFactory.create_scheduler(
+        engine, registry, _stream, _sl = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),
@@ -343,7 +343,7 @@ async def test_create_scheduler_no_accounts_no_key():
             ],
         )
 
-        engine, registry, _stream = await SchedulerFactory.create_scheduler(
+        engine, registry, _stream, _sl = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),

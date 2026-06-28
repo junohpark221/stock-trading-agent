@@ -47,8 +47,10 @@ if TYPE_CHECKING:
     from src.execution.approval import ApprovalManager
     from src.execution.execution_stream import ExecutionStreamManager
     from src.execution.executor import OrderExecutor
+    from src.execution.exit_coordinator import ExitCoordinator
     from src.execution.exit_executor import ExitExecutionService
     from src.execution.reconciler import OrderReconciler, PositionReconciler
+    from src.execution.stoploss_stream import StopLossStreamService
     from src.notification.telegram import TelegramBot
     from src.report.generator import ReportGenerator
     from src.scheduler.monitor import TradingMonitor
@@ -109,13 +111,19 @@ class SchedulerFactory:
         cache: RedisCache,
         telegram_bot: TelegramBot,
         approval_manager: ApprovalManager,
-    ) -> tuple[SchedulerEngine, BrokerRegistry, ExecutionStreamManager]:
+    ) -> tuple[
+        SchedulerEngine,
+        BrokerRegistry,
+        ExecutionStreamManager,
+        StopLossStreamService,
+    ]:
         """서비스 그래프 조립 → SchedulerEngine 반환.
 
         Returns:
-            (scheduler_engine, broker_registry, execution_stream) — main.py는
+            (scheduler_engine, broker_registry, execution_stream, stoploss_stream)
+            — main.py는
             - registry 를 shutdown 시 disconnect_all()
-            - execution_stream 을 startup 시 start() / shutdown 시 stop()
+            - execution_stream / stoploss_stream 을 startup 시 start() / shutdown 시 stop()
         """
         from src.agent.agents.market_analyst import MarketAnalyst
         from src.agent.agents.risk_manager import RiskManager
@@ -240,8 +248,10 @@ class SchedulerFactory:
 
         # ── 4-2. FillFinalizer + ExecutionStreamManager + OrderReconciler ─
         from src.execution.execution_stream import ExecutionStreamManager
+        from src.execution.exit_coordinator import ExitCoordinator
         from src.execution.fill_finalizer import FillFinalizer
         from src.execution.reconciler import OrderReconciler, PositionReconciler
+        from src.execution.stoploss_stream import StopLossStreamService
         from src.strategy.position_manager import PositionManager
 
         shared_position_manager = PositionManager(session_factory)
@@ -255,6 +265,13 @@ class SchedulerFactory:
             settings=settings,
             session_factory=session_factory,
             fill_finalizer=fill_finalizer,
+        )
+        # F-05: 이중 청산 방지 코디네이터(폴링·WS 공유) + 실시간 손절 서비스.
+        exit_coordinator = ExitCoordinator(ttl_sec=settings.EXIT_INFLIGHT_TTL_SEC)
+        stoploss_stream = StopLossStreamService(
+            settings=settings,
+            position_manager=shared_position_manager,
+            coordinator=exit_coordinator,
         )
         reconciler = OrderReconciler(
             broker_registry=registry,
@@ -286,6 +303,14 @@ class SchedulerFactory:
                     execution_stream=execution_stream,
                 )
                 contexts.append(ctx)
+                # F-05: 실시간 손절 서비스에 계좌별 청산 의존성 등록.
+                stoploss_stream.register_account(
+                    ctx.account_id,
+                    exit_checker=ctx.exit_checker,
+                    exit_service=ctx.exit_service,
+                    position_manager=ctx.position_manager,
+                    account_label=ctx.account_label,
+                )
             except Exception:
                 logger.exception(
                     "scheduler_factory.account_context_build_failed",
@@ -326,12 +351,14 @@ class SchedulerFactory:
                 telegram_bot=telegram_bot,
                 settings=settings,
                 account_index=account_index,
+                coordinator=exit_coordinator,
             )
 
-        # Attach credentials to the ExecutionStreamManager so main.py's lifespan
-        # can start WS subscriptions after the scheduler factory returns.
+        # Attach credentials to the WS managers so main.py's lifespan can start
+        # subscriptions after the scheduler factory returns.
         execution_stream_credentials: list[AccountCredentials] = registered_credentials
         execution_stream._pending_credentials = execution_stream_credentials  # type: ignore[attr-defined]
+        stoploss_stream._pending_credentials = registered_credentials  # type: ignore[attr-defined]
 
         logger.info(
             "scheduler_factory.created",
@@ -340,7 +367,7 @@ class SchedulerFactory:
             watchlist_count=len(watchlist_symbols),
         )
 
-        return engine, registry, execution_stream
+        return engine, registry, execution_stream, stoploss_stream
 
     # ── Account Loading ──────────────────────────────────────────────
 
@@ -504,7 +531,7 @@ class SchedulerFactory:
             auth = broker._auth  # type: ignore[attr-defined]
 
         # scan_universe() 용 Strategy 인스턴스
-        from src.strategy.registry import StrategyFactory, StrategyCommonDeps
+        from src.strategy.registry import StrategyCommonDeps, StrategyFactory
 
         strategy: Strategy | None = None
         try:
@@ -667,6 +694,7 @@ class SchedulerFactory:
         telegram_bot: TelegramBot,
         settings: Settings,
         account_index: int = 0,
+        coordinator: ExitCoordinator | None = None,
     ) -> None:
         """계좌별 작업 등록. 작업 이름: ``{job_type}:{account_id}``.
 
@@ -674,6 +702,7 @@ class SchedulerFactory:
             account_index: 0-based index for staggering cron triggers.
                 Each account offsets its batch jobs by ``account_index`` minutes
                 to avoid simultaneous KIS API calls across accounts.
+            coordinator: 이중 청산 방지 in-flight 가드(stop_loss_check에 주입).
         """
         s = settings
         aid = ctx.account_id
@@ -766,6 +795,7 @@ class SchedulerFactory:
                 market_open=s.MARKET_OPEN_TIME,
                 market_close=s.MARKET_CLOSE_TIME,
                 holidays=s.KR_HOLIDAYS,
+                coordinator=coordinator,
             ),
             IntervalTrigger(minutes=s.STOP_LOSS_CHECK_INTERVAL_MIN),
         )

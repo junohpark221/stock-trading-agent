@@ -529,6 +529,110 @@ class TestJobStopLossCheck:
         assert args[1]["account_label"] == "공격형 (1234)"
         monitor.check_all.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_coordinator_skips_inflight_position(self):
+        """coordinator가 이미 선점한 포지션은 청산에서 스킵된다 (F-05 이중 청산 방지)."""
+        from datetime import UTC, datetime
+
+        from src.core.enums import DecisionAction, ExitReason
+        from src.core.models import ExitSignal, PriceInfo
+        from src.execution.exit_coordinator import ExitCoordinator
+
+        position = MagicMock()
+        position.id = 1
+        position.symbol = "005930"
+        position.entry_price = Decimal("50000")
+        position.stop_loss_price = Decimal("45000")
+        position.trailing_stop_pct = None
+        position.max_holding_days = None
+
+        position_manager = AsyncMock()
+        position_manager.get_open = AsyncMock(return_value=[position])
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(return_value=PriceInfo(
+            symbol="005930", current_price=Decimal("44000"),
+            previous_close=Decimal("50000"), timestamp=datetime.now(UTC),
+        ))
+        exit_checker = MagicMock()
+        exit_checker.check_stop_loss = MagicMock(return_value=ExitSignal(
+            symbol="005930", reason=ExitReason.STOP_LOSS, urgency="immediate",
+            current_price=Decimal("44000"), trigger_price=Decimal("45000"),
+            unrealized_pnl_pct=Decimal("-12.00"),
+            recommended_action=DecisionAction.STOP_LOSS, reasoning="손절가 도달",
+        ))
+        exit_service = AsyncMock()
+        exit_service.process_exit_signals = AsyncMock(return_value=[])
+        monitor = AsyncMock()
+        monitor.check_all = AsyncMock(return_value=[])
+
+        coordinator = ExitCoordinator(ttl_sec=120)
+        await coordinator.try_claim(1)  # WS 등 다른 경로가 이미 선점
+
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=exit_checker, exit_service=exit_service,
+                position_manager=position_manager, portfolio_service=AsyncMock(),
+                broker=broker, monitor=monitor,
+                market_open="00:00", market_close="23:59",
+                coordinator=coordinator,
+            )
+
+        # 선점된 포지션 → 발주 스킵
+        exit_service.process_exit_signals.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_coordinator_claims_free_position(self):
+        """coordinator 미점유 포지션은 선점 후 청산 발주된다."""
+        from datetime import UTC, datetime
+
+        from src.core.enums import DecisionAction, ExitReason
+        from src.core.models import ExitSignal, PriceInfo
+        from src.execution.exit_coordinator import ExitCoordinator
+
+        position = MagicMock()
+        position.id = 2
+        position.symbol = "005930"
+        position.entry_price = Decimal("50000")
+        position.stop_loss_price = Decimal("45000")
+        position.trailing_stop_pct = None
+        position.max_holding_days = None
+
+        position_manager = AsyncMock()
+        position_manager.get_open = AsyncMock(return_value=[position])
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(return_value=PriceInfo(
+            symbol="005930", current_price=Decimal("44000"),
+            previous_close=Decimal("50000"), timestamp=datetime.now(UTC),
+        ))
+        exit_checker = MagicMock()
+        exit_checker.check_stop_loss = MagicMock(return_value=ExitSignal(
+            symbol="005930", reason=ExitReason.STOP_LOSS, urgency="immediate",
+            current_price=Decimal("44000"), trigger_price=Decimal("45000"),
+            unrealized_pnl_pct=Decimal("-12.00"),
+            recommended_action=DecisionAction.STOP_LOSS, reasoning="손절가 도달",
+        ))
+        exit_service = AsyncMock()
+        exit_service.process_exit_signals = AsyncMock(
+            return_value=[MagicMock(success=True, symbol="005930")]
+        )
+        monitor = AsyncMock()
+        monitor.check_all = AsyncMock(return_value=[])
+
+        coordinator = ExitCoordinator(ttl_sec=120)
+
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=exit_checker, exit_service=exit_service,
+                position_manager=position_manager, portfolio_service=AsyncMock(),
+                broker=broker, monitor=monitor,
+                market_open="00:00", market_close="23:59",
+                coordinator=coordinator,
+            )
+
+        exit_service.process_exit_signals.assert_awaited_once()
+        # 성공 청산 클레임은 TTL까지 보유 (즉시 해제 안 함)
+        assert await coordinator.is_claimed(2) is True
+
 
 class TestJobDailyReport:
     @pytest.mark.asyncio

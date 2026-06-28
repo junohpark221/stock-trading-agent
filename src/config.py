@@ -134,6 +134,12 @@ class Settings(BaseSettings):
     # ORDER_FILL_TIMEOUT_SEC(WS용)와 혼동 금지 — 동기 HTTP 확인 전용.
     MANUAL_ORDER_CONFIRM_TIMEOUT_SEC: int = 5
 
+    # F-05: 실시간 손절 (KIS 체결가 WS H0STCNT0). 보유 종목만 구독해 손절/트레일링을
+    # 초 단위로 트리거. 5분 폴링(STOP_LOSS_CHECK_INTERVAL_MIN)은 안전망으로 유지.
+    STOP_LOSS_WS_ENABLED: bool = False        # opt-in. 페이퍼 검증 후 env로 활성화.
+    PRICE_STREAM_SYNC_INTERVAL_SEC: int = 30  # 보유 포지션 → 구독 종목 동기화 주기(초).
+    EXIT_INFLIGHT_TTL_SEC: int = 120          # 청산 in-flight 클레임 TTL(이중 청산 방지).
+
     # Reconcile 잡 — WS 누락 주문 정리 (KST 기준)
     RECONCILE_MIDDAY_TIME: str = "12:00"   # 장중 mid-day sweep
     RECONCILE_EOD_TIME: str = "15:40"      # 장 마감 직후 sweep + expire

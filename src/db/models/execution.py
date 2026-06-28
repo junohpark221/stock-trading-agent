@@ -79,6 +79,51 @@ class Order(TimestampMixin, Base):
     entry_analysis_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class TradeDecisionQueue(TimestampMixin, Base):
+    """진입 결정 큐 — 개장 전 결정 잡이 적재하고, 개장 후 실행 드레인 잡이 소비.
+
+    "분석=발주" 결합을 끊기 위한 가변 실행 상태 테이블. decision_log(감사·불변)와
+    별도다. 결정 잡(08:30)이 BUY 결정을 status=pending으로 적재하면, 실행 드레인
+    잡이 당일가/갭 게이트를 통과한 건만 order_executor로 발주하고 executed/expired로
+    전이한다. entry_analysis_snapshot은 메모리 학습용으로 결정 시점에 보관한다.
+    """
+
+    __tablename__ = "trade_decision_queue"
+    __table_args__ = (
+        Index("ix_trade_decision_queue_account_status", "account_id", "status"),
+        Index("ix_trade_decision_queue_session_id", "session_id"),
+        Index("ix_trade_decision_queue_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(
+        String(50), ForeignKey("accounts.id"), nullable=False, server_default="default"
+    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    action: Mapped[str] = mapped_column(String(10), nullable=False)  # DecisionAction.value
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 결정 시점 기준가 — 실행 드레인의 당일가/갭 게이트 비교 기준.
+    reference_price: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    order_type: Mapped[str] = mapped_column(String(10), nullable=False)  # OrderType.value
+    strategy_type: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # 결정 본문 — TradeDecision.model_dump(mode="json") 전체. 실행 드레인이 이걸로
+    # TradeDecision을 복원해 발주한다(손절/익절가 등 모든 필드 보존). 위 컬럼들은
+    # 조회/관측용 비정규화 사본.
+    decision_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    # 진입 분석 스냅샷 (메모리 학습용) — 결정 시점에 build_entry_snapshot 결과 보관.
+    entry_analysis_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # 라이프사이클: pending → executed | expired | rejected
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    gate_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # → orders.id
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Execution(TimestampMixin, Base):
     """체결 기록 — 주문별 실제 체결 상세 (부분 체결 시 복수 row)."""
 

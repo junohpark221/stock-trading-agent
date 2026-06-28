@@ -8,23 +8,30 @@ Step 8 SchedulerFactory에서 functools.partial로 바인딩하여
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
 import structlog
+from sqlalchemy import func, select
 
 from src.core.enums import DecisionAction
 from src.core.time import KST as _KST
 from src.data.collector import collect_daily_ohlcv
+from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.notification.templates import MessageTemplates
 from src.strategy.risk_manager import BatchReservation
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
     from src.agent.orchestrator import PipelineOrchestrator
     from src.broker.base import BrokerInterface
     from src.broker.kis.auth import KISAuth
+    from src.config import Settings
+    from src.core.models import PipelineResult, TradeDecision
     from src.data.providers.base import DataProvider
+    from src.execution.decision_queue import TradeDecisionQueueManager
     from src.execution.executor import OrderExecutor
     from src.execution.exit_coordinator import ExitCoordinator
     from src.execution.exit_executor import ExitExecutionService
@@ -75,6 +82,50 @@ async def job_market_data_collect(
     )
 
 
+async def job_pre_open_prep(
+    *,
+    provider: DataProvider | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    telegram_bot: TelegramBot | None = None,
+) -> None:
+    """개장 전 준비(08:00 KST): 결측 일봉 백필 + 신선도·커버리지 게이트 검증.
+
+    야간 market_data_collect(00:40)가 일부 실패해도 결측 종목만 경량 재수집해
+    개장 전 데이터를 복구하고, 신선도 미달이면 텔레그램 경고를 보낸다. 실제
+    매매 차단(stale-data 방지)은 결정 잡이 _check_data_freshness로 독립 검증한다.
+    """
+    holidays = settings.KR_HOLIDAYS
+    prev = _previous_trading_day(datetime.now(_KST).date(), holidays)
+
+    # 1. 결측 종목 백필 (타깃 한정이라 경량)
+    if provider is not None:
+        missing = await _symbols_missing_latest(session_factory, prev)
+        if missing:
+            summary = await collect_daily_ohlcv(provider, missing)
+            logger.info(
+                "job.pre_open_prep.backfill",
+                missing=len(missing),
+                succeeded=summary.succeeded,
+                failed=summary.failed,
+                rows=summary.total_rows,
+            )
+
+    # 2. 신선도 게이트 검증
+    ok, detail = await _check_data_freshness(
+        session_factory,
+        holidays=holidays,
+        min_coverage_pct=settings.DATA_FRESHNESS_MIN_COVERAGE_PCT,
+    )
+    logger.info("job.pre_open_prep.freshness", ok=ok, **detail)
+    if not ok and telegram_bot is not None:
+        await telegram_bot.send_message(
+            f"⚠️ <b>데이터 신선도 미달</b> — 직전 거래일 {detail['prev_trading_day']} "
+            f"커버리지 {detail['coverage_pct']}% (최신일 {detail['max_date']}). "
+            f"결정 잡이 오늘 매매를 보류할 수 있습니다."
+        )
+
+
 # ── Analysis ────────────────────────────────────────────────────────────
 
 
@@ -102,41 +153,107 @@ def _is_market_open(
     return time(h_open, m_open) <= now_time <= time(h_close, m_close)
 
 
+def _holiday_set(holidays: str) -> set[str]:
+    return {d.strip() for d in holidays.split(",") if d.strip()} if holidays else set()
+
+
+def _previous_trading_day(ref: date, holidays: str = "") -> date:
+    """ref 직전(이전)의 거래일(주말·공휴일 제외)을 반환."""
+    hol = _holiday_set(holidays)
+    d = ref - timedelta(days=1)
+    while d.weekday() >= 5 or d.strftime("%Y-%m-%d") in hol:
+        d -= timedelta(days=1)
+    return d
+
+
+def _market_close_dt(market_close: str = "15:30") -> datetime:
+    """오늘(KST) 장 마감 시각의 tz-aware datetime — 결정 큐 만료 기준."""
+    h, m = map(int, market_close.split(":"))
+    return datetime.now(_KST).replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+async def _check_data_freshness(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    holidays: str = "",
+    min_coverage_pct: float = 95.0,
+) -> tuple[bool, dict]:
+    """직전 거래일 일봉의 신선도·커버리지 검증.
+
+    ok = (daily_ohlcv 최신일 ≥ 직전 거래일) AND (직전 거래일 커버리지 ≥ 임계).
+    stale 데이터로 매매가 진행되는 것을 결정 잡 진입부에서 차단하기 위함.
+    """
+    prev = _previous_trading_day(datetime.now(_KST).date(), holidays)
+    async with session_factory() as session:
+        active = await session.scalar(
+            select(func.count())
+            .select_from(StockMaster)
+            .where(
+                StockMaster.is_active.is_(True),
+                StockMaster.market_type.in_(["kospi", "kosdaq"]),
+            )
+        )
+        covered = await session.scalar(
+            select(func.count(func.distinct(DailyOHLCV.symbol))).where(
+                DailyOHLCV.date == prev
+            )
+        )
+        max_date = await session.scalar(select(func.max(DailyOHLCV.date)))
+    active = int(active or 0)
+    covered = int(covered or 0)
+    coverage_pct = (covered / active * 100) if active else 0.0
+    ok = max_date is not None and max_date >= prev and coverage_pct >= min_coverage_pct
+    detail = {
+        "prev_trading_day": prev.isoformat(),
+        "max_date": max_date.isoformat() if max_date else None,
+        "active": active,
+        "covered": covered,
+        "coverage_pct": round(coverage_pct, 1),
+    }
+    return ok, detail
+
+
+async def _symbols_missing_latest(
+    session_factory: async_sessionmaker[AsyncSession], prev_day: date
+) -> list[str]:
+    """직전 거래일 일봉이 없는 활성 종목 목록 — pre_open_prep 백필 대상."""
+    async with session_factory() as session:
+        active_rows = await session.execute(
+            select(StockMaster.symbol).where(
+                StockMaster.is_active.is_(True),
+                StockMaster.market_type.in_(["kospi", "kosdaq"]),
+            )
+        )
+        active = {row[0] for row in active_rows.all()}
+        have_rows = await session.execute(
+            select(DailyOHLCV.symbol).where(DailyOHLCV.date == prev_day).distinct()
+        )
+        have = {row[0] for row in have_rows.all()}
+    return sorted(active - have)
+
+
 async def _execute_buy_decisions(
     *,
-    result: object,
+    buy_decisions: list[TradeDecision],
+    meta_by_symbol: dict[str, dict],
     order_executor: OrderExecutor,
     strategy_type: str,
     account_id: str,
     account_label: str,
-    market_open: str,
-    market_close: str,
-    holidays: str = "",
     allocator: BatchBudgetAllocator | None = None,
-) -> int:
-    """PipelineResult의 BUY 결정을 실제 주문으로 실행. 장중에만 동작.
+    alloc_session_id: uuid.UUID | None = None,
+) -> list[tuple[str, bool, int | None]]:
+    """BUY 결정 리스트를 배분→발주하는 공유 실행 코어.
+
+    결정/실행 분리 후 ``job_execution_drain``이 호출한다. 각 결정은
+    ``meta_by_symbol[symbol]``에서 session_id/snapshot을 가져온다. 장 운영시간
+    가드는 호출자(드레인)가 담당한다.
 
     Returns:
-        실행된 매수 주문 수.
+        (symbol, success, order_id) 튜플 리스트.
     """
-    from src.core.models import PipelineResult
-    from src.strategy.memory_manager import build_entry_snapshot
-
-    pipeline_result: PipelineResult = result  # type: ignore[assignment]
-    buy_decisions = [
-        td for td in pipeline_result.trade_decisions
-        if td.action == DecisionAction.BUY
-    ]
     if not buy_decisions:
-        return 0
-
-    if not _is_market_open(market_open, market_close, holidays):
-        logger.info(
-            "job.buy_execution.skip_market_closed",
-            buy_count=len(buy_decisions),
-            account_id=account_id,
-        )
-        return 0
+        return []
 
     # 배치 예산 배분: 후보들을 가용 현금에 맞춰 순위·재사이징·필터.
     if allocator is not None:
@@ -144,7 +261,7 @@ async def _execute_buy_decisions(
         buy_decisions = await allocator.allocate(
             buy_decisions,
             account_id=account_id,
-            session_id=pipeline_result.session_id,
+            session_id=alloc_session_id or uuid.uuid4(),
         )
         logger.info(
             "job.buy_execution.batch_allocated",
@@ -153,33 +270,33 @@ async def _execute_buy_decisions(
             allocated_count=len(buy_decisions),
         )
         if not buy_decisions:
-            return 0
+            return []
 
     # 배치 누적 한도 게이트용 in-flight 예약 (F-04). 이 배치에서 접수한 진입을
     # 누적해 후속 후보의 MAX_HOLDINGS/MAX_DAILY_TRADES/섹터 한도 검증에 반영한다.
     reservation = BatchReservation()
-    executed = 0
+    results: list[tuple[str, bool, int | None]] = []
     for td in buy_decisions:
-        # 진입 분석 스냅샷(메모리 학습용) — 청산 후 record_trade_outcome이 참조.
-        snapshot = build_entry_snapshot(td.symbol, pipeline_result)
+        meta = meta_by_symbol.get(td.symbol, {})
         try:
             exec_result = await order_executor.execute_entry(
                 trade_decision=td,
-                session_id=pipeline_result.session_id,
+                session_id=meta.get("session_id") or uuid.uuid4(),
                 strategy_type=strategy_type,
                 account_id=account_id,
                 account_label=account_label,
                 batch_reservation=reservation,
-                entry_analysis_snapshot=snapshot,
+                entry_analysis_snapshot=meta.get("snapshot"),
             )
+            order_id = getattr(exec_result, "order_id", None)
+            results.append((td.symbol, exec_result.success, order_id))
             if exec_result.success:
-                executed += 1
                 logger.info(
                     "job.buy_execution.success",
                     symbol=td.symbol,
                     quantity=td.quantity,
                     price=str(td.price),
-                    order_id=exec_result.order_id,
+                    order_id=order_id,
                     account_id=account_id,
                 )
             else:
@@ -194,30 +311,93 @@ async def _execute_buy_decisions(
                 symbol=td.symbol,
                 account_id=account_id,
             )
-    return executed
+            results.append((td.symbol, False, None))
+    return results
 
 
-async def job_swing_analysis(
+async def _enqueue_buy_decisions(
+    result: PipelineResult,
+    *,
+    queue: TradeDecisionQueueManager,
+    account_id: str,
+    strategy_type: str,
+    market_close: str,
+    holidays: str = "",
+) -> int:
+    """PipelineResult의 BUY 결정을 결정 큐에 적재(발주 안 함). 적재 수 반환.
+
+    진입 분석 스냅샷(메모리 학습용)을 결정 시점에 만들어 함께 보관해, 실행
+    드레인이 PipelineResult 없이도 스냅샷을 확보하게 한다. 만료 기준은 오늘 장
+    마감 시각 — 다음날 드레인이 미실행분을 stale로 만료시킨다.
+    """
+    from src.strategy.memory_manager import build_entry_snapshot
+
+    buy_decisions = [
+        td for td in result.trade_decisions if td.action == DecisionAction.BUY
+    ]
+    if not buy_decisions:
+        return 0
+    expires = _market_close_dt(market_close)
+    enqueued = 0
+    for td in buy_decisions:
+        snapshot = build_entry_snapshot(td.symbol, result)
+        try:
+            await queue.enqueue(
+                account_id=account_id,
+                decision=td,
+                session_id=result.session_id,
+                strategy_type=strategy_type,
+                entry_snapshot=snapshot,
+                expires_at=expires,
+            )
+            enqueued += 1
+        except Exception:
+            logger.exception(
+                "job.decision.enqueue_error", symbol=td.symbol, account_id=account_id
+            )
+    return enqueued
+
+
+async def job_swing_decision(
     *,
     orchestrator: PipelineOrchestrator,
     symbols: list[str],
+    queue: TradeDecisionQueueManager,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     strategy: Strategy | None = None,
     account_id: str = "default",
     investment_prompt: str = "",
     risk_tolerance: str = "moderate",
-    order_executor: OrderExecutor | None = None,
     account_label: str = "",
-    market_open: str = "09:00",
     market_close: str = "15:30",
     holidays: str = "",
-    allocator: BatchBudgetAllocator | None = None,
+    telegram_bot: TelegramBot | None = None,
 ) -> None:
-    """스윙 전략 시그널 스캔 + BUY 자동 실행. Daily 01:00 UTC (10:00 KST). 계좌별."""
+    """스윙 전략 결정 — 개장 전 08:30 KST. scan→LLM 결정→결정 큐 적재(발주 안 함).
+
+    실행은 개장 후 job_execution_drain이 당일가/갭 게이트를 통과한 건만 처리한다.
+    진입부에서 데이터 신선도를 독립 검증해 stale 데이터 매매를 차단한다. 계좌별.
+    """
+    ok, detail = await _check_data_freshness(
+        session_factory,
+        holidays=holidays,
+        min_coverage_pct=settings.DATA_FRESHNESS_MIN_COVERAGE_PCT,
+    )
+    if not ok:
+        logger.warning("job.swing_decision.skip_stale", account_id=account_id, **detail)
+        if telegram_bot is not None:
+            await telegram_bot.send_message(
+                f"⛔ <b>스윙 결정 보류</b> — 데이터 신선도 미달(커버리지 "
+                f"{detail['coverage_pct']}%, 최신일 {detail['max_date']}). {account_label}"
+            )
+        return
+
     # scan_universe()로 필터링, 없으면 전체 watchlist fallback
     if strategy is not None:
         target_symbols = await strategy.scan_universe()
         logger.info(
-            "job.swing_analysis.filtered",
+            "job.swing_decision.filtered",
             total=len(symbols),
             filtered=len(target_symbols),
             account_id=account_id,
@@ -226,7 +406,7 @@ async def job_swing_analysis(
         target_symbols = symbols
 
     if not target_symbols:
-        logger.info("job.swing_analysis.skip", reason="no_target_symbols", account_id=account_id)
+        logger.info("job.swing_decision.skip", reason="no_target_symbols", account_id=account_id)
         return
 
     result = await orchestrator.execute(
@@ -235,48 +415,59 @@ async def job_swing_analysis(
         risk_tolerance=risk_tolerance,
         account_id=account_id,
     )
+    enqueued = await _enqueue_buy_decisions(
+        result,
+        queue=queue,
+        account_id=account_id,
+        strategy_type="swing",
+        market_close=market_close,
+        holidays=holidays,
+    )
     logger.info(
-        "job.swing_analysis.done",
+        "job.swing_decision.enqueued",
+        count=enqueued,
         session_id=str(result.session_id),
         symbols_count=len(target_symbols),
-        buy_decisions=len([td for td in result.trade_decisions if td.action == DecisionAction.BUY]),
         account_id=account_id,
     )
 
-    if order_executor is not None:
-        executed = await _execute_buy_decisions(
-            result=result,
-            order_executor=order_executor,
-            strategy_type="swing",
-            account_id=account_id,
-            account_label=account_label,
-            market_open=market_open,
-            market_close=market_close,
-            holidays=holidays,
-            allocator=allocator,
-        )
-        if executed:
-            logger.info("job.swing_analysis.orders_executed", count=executed, account_id=account_id)
 
-
-async def job_position_analysis(
+async def job_position_decision(
     *,
     orchestrator: PipelineOrchestrator,
     position_manager: PositionManager,
+    queue: TradeDecisionQueueManager,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     account_id: str = "default",
     investment_prompt: str = "",
     risk_tolerance: str = "moderate",
-    order_executor: OrderExecutor | None = None,
     account_label: str = "",
-    market_open: str = "09:00",
     market_close: str = "15:30",
     holidays: str = "",
-    allocator: BatchBudgetAllocator | None = None,
+    telegram_bot: TelegramBot | None = None,
 ) -> None:
-    """보유 포지션 심층 분석 + BUY 자동 실행. Wed & Sat 01:30 UTC (10:30 KST). 계좌별."""
+    """포지션 전략 결정 — 개장 전 08:30 KST(화·금). 보유 포지션 분석→결정 큐 적재.
+
+    실행은 개장 후 job_execution_drain이 처리한다. 신선도 게이트로 stale 매매 차단.
+    """
+    ok, detail = await _check_data_freshness(
+        session_factory,
+        holidays=holidays,
+        min_coverage_pct=settings.DATA_FRESHNESS_MIN_COVERAGE_PCT,
+    )
+    if not ok:
+        logger.warning("job.position_decision.skip_stale", account_id=account_id, **detail)
+        if telegram_bot is not None:
+            await telegram_bot.send_message(
+                f"⛔ <b>포지션 결정 보류</b> — 데이터 신선도 미달(커버리지 "
+                f"{detail['coverage_pct']}%, 최신일 {detail['max_date']}). {account_label}"
+            )
+        return
+
     positions = await position_manager.get_open(account_id=account_id)
     if not positions:
-        logger.info("job.position_analysis.skip", reason="no_open_positions", account_id=account_id)
+        logger.info("job.position_decision.skip", reason="no_open_positions", account_id=account_id)
         return
 
     symbols = list({p.symbol for p in positions})
@@ -286,29 +477,129 @@ async def job_position_analysis(
         risk_tolerance=risk_tolerance,
         account_id=account_id,
     )
+    enqueued = await _enqueue_buy_decisions(
+        result,
+        queue=queue,
+        account_id=account_id,
+        strategy_type="position",
+        market_close=market_close,
+        holidays=holidays,
+    )
     logger.info(
-        "job.position_analysis.done",
+        "job.position_decision.enqueued",
+        count=enqueued,
         session_id=str(result.session_id),
         positions_count=len(positions),
-        symbols_count=len(symbols),
-        buy_decisions=len([td for td in result.trade_decisions if td.action == DecisionAction.BUY]),
         account_id=account_id,
     )
 
-    if order_executor is not None:
-        executed = await _execute_buy_decisions(
-            result=result,
-            order_executor=order_executor,
-            strategy_type="position",
-            account_id=account_id,
-            account_label=account_label,
-            market_open=market_open,
-            market_close=market_close,
-            holidays=holidays,
-            allocator=allocator,
-        )
-        if executed:
-            logger.info("job.position_analysis.orders_executed", count=executed, account_id=account_id)
+
+async def job_execution_drain(
+    *,
+    queue: TradeDecisionQueueManager,
+    order_executor: OrderExecutor,
+    broker: BrokerInterface,
+    strategy_type: str,
+    allocator: BatchBudgetAllocator | None = None,
+    account_id: str = "default",
+    account_label: str = "",
+    market_open: str = "09:00",
+    market_close: str = "15:30",
+    holidays: str = "",
+    gap_guard_pct: float = 3.0,
+) -> None:
+    """개장 후 실행 드레인 — 결정 큐 pending을 당일가/갭 게이트 통과분만 발주. 계좌별.
+
+    장중 주기적으로 실행한다. 각 pending에 대해 실시간가를 조회하여 결정 시점
+    기준가(reference_price) 대비 갭이 한도(gap_guard_pct%) 안이면 라이브가로 진입가를
+    갱신해 발주하고, 벗어나면 expired(gap_guard) 처리한다. 만료(전일 이월)분은 먼저
+    정리한다.
+    """
+    if not _is_market_open(market_open, market_close, holidays):
+        logger.debug("job.execution_drain.skip", reason="market_closed", account_id=account_id)
+        return
+
+    pending = await queue.get_pending(account_id)
+    if not pending:
+        return
+
+    now = datetime.now(UTC)
+    # 1. 만료(전일 이월 등) 정리 — stale 결정이 다음날 발주되는 것 방지.
+    expired_ids = [
+        p.id for p in pending if p.expires_at is not None and now >= p.expires_at
+    ]
+    if expired_ids:
+        await queue.mark_expired(expired_ids, "expired_eod")
+        expired_set = set(expired_ids)
+        pending = [p for p in pending if p.id not in expired_set]
+
+    # 2. 당일가/갭 게이트 + 라이브가로 진입가 갱신.
+    gap_limit = Decimal(str(gap_guard_pct))
+    passed: list[TradeDecision] = []
+    meta_by_symbol: dict[str, dict] = {}
+    gap_failed_ids: list[int] = []
+    for p in pending:
+        try:
+            price_info = await broker.get_price(p.symbol)
+            live = price_info.current_price
+        except Exception:
+            logger.warning(
+                "job.execution_drain.price_error", symbol=p.symbol, account_id=account_id
+            )
+            continue
+        ref = p.reference_price
+        gap = (abs(live - ref) / ref * _HUNDRED) if ref > _ZERO else _ZERO
+        if gap > gap_limit:
+            gap_failed_ids.append(p.id)
+            logger.info(
+                "job.execution_drain.gap_skip",
+                symbol=p.symbol,
+                reference=str(ref),
+                live=str(live),
+                gap_pct=str(gap.quantize(_Q2, rounding=ROUND_HALF_UP)),
+                account_id=account_id,
+            )
+            continue
+        # 라이브가로 진입가 갱신(밴드 내) — 지정가 체결성 확보.
+        passed.append(p.decision.model_copy(update={"price": live}))
+        meta_by_symbol[p.symbol] = {
+            "session_id": p.session_id,
+            "snapshot": p.entry_analysis_snapshot,
+            "pending_id": p.id,
+        }
+
+    if gap_failed_ids:
+        await queue.mark_expired(gap_failed_ids, "gap_guard")
+    if not passed:
+        return
+
+    alloc_session = next(iter(meta_by_symbol.values()))["session_id"]
+    results = await _execute_buy_decisions(
+        buy_decisions=passed,
+        meta_by_symbol=meta_by_symbol,
+        order_executor=order_executor,
+        strategy_type=strategy_type,
+        account_id=account_id,
+        account_label=account_label,
+        allocator=allocator,
+        alloc_session_id=alloc_session,
+    )
+
+    executed = 0
+    for symbol, success, order_id in results:
+        if success:
+            pid = meta_by_symbol.get(symbol, {}).get("pending_id")
+            if pid is not None:
+                await queue.mark_executed(pid, order_id)
+            executed += 1
+    logger.info(
+        "job.execution_drain.done",
+        account_id=account_id,
+        pending=len(pending),
+        passed=len(passed),
+        gap_skipped=len(gap_failed_ids),
+        executed=executed,
+    )
 
 
 # ── Stop-Loss Check ────────────────────────────────────────────────────

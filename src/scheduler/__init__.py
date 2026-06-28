@@ -10,12 +10,14 @@ from src.scheduler.engine import SchedulerEngine
 from src.scheduler.factory import SchedulerFactory
 from src.scheduler.jobs import (
     job_daily_report,
+    job_execution_drain,
     job_llm_cost_report,
     job_market_data_collect,
     job_monthly_report,
-    job_position_analysis,
+    job_position_decision,
+    job_pre_open_prep,
     job_stop_loss_check,
-    job_swing_analysis,
+    job_swing_decision,
     job_token_refresh,
     job_weekly_report,
 )
@@ -26,12 +28,14 @@ __all__ = [
     "SchedulerFactory",
     "TradingMonitor",
     "job_daily_report",
+    "job_execution_drain",
     "job_llm_cost_report",
     "job_market_data_collect",
     "job_monthly_report",
-    "job_position_analysis",
+    "job_position_decision",
+    "job_pre_open_prep",
     "job_stop_loss_check",
-    "job_swing_analysis",
+    "job_swing_decision",
     "job_token_refresh",
     "job_weekly_report",
 ]

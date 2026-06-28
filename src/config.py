@@ -147,23 +147,30 @@ class Settings(BaseSettings):
 
     # ── Phase 6: Scheduler + Report + Monitoring ─────────────────────────
     SCHEDULER_ENABLED: bool = True
-    PRE_MARKET_ANALYSIS_TIME: str = "08:30"
-    TRADING_SCAN_INTERVAL_MIN: int = 30
     KR_HOLIDAYS: str = ""  # 쉼표 구분 공휴일 (예: "2026-01-01,2026-01-27")
 
-    # 작업 스케줄 12개 — DESIGN.md 488~505행과 동일
+    # 작업 스케줄. 신규 잡(prep/decision/execution_drain)은 KST(Asia/Seoul) 트리거.
     MARKET_DATA_COLLECTION_TIME: str = "15:40"
-    SWING_ANALYSIS_TIME: str = "01:00"       # KST 10:00 — 장중 분석+매수
-    SWING_ANALYSIS_DAYS: str = "mon,tue,wed,thu,fri"  # 평일만 실행
-    POSITION_ANALYSIS_DAYS: str = "wed,sat"
-    POSITION_ANALYSIS_TIME: str = "01:30"   # KST 10:30 — 장중 포지션 분석+매수
+
+    # 배치 재구성(2026-06-29): "분석=발주" 결합을 끊어 (개장 전 준비 게이트 →
+    # 개장 전 결정 → 개장 후 실행)의 3단계 파이프라인으로 분리. 모두 KST.
+    PRE_OPEN_PREP_TIME: str = "08:00"          # 결측 백필 + 신선도 게이트 + 토큰 갱신
+    DECISION_TIME: str = "08:30"               # 개장 전 결정(큐 적재, 발주 안 함)
+    EXECUTION_DRAIN_START: str = "09:01"       # 실행 드레인 시작
+    EXECUTION_DRAIN_END: str = "15:20"         # 실행 드레인 종료
+    EXECUTION_DRAIN_INTERVAL_MIN: int = 5      # 실행 드레인 주기(분)
+    EXECUTION_GAP_GUARD_PCT: float = 3.0       # reference_price 대비 당일가 갭 허용(%)
+    DATA_FRESHNESS_MIN_COVERAGE_PCT: float = 95.0  # 직전 거래일 일봉 커버리지 최소(%)
+
+    SWING_ANALYSIS_DAYS: str = "mon,tue,wed,thu,fri"  # 스윙 결정 실행 요일(평일)
+    POSITION_ANALYSIS_DAYS: str = "tue,fri"           # 포지션 결정 요일(휴장 토→평일 정정)
     STOP_LOSS_CHECK_INTERVAL_MIN: int = 5
     DAILY_REPORT_TIME: str = "20:00"
     WEEKLY_REPORT_DAY: str = "sat"
     WEEKLY_REPORT_TIME: str = "10:00"
     MONTHLY_REPORT_DAY: int = 1
     MONTHLY_REPORT_TIME: str = "10:00"
-    TOKEN_REFRESH_TIME: str = "06:00"
+    TOKEN_REFRESH_TIME: str = "08:00"  # KST, pre_open_prep와 함께 개장 전 갱신(세션 중 갱신 회피)
     LLM_COST_REPORT_DAY: str = "mon"
     LLM_COST_REPORT_TIME: str = "09:00"
     MEMORY_CLEANUP_TIME: str = "16:10"  # 만료 메모리 정리 (KST, 매일 1회)

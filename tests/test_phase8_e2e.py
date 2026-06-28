@@ -206,6 +206,7 @@ async def test_market_data_shared_once(client, seed_accounts, session_factory):
         generator=AsyncMock(),
         telegram_bot=AsyncMock(),
         settings=settings,
+        session_factory=session_factory,
     )
 
     # 계좌별 작업 등록 — 2개 계좌
@@ -251,34 +252,39 @@ async def test_market_data_shared_once(client, seed_accounts, session_factory):
             generator=AsyncMock(),
             telegram_bot=AsyncMock(),
             settings=settings,
+            session_factory=session_factory,
+            decision_queue=MagicMock(),
         )
 
     job_names = set(engine._job_fns.keys())
 
-    # 공통 작업: weekly_report, monthly_report, llm_cost_report (market_data_collect은 provider=None이라 스킵)
-    common_jobs = {"weekly_report", "monthly_report", "llm_cost_report"}
+    # 공통 작업: pre_open_prep, weekly/monthly/llm_cost_report (market_data_collect은 provider=None이라 스킵)
+    common_jobs = {"pre_open_prep", "weekly_report", "monthly_report", "llm_cost_report"}
     for cj in common_jobs:
         assert cj in job_names, f"Common job '{cj}' missing"
 
-    # 계좌별 작업
-    assert "swing_analysis:acct-momentum" in job_names, "Swing analysis for acct-momentum missing"
-    assert "position_analysis:acct-value" in job_names, "Position analysis for acct-value missing"
+    # 계좌별 작업 (결정/실행 분리)
+    assert "swing_decision:acct-momentum" in job_names, "Swing decision for acct-momentum missing"
+    assert "position_decision:acct-value" in job_names, "Position decision for acct-value missing"
+    assert "execution_drain:acct-value" in job_names
+    assert "execution_drain:acct-momentum" in job_names
     assert "stop_loss_check:acct-value" in job_names
     assert "stop_loss_check:acct-momentum" in job_names
     assert "daily_report:acct-value" in job_names
     assert "daily_report:acct-momentum" in job_names
 
-    # swing_analysis는 acct-value에 없어야 함 (position 전략)
-    assert "swing_analysis:acct-value" not in job_names
-    assert "position_analysis:acct-momentum" not in job_names
+    # swing_decision은 acct-value에 없어야 함 (position 전략)
+    assert "swing_decision:acct-value" not in job_names
+    assert "position_decision:acct-momentum" not in job_names
 
-    # 공통 작업은 정확히 3개 (market_data_collect 제외)
+    # 공통 작업은 정확히 4개 (market_data_collect 제외, pre_open_prep 포함)
     common_count = sum(1 for n in job_names if ":" not in n)
-    assert common_count == 3, f"Expected 3 common jobs, got {common_count}"
+    assert common_count == 4, f"Expected 4 common jobs, got {common_count}"
 
-    # 계좌별 작업: value=2(position_analysis+stop_loss+daily), momentum=2(swing_analysis+stop_loss+daily)
+    # 계좌별 작업: auth=None이라 token_refresh 없음. 계좌당 decision+execution_drain+
+    # stop_loss+daily = 4개 × 2계좌 = 8개.
     per_account_count = sum(1 for n in job_names if ":" in n)
-    assert per_account_count == 6, f"Expected 6 per-account jobs, got {per_account_count}"
+    assert per_account_count == 8, f"Expected 8 per-account jobs, got {per_account_count}"
 
 
 # ── Scenario 3: 투자 철학 차등화 ─────────────────────────────────────

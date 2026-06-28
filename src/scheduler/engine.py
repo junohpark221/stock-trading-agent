@@ -138,7 +138,7 @@ class SchedulerEngine:
         등록하지 않는다 (run_job_now는 여전히 사용 가능).
 
         Args:
-            job_name: 작업 고유 이름 (e.g. ``"swing_analysis:acct-1"``).
+            job_name: 작업 고유 이름 (e.g. ``"swing_decision:acct-1"``).
             fn: 인자 없는 async callable (partial로 바인딩 완료).
             trigger: APScheduler 트리거 (CronTrigger 또는 IntervalTrigger).
         """

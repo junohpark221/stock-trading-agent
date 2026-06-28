@@ -351,9 +351,10 @@ async def test_create_scheduler_no_accounts_no_key():
             approval_manager=AsyncMock(),
         )
 
-    # 공통 작업: weekly, monthly, llm_cost + reconcile (midday, eod, positions, intraday)
-    # + cleanup_expired_memories. market_data_collect은 provider=None 이라 스킵
-    assert len(engine._job_fns) == 8
+    # 공통 작업: pre_open_prep + weekly, monthly, llm_cost + reconcile (midday, eod,
+    # positions, intraday) + cleanup_expired_memories. market_data_collect은 provider=None 스킵
+    assert len(engine._job_fns) == 9
+    assert "pre_open_prep" in engine._job_fns
     assert "weekly_report" in engine._job_fns
     assert "monthly_report" in engine._job_fns
     assert "llm_cost_report" in engine._job_fns

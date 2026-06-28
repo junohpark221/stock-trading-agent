@@ -7,7 +7,12 @@ can detect them via ``Base.metadata``.
 from src.db.models.account import Account, AccountCrypto
 from src.db.models.analysis import Disclosure, EconomicIndicator, FinancialStatement, NewsArticle
 from src.db.models.backtest import BacktestRun, BacktestTrade
-from src.db.models.execution import ApprovalRequestDB, Execution, Order
+from src.db.models.execution import (
+    ApprovalRequestDB,
+    Execution,
+    Order,
+    TradeDecisionQueue,
+)
 from src.db.models.llm import AgentModelConfigDB, DecisionLog, LLMUsage
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.db.models.scheduler import JobExecution
@@ -34,4 +39,5 @@ __all__ = [
     "PortfolioSnapshot",
     "PositionRecord",
     "StockMaster",
+    "TradeDecisionQueue",
 ]

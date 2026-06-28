@@ -295,10 +295,7 @@ class TestPhase6Config:
             DATABASE_URL="postgresql+asyncpg://x:x@localhost/test",
             REDIS_URL="redis://localhost:6379/0",
         )
-        # 기존 3개
         assert s.SCHEDULER_ENABLED is True
-        assert s.PRE_MARKET_ANALYSIS_TIME == "08:30"
-        assert s.TRADING_SCAN_INTERVAL_MIN == 30
 
     def test_job_schedule_defaults(self):
         from src.config import Settings
@@ -308,16 +305,20 @@ class TestPhase6Config:
             REDIS_URL="redis://localhost:6379/0",
         )
         assert s.MARKET_DATA_COLLECTION_TIME == "15:40"
-        assert s.SWING_ANALYSIS_TIME == "01:00"
-        assert s.POSITION_ANALYSIS_DAYS == "wed,sat"
-        assert s.POSITION_ANALYSIS_TIME == "01:30"
+        # 배치 재구성: 결정/실행 분리 + 게이트 (2026-06-29)
+        assert s.PRE_OPEN_PREP_TIME == "08:00"
+        assert s.DECISION_TIME == "08:30"
+        assert s.POSITION_ANALYSIS_DAYS == "tue,fri"  # 휴장 토 → 평일 정정
+        assert s.EXECUTION_DRAIN_INTERVAL_MIN == 5
+        assert s.EXECUTION_GAP_GUARD_PCT == 3.0
+        assert s.DATA_FRESHNESS_MIN_COVERAGE_PCT == 95.0
         assert s.STOP_LOSS_CHECK_INTERVAL_MIN == 5
         assert s.DAILY_REPORT_TIME == "20:00"
         assert s.WEEKLY_REPORT_DAY == "sat"
         assert s.WEEKLY_REPORT_TIME == "10:00"
         assert s.MONTHLY_REPORT_DAY == 1
         assert s.MONTHLY_REPORT_TIME == "10:00"
-        assert s.TOKEN_REFRESH_TIME == "06:00"
+        assert s.TOKEN_REFRESH_TIME == "08:00"  # 개장 전 갱신으로 이동
         assert s.LLM_COST_REPORT_DAY == "mon"
         assert s.LLM_COST_REPORT_TIME == "09:00"
 

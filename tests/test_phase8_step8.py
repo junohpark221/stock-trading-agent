@@ -18,11 +18,14 @@ from src.core.enums import StrategyType
 from src.scheduler.engine import SchedulerEngine
 from src.scheduler.factory import AccountContext, SchedulerFactory
 from src.scheduler.jobs import (
-    job_position_analysis,
+    job_position_decision,
     job_stop_loss_check,
-    job_swing_analysis,
+    job_swing_decision,
 )
 from tests.conftest import make_settings
+
+# 결정/실행 분리 후 _register_*_jobs가 요구하는 추가 의존성(테스트용 목).
+_REG_DEPS = dict(session_factory=MagicMock(), decision_queue=MagicMock())
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -115,7 +118,7 @@ class TestRegisterAccountJobs:
         )
 
     def test_swing_account_registers_swing_job(self, engine):
-        """swing 전략 계좌 → swing_analysis:{id} 등록, position_analysis 미등록."""
+        """swing 전략 계좌 → swing_decision:{id} + execution_drain 등록, position 미등록."""
         ctx = _make_account_context(
             account_id="acct-1",
             strategy_type=StrategyType.SWING,
@@ -128,17 +131,19 @@ class TestRegisterAccountJobs:
             generator=MagicMock(),
             telegram_bot=AsyncMock(),
             settings=make_settings(),
+            **_REG_DEPS,
         )
 
         job_names = set(engine._job_fns.keys())
-        assert "swing_analysis:acct-1" in job_names
-        assert "position_analysis:acct-1" not in job_names
+        assert "swing_decision:acct-1" in job_names
+        assert "position_decision:acct-1" not in job_names
+        assert "execution_drain:acct-1" in job_names
         assert "stop_loss_check:acct-1" in job_names
         assert "daily_report:acct-1" in job_names
         assert "token_refresh:acct-1" in job_names
 
     def test_position_account_registers_position_job(self, engine):
-        """position 전략 계좌 → position_analysis:{id} 등록, swing 미등록."""
+        """position 전략 계좌 → position_decision:{id} 등록, swing 미등록."""
         ctx = _make_account_context(
             account_id="acct-2",
             strategy_type=StrategyType.POSITION,
@@ -151,11 +156,13 @@ class TestRegisterAccountJobs:
             generator=MagicMock(),
             telegram_bot=AsyncMock(),
             settings=make_settings(),
+            **_REG_DEPS,
         )
 
         job_names = set(engine._job_fns.keys())
-        assert "position_analysis:acct-2" in job_names
-        assert "swing_analysis:acct-2" not in job_names
+        assert "position_decision:acct-2" in job_names
+        assert "swing_decision:acct-2" not in job_names
+        assert "execution_drain:acct-2" in job_names
 
     def test_mock_broker_no_token_refresh(self, engine):
         """auth=None (mock broker) → token_refresh 미등록."""
@@ -186,6 +193,7 @@ class TestRegisterAccountJobs:
             generator=MagicMock(),
             telegram_bot=AsyncMock(),
             settings=make_settings(),
+            **_REG_DEPS,
         )
 
         assert "token_refresh:mock-acct" not in engine._job_fns
@@ -213,6 +221,7 @@ class TestRegisterAccountJobs:
             generator=generator,
             telegram_bot=telegram_bot,
             settings=settings,
+            session_factory=MagicMock(),
         )
 
         # 계좌별 작업 등록
@@ -222,32 +231,39 @@ class TestRegisterAccountJobs:
             generator=generator,
             telegram_bot=telegram_bot,
             settings=settings,
+            **_REG_DEPS,
         )
         SchedulerFactory._register_account_jobs(engine, swing_ctx, **account_kwargs)
         SchedulerFactory._register_account_jobs(engine, position_ctx, **account_kwargs)
 
         job_names = set(engine._job_fns.keys())
 
-        # 공통: market_data_collect, weekly_report, monthly_report, llm_cost_report = 4
+        # 공통: market_data_collect, pre_open_prep, weekly_report, monthly_report,
+        #       llm_cost_report = 5
         assert "market_data_collect" in job_names
+        assert "pre_open_prep" in job_names
         assert "weekly_report" in job_names
         assert "monthly_report" in job_names
         assert "llm_cost_report" in job_names
 
-        # acct-1 (swing): token_refresh, swing_analysis, stop_loss_check, daily_report = 4
+        # acct-1 (swing): token_refresh, swing_decision, execution_drain,
+        #                 stop_loss_check, daily_report = 5
         assert "token_refresh:acct-1" in job_names
-        assert "swing_analysis:acct-1" in job_names
+        assert "swing_decision:acct-1" in job_names
+        assert "execution_drain:acct-1" in job_names
         assert "stop_loss_check:acct-1" in job_names
         assert "daily_report:acct-1" in job_names
 
-        # acct-2 (position): token_refresh, position_analysis, stop_loss_check, daily_report = 4
+        # acct-2 (position): token_refresh, position_decision, execution_drain,
+        #                    stop_loss_check, daily_report = 5
         assert "token_refresh:acct-2" in job_names
-        assert "position_analysis:acct-2" in job_names
+        assert "position_decision:acct-2" in job_names
+        assert "execution_drain:acct-2" in job_names
         assert "stop_loss_check:acct-2" in job_names
         assert "daily_report:acct-2" in job_names
 
-        # 총: 4 + 4 + 4 = 12
-        assert len(job_names) == 12
+        # 총: 5 + 5 + 5 = 15
+        assert len(job_names) == 15
 
 
 # ── job 함수 계좌별 파라미터 전달 ──────────────────────────────────────────
@@ -255,14 +271,23 @@ class TestRegisterAccountJobs:
 
 class TestJobAccountParams:
     @pytest.mark.asyncio
-    async def test_swing_analysis_passes_investment_prompt(self):
-        """job_swing_analysis가 orchestrator.execute에 investment_prompt 전달."""
+    async def test_swing_decision_passes_investment_prompt(self, monkeypatch):
+        """job_swing_decision이 orchestrator.execute에 investment_prompt 전달."""
+        monkeypatch.setattr(
+            "src.scheduler.jobs._check_data_freshness",
+            AsyncMock(return_value=(True, {"coverage_pct": 100.0, "max_date": "x"})),
+        )
         orchestrator = AsyncMock()
-        orchestrator.execute = AsyncMock(return_value=MagicMock(session_id="test"))
+        orchestrator.execute = AsyncMock(
+            return_value=MagicMock(session_id="test", trade_decisions=[])
+        )
 
-        await job_swing_analysis(
+        await job_swing_decision(
             orchestrator=orchestrator,
             symbols=["005930"],
+            queue=AsyncMock(),
+            session_factory=MagicMock(),
+            settings=make_settings(),
             account_id="acct-1",
             investment_prompt="aggressive growth",
         )
@@ -275,8 +300,12 @@ class TestJobAccountParams:
         )
 
     @pytest.mark.asyncio
-    async def test_position_analysis_filters_by_account(self):
-        """job_position_analysis가 account_id로 포지션 필터링."""
+    async def test_position_decision_filters_by_account(self, monkeypatch):
+        """job_position_decision이 account_id로 포지션 필터링."""
+        monkeypatch.setattr(
+            "src.scheduler.jobs._check_data_freshness",
+            AsyncMock(return_value=(True, {"coverage_pct": 100.0, "max_date": "x"})),
+        )
         position = MagicMock()
         position.symbol = "005930"
 
@@ -284,11 +313,16 @@ class TestJobAccountParams:
         position_manager.get_open = AsyncMock(return_value=[position])
 
         orchestrator = AsyncMock()
-        orchestrator.execute = AsyncMock(return_value=MagicMock(session_id="test"))
+        orchestrator.execute = AsyncMock(
+            return_value=MagicMock(session_id="test", trade_decisions=[])
+        )
 
-        await job_position_analysis(
+        await job_position_decision(
             orchestrator=orchestrator,
             position_manager=position_manager,
+            queue=AsyncMock(),
+            session_factory=MagicMock(),
+            settings=make_settings(),
             account_id="acct-2",
             investment_prompt="value investing",
         )
@@ -302,19 +336,44 @@ class TestJobAccountParams:
         )
 
     @pytest.mark.asyncio
-    async def test_position_analysis_no_positions_skip(self):
+    async def test_position_decision_no_positions_skip(self, monkeypatch):
         """포지션 없으면 orchestrator 미호출."""
+        monkeypatch.setattr(
+            "src.scheduler.jobs._check_data_freshness",
+            AsyncMock(return_value=(True, {"coverage_pct": 100.0, "max_date": "x"})),
+        )
         position_manager = AsyncMock()
         position_manager.get_open = AsyncMock(return_value=[])
 
         orchestrator = AsyncMock()
 
-        await job_position_analysis(
+        await job_position_decision(
             orchestrator=orchestrator,
             position_manager=position_manager,
+            queue=AsyncMock(),
+            session_factory=MagicMock(),
+            settings=make_settings(),
             account_id="acct-2",
         )
 
+        orchestrator.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_decision_skips_on_stale_data(self, monkeypatch):
+        """신선도 미달이면 분석을 보류(orchestrator 미호출)."""
+        monkeypatch.setattr(
+            "src.scheduler.jobs._check_data_freshness",
+            AsyncMock(return_value=(False, {"coverage_pct": 10.0, "max_date": None})),
+        )
+        orchestrator = AsyncMock()
+        await job_swing_decision(
+            orchestrator=orchestrator,
+            symbols=["005930"],
+            queue=AsyncMock(),
+            session_factory=MagicMock(),
+            settings=make_settings(),
+            account_id="acct-1",
+        )
         orchestrator.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -356,7 +415,7 @@ class TestRegisterCommonJobs:
         )
 
     def test_with_provider(self, engine):
-        """provider 있으면 market_data_collect 포함 4개 등록."""
+        """provider 있으면 market_data_collect + pre_open_prep 포함 5개 등록."""
         SchedulerFactory._register_common_jobs(
             engine,
             provider=MagicMock(),
@@ -364,12 +423,14 @@ class TestRegisterCommonJobs:
             generator=MagicMock(),
             telegram_bot=AsyncMock(),
             settings=make_settings(),
+            session_factory=MagicMock(),
         )
-        assert len(engine._job_fns) == 4
+        assert len(engine._job_fns) == 5
         assert "market_data_collect" in engine._job_fns
+        assert "pre_open_prep" in engine._job_fns
 
     def test_without_provider(self, engine):
-        """provider=None이면 market_data_collect 미등록, 3개만."""
+        """provider=None이면 market_data_collect 미등록, pre_open_prep + 리포트 3개 = 4개."""
         SchedulerFactory._register_common_jobs(
             engine,
             provider=None,
@@ -377,9 +438,11 @@ class TestRegisterCommonJobs:
             generator=MagicMock(),
             telegram_bot=AsyncMock(),
             settings=make_settings(),
+            session_factory=MagicMock(),
         )
-        assert len(engine._job_fns) == 3
+        assert len(engine._job_fns) == 4
         assert "market_data_collect" not in engine._job_fns
+        assert "pre_open_prep" in engine._job_fns
         assert "weekly_report" in engine._job_fns
         assert "monthly_report" in engine._job_fns
         assert "llm_cost_report" in engine._job_fns

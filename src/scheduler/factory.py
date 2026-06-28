@@ -24,14 +24,16 @@ from src.scheduler.engine import SchedulerEngine
 from src.scheduler.jobs import (
     job_cleanup_expired_memories,
     job_daily_report,
+    job_execution_drain,
     job_llm_cost_report,
     job_market_data_collect,
     job_monthly_report,
-    job_position_analysis,
+    job_position_decision,
+    job_pre_open_prep,
     job_reconcile_open_orders,
     job_reconcile_positions,
     job_stop_loss_check,
-    job_swing_analysis,
+    job_swing_decision,
     job_token_refresh,
     job_weekly_report,
 )
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from src.data.cache import RedisCache
     from src.data.providers.base import DataProvider
     from src.execution.approval import ApprovalManager
+    from src.execution.decision_queue import TradeDecisionQueueManager
     from src.execution.execution_stream import ExecutionStreamManager
     from src.execution.executor import OrderExecutor
     from src.execution.exit_coordinator import ExitCoordinator
@@ -260,12 +263,16 @@ class SchedulerFactory:
                 logger.exception("stock_master_sync_on_startup_failed")
 
         # ── 4-2. FillFinalizer + ExecutionStreamManager + OrderReconciler ─
+        from src.execution.decision_queue import TradeDecisionQueueManager
         from src.execution.execution_stream import ExecutionStreamManager
         from src.execution.exit_coordinator import ExitCoordinator
         from src.execution.fill_finalizer import FillFinalizer
         from src.execution.reconciler import OrderReconciler, PositionReconciler
         from src.execution.stoploss_stream import StopLossStreamService
         from src.strategy.position_manager import PositionManager
+
+        # 결정/실행 분리: 개장 전 결정 잡이 적재하고 개장 후 드레인이 소비하는 큐.
+        decision_queue = TradeDecisionQueueManager(session_factory)
 
         # memory_manager는 위 에이전트 구성 시점에 이미 생성됨. 포지션 매니저에도
         # 주입해, 전량 청산 시 학습 메모리(record_trade_outcome)가 자동 기록되게 한다.
@@ -354,6 +361,7 @@ class SchedulerFactory:
             generator=generator,
             telegram_bot=telegram_bot,
             settings=settings,
+            session_factory=session_factory,
             reconciler=reconciler,
             position_reconciler=position_reconciler,
             memory_manager=memory_manager,
@@ -369,6 +377,8 @@ class SchedulerFactory:
                 generator=generator,
                 telegram_bot=telegram_bot,
                 settings=settings,
+                session_factory=session_factory,
+                decision_queue=decision_queue,
                 account_index=account_index,
                 coordinator=exit_coordinator,
             )
@@ -613,6 +623,7 @@ class SchedulerFactory:
         generator: ReportGenerator,
         telegram_bot: TelegramBot,
         settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession],
         reconciler: OrderReconciler | None = None,
         position_reconciler: PositionReconciler | None = None,
         memory_manager: AgentMemoryManager | None = None,
@@ -628,6 +639,22 @@ class SchedulerFactory:
                 partial(job_market_data_collect, provider=provider, symbols=watchlist_symbols),
                 CronTrigger(day_of_week="mon-fri", hour=md_h, minute=md_m, timezone="UTC"),
             )
+
+        # pre_open_prep — 08:00 KST 개장 전 결측 백필 + 신선도 게이트 (평일, KST)
+        po_h, po_m = SchedulerEngine._parse_time(s.PRE_OPEN_PREP_TIME)
+        engine.register_job(
+            "pre_open_prep",
+            partial(
+                job_pre_open_prep,
+                provider=provider,
+                session_factory=session_factory,
+                settings=s,
+                telegram_bot=telegram_bot,
+            ),
+            CronTrigger(
+                day_of_week="mon-fri", hour=po_h, minute=po_m, timezone="Asia/Seoul"
+            ),
+        )
 
         # weekly_report (통합 리포트, account_id 없음)
         wr_h, wr_m = SchedulerEngine._parse_time(s.WEEKLY_REPORT_TIME)
@@ -726,10 +753,16 @@ class SchedulerFactory:
         generator: ReportGenerator,
         telegram_bot: TelegramBot,
         settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession],
+        decision_queue: TradeDecisionQueueManager,
         account_index: int = 0,
         coordinator: ExitCoordinator | None = None,
     ) -> None:
         """계좌별 작업 등록. 작업 이름: ``{job_type}:{account_id}``.
+
+        결정/실행 분리(2026-06-29): 분석=발주 모놀리식을 (개장 전 결정 → 개장 후
+        실행 드레인)으로 나눈다. 결정 잡은 DECISION_TIME(08:30 KST)에 결정 큐에
+        적재만 하고, execution_drain이 장중 당일가/갭 게이트 통과분만 발주한다.
 
         Args:
             account_index: 0-based index for staggering cron triggers.
@@ -740,7 +773,8 @@ class SchedulerFactory:
         s = settings
         aid = ctx.account_id
 
-        # token_refresh:{account_id} — mock broker면 스킵 (시차 실행)
+        # token_refresh:{account_id} — mock broker면 스킵. 개장 전(08:00 KST)으로
+        # 이동해 세션 중 갱신을 피한다(시차 실행).
         if ctx.auth is not None:
             tr_h, tr_m = SchedulerEngine._parse_time(s.TOKEN_REFRESH_TIME)
             tr_m_offset = (tr_m + account_index) % 60
@@ -748,69 +782,98 @@ class SchedulerFactory:
             engine.register_job(
                 f"token_refresh:{aid}",
                 partial(job_token_refresh, auth=ctx.auth, account_id=aid),
-                CronTrigger(hour=tr_h_offset, minute=tr_m_offset, timezone="UTC"),
+                CronTrigger(hour=tr_h_offset, minute=tr_m_offset, timezone="Asia/Seoul"),
             )
 
-        # swing_analysis:{account_id} — swing 전략 계좌만 (시차 실행, 평일만)
+        # 결정 잡 — 개장 전 DECISION_TIME(08:30 KST) 결정 큐 적재(발주 안 함). 시차 실행.
+        dc_h, dc_m = SchedulerEngine._parse_time(s.DECISION_TIME)
+        dc_m_offset = (dc_m + account_index) % 60
+        dc_h_offset = dc_h + (dc_m + account_index) // 60
+
+        # swing_decision:{account_id} — swing 전략 계좌만 (평일)
         if ctx.strategy_type == StrategyType.SWING:
-            sw_h, sw_m = SchedulerEngine._parse_time(s.SWING_ANALYSIS_TIME)
-            sw_m_offset = (sw_m + account_index) % 60
-            sw_h_offset = sw_h + (sw_m + account_index) // 60
             sw_days = SchedulerEngine._parse_day_of_week(s.SWING_ANALYSIS_DAYS)
             engine.register_job(
-                f"swing_analysis:{aid}",
+                f"swing_decision:{aid}",
                 partial(
-                    job_swing_analysis,
+                    job_swing_decision,
                     orchestrator=orchestrator,
                     symbols=watchlist_symbols,
+                    queue=decision_queue,
+                    session_factory=session_factory,
+                    settings=s,
                     strategy=ctx.strategy,
                     account_id=aid,
-                    order_executor=ctx.order_executor,
-                    account_label=ctx.account_label,
-                    market_open=s.MARKET_OPEN_TIME,
-                    market_close=s.MARKET_CLOSE_TIME,
-                    holidays=s.KR_HOLIDAYS,
                     investment_prompt=ctx.investment_prompt,
                     risk_tolerance=ctx.risk_tolerance,
-                    allocator=ctx.allocator,
+                    account_label=ctx.account_label,
+                    market_close=s.MARKET_CLOSE_TIME,
+                    holidays=s.KR_HOLIDAYS,
+                    telegram_bot=telegram_bot,
                 ),
                 CronTrigger(
                     day_of_week=sw_days,
-                    hour=sw_h_offset,
-                    minute=sw_m_offset,
-                    timezone="UTC",
+                    hour=dc_h_offset,
+                    minute=dc_m_offset,
+                    timezone="Asia/Seoul",
                 ),
             )
 
-        # position_analysis:{account_id} — position 전략 계좌만 (시차 실행)
+        # position_decision:{account_id} — position 전략 계좌만 (화·금)
         if ctx.strategy_type == StrategyType.POSITION:
-            pa_h, pa_m = SchedulerEngine._parse_time(s.POSITION_ANALYSIS_TIME)
-            pa_m_offset = (pa_m + account_index) % 60
-            pa_h_offset = pa_h + (pa_m + account_index) // 60
             pa_days = SchedulerEngine._parse_day_of_week(s.POSITION_ANALYSIS_DAYS)
             engine.register_job(
-                f"position_analysis:{aid}",
+                f"position_decision:{aid}",
                 partial(
-                    job_position_analysis,
+                    job_position_decision,
                     orchestrator=orchestrator,
                     position_manager=ctx.position_manager,
+                    queue=decision_queue,
+                    session_factory=session_factory,
+                    settings=s,
                     account_id=aid,
                     investment_prompt=ctx.investment_prompt,
                     risk_tolerance=ctx.risk_tolerance,
-                    order_executor=ctx.order_executor,
                     account_label=ctx.account_label,
-                    market_open=s.MARKET_OPEN_TIME,
                     market_close=s.MARKET_CLOSE_TIME,
                     holidays=s.KR_HOLIDAYS,
-                    allocator=ctx.allocator,
+                    telegram_bot=telegram_bot,
                 ),
                 CronTrigger(
                     day_of_week=pa_days,
-                    hour=pa_h_offset,
-                    minute=pa_m_offset,
-                    timezone="UTC",
+                    hour=dc_h_offset,
+                    minute=dc_m_offset,
+                    timezone="Asia/Seoul",
                 ),
             )
+
+        # execution_drain:{account_id} — 모든 계좌. 장중 주기적으로 결정 큐 소비.
+        # 시간 범위는 cron으로 잡고, 정확한 장 운영시간(공휴일 포함) 가드는 잡 내부에서.
+        drain_start_h, _ = SchedulerEngine._parse_time(s.EXECUTION_DRAIN_START)
+        drain_end_h, _ = SchedulerEngine._parse_time(s.EXECUTION_DRAIN_END)
+        engine.register_job(
+            f"execution_drain:{aid}",
+            partial(
+                job_execution_drain,
+                queue=decision_queue,
+                order_executor=ctx.order_executor,
+                broker=ctx.broker,
+                strategy_type=ctx.strategy_type.value,
+                allocator=ctx.allocator,
+                account_id=aid,
+                account_label=ctx.account_label,
+                market_open=s.MARKET_OPEN_TIME,
+                market_close=s.MARKET_CLOSE_TIME,
+                holidays=s.KR_HOLIDAYS,
+                gap_guard_pct=s.EXECUTION_GAP_GUARD_PCT,
+            ),
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=f"{drain_start_h}-{drain_end_h}",
+                minute=f"*/{s.EXECUTION_DRAIN_INTERVAL_MIN}",
+                timezone="Asia/Seoul",
+            ),
+        )
 
         # stop_loss_check:{account_id} — 모든 계좌
         engine.register_job(

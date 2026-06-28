@@ -372,6 +372,30 @@ async def test_execute_entry_full_success(executor, mock_broker, mock_position_m
 
 
 @pytest.mark.asyncio
+async def test_execute_entry_threads_analysis_snapshot(
+    executor, mock_position_manager
+):
+    """entry_analysis_snapshot이 주문→체결→포지션 생성까지 전파된다."""
+    td = _make_trade_decision()
+    snapshot = {
+        "symbol": "005930",
+        "action": "buy",
+        "confidence": "0.85",
+        "key_factors": ["골든크로스"],
+    }
+
+    await executor.execute_entry(
+        trade_decision=td,
+        session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+        entry_analysis_snapshot=snapshot,
+    )
+
+    create_kwargs = mock_position_manager.create.call_args.kwargs
+    assert create_kwargs["entry_analysis_snapshot"] == snapshot
+
+
+@pytest.mark.asyncio
 async def test_execute_entry_manual_approved(executor, mock_approval_manager):
     """수동 승인 경로."""
     mock_approval_manager.request_approval = AsyncMock(return_value=ApprovalStatus.APPROVED)

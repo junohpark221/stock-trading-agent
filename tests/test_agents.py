@@ -787,3 +787,101 @@ class TestInvestmentPromptInjection:
 
         record_kwargs = mock_recorder.record.call_args.kwargs
         assert record_kwargs["account_id"] == "acct-aggressive"
+
+
+class TestAgentMemoryInjection:
+    """_inject_agent_memories() 및 analyze() 학습 메모리 주입 테스트."""
+
+    @staticmethod
+    def _memory(content: str) -> MagicMock:
+        m = MagicMock()
+        m.content = content
+        return m
+
+    def test_inject_appends_block(self, mock_router, mock_recorder, mock_tool_registry):
+        """system 메시지에 과거 교훈 블록이 append된다."""
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        messages = [
+            LLMMessage(role=MessageRole.SYSTEM, content="Base prompt."),
+            LLMMessage(role=MessageRole.USER, content="Hello"),
+        ]
+
+        result = agent._inject_agent_memories(
+            messages,
+            [self._memory("RSI 과매수 진입은 손실"), self._memory("실적 발표 전 진입 주의")],
+        )
+
+        assert "## 과거 교훈 (학습 메모리 — 참고용)" in result[0].content
+        assert "RSI 과매수 진입은 손실" in result[0].content
+        assert "실적 발표 전 진입 주의" in result[0].content
+        assert result[0].content.startswith("Base prompt.")
+        assert result[1].content == "Hello"  # user 메시지 불변
+
+    def test_inject_empty_is_noop(self, mock_router, mock_recorder, mock_tool_registry):
+        """메모리가 비어 있으면 메시지 불변(무비용 no-op)."""
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        messages = [LLMMessage(role=MessageRole.SYSTEM, content="Base prompt.")]
+        result = agent._inject_agent_memories(messages, [])
+        assert result[0].content == "Base prompt."
+
+    @pytest.mark.asyncio
+    async def test_analyze_injects_memories(
+        self, mock_router, mock_recorder, mock_tool_registry, session_id
+    ):
+        """memory_manager 주입 시 analyze() → 과거 교훈이 LLM 메시지에 포함."""
+        mc = _sample_market_condition()
+        mock_router.route_structured.return_value = (mc, _sample_routing_result())
+        mm = MagicMock()
+        mm.get_relevant_memories = AsyncMock(
+            return_value=[self._memory("과매수 진입은 손실로 이어짐")]
+        )
+
+        agent = _ConcreteAgent(
+            mock_router, mock_recorder, mock_tool_registry, memory_manager=mm
+        )
+        await agent.analyze({}, session_id=session_id, symbol="005930", account_id="acc1")
+
+        mm.get_relevant_memories.assert_awaited_once_with(
+            agent_type=AgentType.MARKET_ANALYST.value, symbol="005930", account_id="acc1"
+        )
+        messages = mock_router.route_structured.call_args.kwargs["messages"]
+        system_msg = next(m for m in messages if m.role == MessageRole.SYSTEM)
+        assert "## 과거 교훈" in system_msg.content
+        assert "과매수 진입은 손실로 이어짐" in system_msg.content
+
+    @pytest.mark.asyncio
+    async def test_analyze_without_memory_manager(
+        self, mock_router, mock_recorder, mock_tool_registry, session_id
+    ):
+        """memory_manager 미주입 → 과거 교훈 블록 없음 (회귀 0)."""
+        mc = _sample_market_condition()
+        mock_router.route_structured.return_value = (mc, _sample_routing_result())
+
+        agent = _ConcreteAgent(mock_router, mock_recorder, mock_tool_registry)
+        await agent.analyze({}, session_id=session_id, symbol="005930")
+
+        messages = mock_router.route_structured.call_args.kwargs["messages"]
+        system_msg = next(m for m in messages if m.role == MessageRole.SYSTEM)
+        assert "과거 교훈" not in system_msg.content
+
+    @pytest.mark.asyncio
+    async def test_analyze_recall_failure_continues(
+        self, mock_router, mock_recorder, mock_tool_registry, session_id
+    ):
+        """메모리 조회 실패해도 분석은 계속 (best-effort, 매매 비차단)."""
+        mc = _sample_market_condition()
+        mock_router.route_structured.return_value = (mc, _sample_routing_result())
+        mm = MagicMock()
+        mm.get_relevant_memories = AsyncMock(side_effect=Exception("db down"))
+
+        agent = _ConcreteAgent(
+            mock_router, mock_recorder, mock_tool_registry, memory_manager=mm
+        )
+        result, _ = await agent.analyze({}, session_id=session_id, symbol="005930")
+
+        # 분석 자체는 정상 완료
+        assert isinstance(result, MarketCondition)
+        mock_router.route_structured.assert_called_once()
+        messages = mock_router.route_structured.call_args.kwargs["messages"]
+        system_msg = next(m for m in messages if m.role == MessageRole.SYSTEM)
+        assert "과거 교훈" not in system_msg.content

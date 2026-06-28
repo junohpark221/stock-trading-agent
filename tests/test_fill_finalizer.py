@@ -66,3 +66,51 @@ async def test_apply_fill_skips_when_not_claimed() -> None:
         executed_at=MagicMock(),
     )
     finalizer._record_execution.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_entry_position_threads_snapshot() -> None:
+    """진입 체결 시 order의 entry_analysis_snapshot이 포지션 생성으로 전파된다."""
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    factory, _ = _make_factory(rowcount=1)
+    pm = AsyncMock()
+    pm.create = AsyncMock(return_value=MagicMock(id=10))
+    settings = MagicMock()
+    settings.STOP_LOSS_PERCENT = 5.0
+    finalizer = FillFinalizer(
+        session_factory=factory,
+        position_manager=pm,
+        telegram_bot=AsyncMock(),
+        settings=settings,
+    )
+    finalizer._get_account = AsyncMock(return_value=MagicMock(strategy_type="swing"))
+    finalizer._update_order = AsyncMock()
+    finalizer._notify_safe = AsyncMock()
+
+    snapshot = {
+        "symbol": "005930",
+        "action": "buy",
+        "confidence": "0.8",
+        "key_factors": [],
+    }
+    order = MagicMock(
+        id=1,
+        symbol="005930",
+        session_id=None,
+        account_id="default",
+        approval_status="auto_approved",
+        entry_analysis_snapshot=snapshot,
+    )
+
+    await finalizer._create_entry_position(
+        order=order,
+        fill_price=Decimal("72000"),
+        fill_quantity=10,
+        commission=Decimal("0"),
+        executed_at=datetime.now(UTC),
+        account_label="",
+    )
+
+    assert pm.create.call_args.kwargs["entry_analysis_snapshot"] == snapshot

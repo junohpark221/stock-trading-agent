@@ -14,7 +14,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -73,6 +73,10 @@ class Order(TimestampMixin, Base):
     rejection_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     web_verify_result: Mapped[str | None] = mapped_column(String(20), nullable=True)
     web_verify_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # 진입 분석 스냅샷 (메모리 학습용) — 진입 시 LLM 분석 요약을 JSONB로 보관.
+    # 체결 시 PositionRecord로 복사되어, 청산 후 record_trade_outcome이 참조한다.
+    entry_analysis_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class Execution(TimestampMixin, Base):

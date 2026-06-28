@@ -14,7 +14,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -23,6 +23,10 @@ from src.agent.tools.registry import ToolRegistry
 from src.core.enums import AgentType, DecisionStage, MessageRole
 from src.core.models import LLMMessage
 from src.llm.router import LLMRouter
+
+if TYPE_CHECKING:
+    from src.db.models.strategy import AgentMemory
+    from src.strategy.memory_manager import AgentMemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +39,12 @@ class BaseAgent(ABC):
         router: LLMRouter,
         recorder: DecisionRecorder,
         tool_registry: ToolRegistry,
+        memory_manager: AgentMemoryManager | None = None,
     ) -> None:
         self._router = router
         self._recorder = recorder
         self._tools = tool_registry
+        self._memory_manager = memory_manager
 
     # ── 추상 속성/메서드 ──────────────────────────────────
 
@@ -88,6 +94,25 @@ class BaseAgent(ABC):
         서브클래스에서 오버라이드하여 주입 방식을 변경할 수 있다.
         """
         block = f"\n\n## 투자 철학 (이 계좌의 운용 방침)\n{investment_prompt}"
+        for i, msg in enumerate(messages):
+            if msg.role == MessageRole.SYSTEM:
+                messages[i] = msg.model_copy(update={"content": msg.content + block})
+                break
+        return messages
+
+    def _inject_agent_memories(
+        self,
+        messages: list[LLMMessage],
+        memories: list[AgentMemory],
+    ) -> list[LLMMessage]:
+        """첫 번째 system 메시지에 과거 교훈(학습 메모리) 블록을 append.
+
+        memories가 비어 있으면 메시지를 그대로 반환한다(무비용 no-op).
+        """
+        if not memories:
+            return messages
+        lines = "\n".join(f"- {m.content}" for m in memories)
+        block = f"\n\n## 과거 교훈 (학습 메모리 — 참고용)\n{lines}"
         for i, msg in enumerate(messages):
             if msg.role == MessageRole.SYSTEM:
                 messages[i] = msg.model_copy(update={"content": msg.content + block})
@@ -144,6 +169,22 @@ class BaseAgent(ABC):
         messages = self._build_messages(prepared)
         if investment_prompt:
             messages = self._inject_investment_prompt(messages, investment_prompt)
+
+        # 2-1. 과거 교훈(학습 메모리) 주입 — best-effort.
+        # 메모리 조회 장애가 분석/매매를 막지 않도록 예외는 삼키고 계속한다.
+        if self._memory_manager is not None:
+            try:
+                memories = await self._memory_manager.get_relevant_memories(
+                    agent_type=self.agent_type.value,
+                    symbol=symbol,
+                    account_id=account_id,
+                )
+                messages = self._inject_agent_memories(messages, memories)
+            except Exception:
+                logger.warning(
+                    "Agent memory recall failed; continuing without memories",
+                    exc_info=True,
+                )
 
         # 3. LLM 호출
         result, routing_result = await self._router.route_structured(

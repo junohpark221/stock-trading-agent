@@ -120,6 +120,7 @@ async def _execute_buy_decisions(
         실행된 매수 주문 수.
     """
     from src.core.models import PipelineResult
+    from src.strategy.memory_manager import build_entry_snapshot
 
     pipeline_result: PipelineResult = result  # type: ignore[assignment]
     buy_decisions = [
@@ -159,6 +160,8 @@ async def _execute_buy_decisions(
     reservation = BatchReservation()
     executed = 0
     for td in buy_decisions:
+        # 진입 분석 스냅샷(메모리 학습용) — 청산 후 record_trade_outcome이 참조.
+        snapshot = build_entry_snapshot(td.symbol, pipeline_result)
         try:
             exec_result = await order_executor.execute_entry(
                 trade_decision=td,
@@ -167,6 +170,7 @@ async def _execute_buy_decisions(
                 account_id=account_id,
                 account_label=account_label,
                 batch_reservation=reservation,
+                entry_analysis_snapshot=snapshot,
             )
             if exec_result.success:
                 executed += 1

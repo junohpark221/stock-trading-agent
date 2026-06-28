@@ -293,6 +293,7 @@ class FillFinalizer:
                 take_profit_price=None,
                 entry_session_id=order.session_id,
                 account_id=order.account_id,
+                entry_analysis_snapshot=order.entry_analysis_snapshot,
             )
             position_id = pos.id
         except Exception:

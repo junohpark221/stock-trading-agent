@@ -512,3 +512,99 @@ class TestUpdateStopLoss:
 
         with pytest.raises(DatabaseError, match="Cannot update closed"):
             await manager.update_stop_loss(1, Decimal("69000"))
+
+
+# ===========================================================================
+# 학습 메모리 기록 훅 (전량 청산 시 record_trade_outcome)
+# ===========================================================================
+
+
+class TestMemoryRecordHook:
+    """close/reduce 전량 청산 시 학습 메모리 기록(best-effort) 훅 테스트.
+
+    인라인 청산(executor)·비동기 reconcile(fill_finalizer) 양쪽이 공유하는
+    단일 funnel(PositionManager)에서 교훈이 누락 없이 적재되는지 검증한다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_close_records_outcome(self) -> None:
+        """memory_manager 주입 시 close → record_trade_outcome 호출."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(account_id="acc1")
+        session.execute.return_value = _mock_scalar_result(record)
+        mm = MagicMock()
+        mm.record_trade_outcome = AsyncMock(return_value=42)
+        manager = PositionManager(factory, memory_manager=mm)
+
+        await manager.close(
+            1, exit_price=Decimal("75000"), exit_reason=ExitReason.TAKE_PROFIT
+        )
+
+        mm.record_trade_outcome.assert_awaited_once_with(record, account_id="acc1")
+
+    @pytest.mark.asyncio
+    async def test_close_without_memory_manager_no_error(self) -> None:
+        """memory_manager 미주입이어도 close 정상 동작 (회귀 0)."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record()
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)  # memory_manager 없음
+
+        result = await manager.close(
+            1, exit_price=Decimal("75000"), exit_reason=ExitReason.TAKE_PROFIT
+        )
+        assert result.status == "closed"
+
+    @pytest.mark.asyncio
+    async def test_close_record_failure_does_not_break(self) -> None:
+        """record_trade_outcome 실패해도 청산은 성공 (best-effort)."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record()
+        session.execute.return_value = _mock_scalar_result(record)
+        mm = MagicMock()
+        mm.record_trade_outcome = AsyncMock(side_effect=Exception("db down"))
+        manager = PositionManager(factory, memory_manager=mm)
+
+        result = await manager.close(
+            1, exit_price=Decimal("75000"), exit_reason=ExitReason.TAKE_PROFIT
+        )
+        assert result.status == "closed"
+        mm.record_trade_outcome.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reduce_full_close_records_outcome(self) -> None:
+        """reduce가 전량 청산이면 record_trade_outcome 호출."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(quantity=100, account_id="acc1")
+        session.execute.return_value = _mock_scalar_result(record)
+        mm = MagicMock()
+        mm.record_trade_outcome = AsyncMock(return_value=1)
+        manager = PositionManager(factory, memory_manager=mm)
+
+        await manager.reduce(
+            1,
+            exit_quantity=100,  # 잔량 전량 → 전량 청산
+            exit_price=Decimal("75000"),
+            exit_reason=ExitReason.TAKE_PROFIT,
+        )
+
+        mm.record_trade_outcome.assert_awaited_once_with(record, account_id="acc1")
+
+    @pytest.mark.asyncio
+    async def test_reduce_partial_no_record(self) -> None:
+        """부분 청산(잔량 open 유지)이면 record_trade_outcome 미호출."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(quantity=100)
+        session.execute.return_value = _mock_scalar_result(record)
+        mm = MagicMock()
+        mm.record_trade_outcome = AsyncMock()
+        manager = PositionManager(factory, memory_manager=mm)
+
+        await manager.reduce(
+            1,
+            exit_quantity=40,  # 잔량 60 → 부분 청산
+            exit_price=Decimal("75000"),
+            exit_reason=ExitReason.TAKE_PROFIT,
+        )
+
+        mm.record_trade_outcome.assert_not_awaited()

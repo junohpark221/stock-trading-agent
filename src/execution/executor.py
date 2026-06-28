@@ -190,6 +190,7 @@ class OrderExecutor:
         broker: BrokerInterface | None = None,
         manual: bool = False,
         batch_reservation: BatchReservation | None = None,
+        entry_analysis_snapshot: dict | None = None,
     ) -> ExecutionResult:
         """진입 주문 실행.
 
@@ -253,6 +254,7 @@ class OrderExecutor:
                 price=price,
                 session_id=session_id,
                 account_id=account_id,
+                entry_analysis_snapshot=entry_analysis_snapshot,
             )
 
             # 2. Web 검증 — manual=True면 생략하고 SAFE 결과로 간주
@@ -840,6 +842,7 @@ class OrderExecutor:
                 take_profit_price=trade_decision.take_profit_price,
                 entry_session_id=session_id,
                 account_id=account_id,
+                entry_analysis_snapshot=order.entry_analysis_snapshot,
             )
             position_id = pos.id
         except Exception:
@@ -1364,12 +1367,14 @@ class OrderExecutor:
         session_id: UUID,
         account_id: str = "default",
         position_id: int | None = None,
+        entry_analysis_snapshot: dict | None = None,
     ) -> Order:
         """orders 테이블에 PENDING 주문 생성.
 
         Parameters
         ----------
         position_id: 청산 주문일 때 원 포지션 ID. 진입 주문은 체결 후 별도 업데이트.
+        entry_analysis_snapshot: 진입 분석 스냅샷(메모리 학습용). 체결 시 포지션으로 복사된다.
         """
         row = Order(
             symbol=symbol,
@@ -1383,6 +1388,7 @@ class OrderExecutor:
             session_id=session_id,
             account_id=account_id,
             position_id=position_id,
+            entry_analysis_snapshot=entry_analysis_snapshot,
         )
         async with self._session_factory() as session:
             session.add(row)

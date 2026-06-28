@@ -63,6 +63,10 @@ class PositionRecord(TimestampMixin, Base):
     entry_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     exit_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
+    # 진입 분석 스냅샷 (메모리 학습용) — 진입 시 LLM 분석 요약(action/confidence/key_factors).
+    # 체결 시 Order로부터 복사되며, 청산 후 record_trade_outcome이 교훈 생성에 사용한다.
+    entry_analysis_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
 
 class PortfolioSnapshot(TimestampMixin, Base):
     """일별 포트폴리오 스냅샷 — 자산 현황, 수익률, 드로다운을 일 단위로 기록.

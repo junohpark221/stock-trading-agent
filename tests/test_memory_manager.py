@@ -14,8 +14,9 @@ import pytest
 from src.core.exceptions import DatabaseError
 from src.strategy.memory_manager import (
     AgentMemoryManager,
-    _extract_entry_analysis,
+    _format_entry_snapshot,
     _strategy_to_agent,
+    build_entry_snapshot,
 )
 
 
@@ -70,6 +71,13 @@ def _mock_position_record(**overrides: object) -> MagicMock:
     record.realized_pnl = Decimal("500000")
     record.entry_session_id = uuid4()
     record.exit_session_id = uuid4()
+    record.account_id = "default"
+    record.entry_analysis_snapshot = {
+        "symbol": "005930",
+        "action": "buy",
+        "confidence": "0.85",
+        "key_factors": ["RSI 과매도", "골든크로스", "실적 개선"],
+    }
     for k, v in overrides.items():
         setattr(record, k, v)
     return record
@@ -306,13 +314,14 @@ class TestRecordTradeOutcome:
         position = _mock_position_record(
             realized_pnl=Decimal("500000"),
         )
-        pipeline = _mock_pipeline_result("005930")
 
-        memory_id = await mgr.record_trade_outcome(position, pipeline)
+        memory_id = await mgr.record_trade_outcome(position)
         assert memory_id == 100
 
         added = session.add.call_args[0][0]
         assert "수익" in added.content
+        # 진입 스냅샷이 교훈 본문에 반영됨
+        assert "buy" in added.content
         assert added.relevance_score == Decimal("0.7")
 
     @pytest.mark.asyncio
@@ -330,9 +339,8 @@ class TestRecordTradeOutcome:
             realized_pnl=Decimal("-350000"),
             exit_reason="stop_loss",
         )
-        pipeline = _mock_pipeline_result("005930")
 
-        memory_id = await mgr.record_trade_outcome(position, pipeline)
+        memory_id = await mgr.record_trade_outcome(position)
         assert memory_id == 101
 
         added = session.add.call_args[0][0]
@@ -346,9 +354,8 @@ class TestRecordTradeOutcome:
         mgr = AgentMemoryManager(factory)
 
         position = _mock_position_record(status="open", realized_pnl=None)
-        pipeline = _mock_pipeline_result()
 
-        result = await mgr.record_trade_outcome(position, pipeline)
+        result = await mgr.record_trade_outcome(position)
         assert result is None
 
     @pytest.mark.asyncio
@@ -360,9 +367,8 @@ class TestRecordTradeOutcome:
         position = _mock_position_record(
             status="closed", realized_pnl=None
         )
-        pipeline = _mock_pipeline_result()
 
-        result = await mgr.record_trade_outcome(position, pipeline)
+        result = await mgr.record_trade_outcome(position)
         assert result is None
 
     @pytest.mark.asyncio
@@ -377,9 +383,8 @@ class TestRecordTradeOutcome:
         session.refresh = _refresh
 
         position = _mock_position_record()
-        pipeline = _mock_pipeline_result("005930")
 
-        await mgr.record_trade_outcome(position, pipeline)
+        await mgr.record_trade_outcome(position)
 
         added = session.add.call_args[0][0]
         ctx = added.context
@@ -442,18 +447,36 @@ class TestCleanupExpired:
 class TestHelpers:
     """헬퍼 함수 테스트."""
 
-    def test_extract_entry_analysis_found(self):
-        """종목이 PipelineResult에 있으면 분석 요약 반환."""
+    def test_build_entry_snapshot_found(self):
+        """종목이 PipelineResult에 있으면 직렬화 가능한 스냅샷 dict 반환."""
         pipeline = _mock_pipeline_result("005930")
-        result = _extract_entry_analysis("005930", pipeline)
+        snap = build_entry_snapshot("005930", pipeline)
+        assert snap is not None
+        assert snap["symbol"] == "005930"
+        assert snap["action"] == "buy"
+        assert snap["confidence"] == "0.85"  # Decimal → str
+        assert snap["key_factors"] == ["RSI 과매도", "골든크로스", "실적 개선"]
+
+    def test_build_entry_snapshot_not_found(self):
+        """종목이 PipelineResult에 없으면 None 반환."""
+        pipeline = _mock_pipeline_result("035720")
+        assert build_entry_snapshot("005930", pipeline) is None
+
+    def test_format_entry_snapshot_with_dict(self):
+        """스냅샷 dict → 사람이 읽는 요약 문자열."""
+        snap = {
+            "symbol": "005930",
+            "action": "buy",
+            "confidence": "0.85",
+            "key_factors": ["RSI 과매도", "골든크로스", "실적 개선"],
+        }
+        result = _format_entry_snapshot(snap)
         assert "buy" in result
         assert "0.85" in result
 
-    def test_extract_entry_analysis_not_found(self):
-        """종목이 PipelineResult에 없으면 기본 메시지 반환."""
-        pipeline = _mock_pipeline_result("035720")
-        result = _extract_entry_analysis("005930", pipeline)
-        assert "분석 데이터 없음" in result
+    def test_format_entry_snapshot_none(self):
+        """스냅샷이 None이면 기본 메시지 반환."""
+        assert "분석 데이터 없음" in _format_entry_snapshot(None)
 
     def test_strategy_to_agent(self):
         """전략 유형 → 에이전트 유형 매핑."""

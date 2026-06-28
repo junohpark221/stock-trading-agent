@@ -169,19 +169,19 @@ class AgentMemoryManager:
     async def record_trade_outcome(
         self,
         position: PositionRecord,
-        pipeline_result: PipelineResult,
         *,
         account_id: str = "default",
     ) -> int | None:
         """청산 후 자동 학습 — 수익/손실 분석 → 교훈 메모리 생성.
 
-        포지션의 실현 손익과 진입 시 LLM 판단을 비교하여
-        교훈을 자동 생성한다.
+        포지션의 실현 손익과 **진입 시 영속화된 분석 스냅샷**
+        (`position.entry_analysis_snapshot`)을 비교하여 교훈을 자동 생성한다.
+        진입 시점의 PipelineResult를 청산 시점에 다시 들고 있을 수 없으므로,
+        진입 주문→포지션으로 전파된 스냅샷을 진실의 원천으로 삼는다.
 
         Parameters
         ----------
-        position: 청산된 PositionRecord
-        pipeline_result: 진입 시 PipelineResult
+        position: 청산된 PositionRecord (entry_analysis_snapshot 포함)
 
         Returns
         -------
@@ -198,10 +198,8 @@ class AgentMemoryManager:
             else Decimal(0)
         )
 
-        # 진입 시 LLM 분석 요약
-        entry_analysis = _extract_entry_analysis(
-            position.symbol, pipeline_result
-        )
+        # 진입 시 LLM 분석 요약 (진입 시점에 포지션에 영속화된 스냅샷)
+        entry_analysis = _format_entry_snapshot(position.entry_analysis_snapshot)
 
         content = (
             f"종목 {position.symbol}: {outcome} 청산 "
@@ -286,18 +284,36 @@ class AgentMemoryManager:
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
-def _extract_entry_analysis(
+def build_entry_snapshot(
     symbol: str, pipeline_result: PipelineResult
-) -> str:
-    """PipelineResult에서 해당 종목의 진입 시 분석 요약을 추출."""
+) -> dict | None:
+    """진입 시 PipelineResult → 해당 종목의 분석 스냅샷(JSONB 직렬화 가능) 추출.
+
+    진입 주문/포지션에 영속화해, 청산 후 record_trade_outcome이 참조한다.
+    Decimal/Enum은 직렬화 가능한 형태(str/value)로 저장한다(금융 수치는 문자열로).
+    """
     for sa in pipeline_result.stock_analyses:
         if sa.symbol == symbol:
-            parts = [f"action={sa.action.value}, confidence={sa.confidence}"]
-            if sa.key_factors:
-                parts.append(f"factors={sa.key_factors[:3]}")
-            return "; ".join(parts)
+            return {
+                "symbol": sa.symbol,
+                "action": sa.action.value,
+                "confidence": str(sa.confidence),
+                "key_factors": list(sa.key_factors[:5]),
+            }
+    return None
 
-    return "분석 데이터 없음"
+
+def _format_entry_snapshot(snapshot: dict | None) -> str:
+    """진입 분석 스냅샷(dict) → 사람이 읽는 요약 문자열."""
+    if not snapshot:
+        return "분석 데이터 없음"
+    parts = [
+        f"action={snapshot.get('action')}, confidence={snapshot.get('confidence')}"
+    ]
+    factors = snapshot.get("key_factors") or []
+    if factors:
+        parts.append(f"factors={factors[:3]}")
+    return "; ".join(parts)
 
 
 def _strategy_to_agent(strategy_type: str) -> str:

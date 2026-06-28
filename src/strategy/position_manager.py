@@ -21,6 +21,8 @@ from src.db.models.strategy import PositionRecord
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.strategy.memory_manager import AgentMemoryManager
+
 logger = structlog.get_logger(__name__)
 
 
@@ -29,12 +31,21 @@ class PositionManager:
 
     포지션 생성, 청산, 조회, 스톱로스 업데이트 등 DB 오퍼레이션을 캡슐화.
     Strategy.save_position/close_position/get_open_positions를 대체한다.
+
+    memory_manager가 주입되면, 포지션이 전량 청산될 때(close 또는 reduce 전량)
+    학습 메모리(record_trade_outcome)를 best-effort로 기록한다 — 인라인 체결
+    (executor)·비동기 reconcile(fill_finalizer) 어느 경로로 닫혀도 단일 funnel에서
+    교훈이 누락 없이 적재되도록.
     """
 
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        memory_manager: AgentMemoryManager | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._memory_manager = memory_manager
 
     # ── Create ────────────────────────────────────────────────────────────
 
@@ -51,6 +62,7 @@ class PositionManager:
         max_holding_days: int | None = None,
         entry_session_id: UUID | None = None,
         account_id: str = "default",
+        entry_analysis_snapshot: dict | None = None,
     ) -> PositionRecord:
         """포지션 생성 (avg_cost = entry_price, status = 'open').
 
@@ -65,6 +77,7 @@ class PositionManager:
         trailing_stop_pct: 트레일링 스톱 비율 (선택)
         max_holding_days: 최대 보유 기간 (선택)
         entry_session_id: decision_log 연결 세션 ID (선택)
+        entry_analysis_snapshot: 진입 분석 스냅샷(메모리 학습용, 선택)
         """
         record = PositionRecord(
             symbol=symbol,
@@ -80,6 +93,7 @@ class PositionManager:
             status="open",
             entry_session_id=entry_session_id,
             account_id=account_id,
+            entry_analysis_snapshot=entry_analysis_snapshot,
         )
 
         try:
@@ -166,6 +180,7 @@ class PositionManager:
             reason=exit_reason.value,
             realized_pnl=str(record.realized_pnl),
         )
+        await self._record_outcome_safe(record)
         return record
 
     async def reduce(
@@ -246,7 +261,28 @@ class PositionManager:
             fully_closed=fully_closed,
             realized_pnl=str(record.realized_pnl),
         )
+        if fully_closed:
+            await self._record_outcome_safe(record)
         return record
+
+    async def _record_outcome_safe(self, record: PositionRecord) -> None:
+        """전량 청산된 포지션 → 학습 메모리 기록 (best-effort).
+
+        메모리 매니저가 주입되지 않았거나 기록이 실패해도 청산 흐름은
+        영향받지 않는다(예외 삼키고 로깅).
+        """
+        if self._memory_manager is None:
+            return
+        try:
+            await self._memory_manager.record_trade_outcome(
+                record, account_id=record.account_id
+            )
+        except Exception:
+            logger.warning(
+                "position.record_outcome_failed",
+                id=record.id,
+                exc_info=True,
+            )
 
     # ── Read ──────────────────────────────────────────────────────────────
 

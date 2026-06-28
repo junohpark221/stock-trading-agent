@@ -200,11 +200,22 @@ class SchedulerFactory:
         tool_ctx = ToolContext(session_factory=session_factory, settings=settings)
         tool_registry = ToolRegistry(tool_ctx)
 
+        # 학습 메모리 매니저 — 에이전트(조회)·포지션 매니저(청산 기록)·cleanup 잡이 공유.
+        from src.strategy.memory_manager import AgentMemoryManager
+
+        memory_manager = AgentMemoryManager(session_factory)
+
         orchestrator = PipelineOrchestrator(
-            market_analyst=MarketAnalyst(llm_router, recorder, tool_registry),
-            stock_analyst=StockAnalyst(llm_router, recorder, tool_registry),
-            risk_manager=RiskManager(llm_router, recorder, tool_registry),
-            trader=Trader(llm_router, recorder, tool_registry),
+            market_analyst=MarketAnalyst(
+                llm_router, recorder, tool_registry, memory_manager
+            ),
+            stock_analyst=StockAnalyst(
+                llm_router, recorder, tool_registry, memory_manager
+            ),
+            risk_manager=RiskManager(
+                llm_router, recorder, tool_registry, memory_manager
+            ),
+            trader=Trader(llm_router, recorder, tool_registry, memory_manager),
             recorder=recorder,
         )
 
@@ -254,11 +265,13 @@ class SchedulerFactory:
         from src.execution.fill_finalizer import FillFinalizer
         from src.execution.reconciler import OrderReconciler, PositionReconciler
         from src.execution.stoploss_stream import StopLossStreamService
-        from src.strategy.memory_manager import AgentMemoryManager
         from src.strategy.position_manager import PositionManager
 
-        shared_position_manager = PositionManager(session_factory)
-        memory_manager = AgentMemoryManager(session_factory)
+        # memory_manager는 위 에이전트 구성 시점에 이미 생성됨. 포지션 매니저에도
+        # 주입해, 전량 청산 시 학습 메모리(record_trade_outcome)가 자동 기록되게 한다.
+        shared_position_manager = PositionManager(
+            session_factory, memory_manager=memory_manager
+        )
         fill_finalizer = FillFinalizer(
             session_factory=session_factory,
             position_manager=shared_position_manager,
@@ -305,6 +318,7 @@ class SchedulerFactory:
                     cache=cache,
                     settings=settings,
                     execution_stream=execution_stream,
+                    memory_manager=memory_manager,
                 )
                 contexts.append(ctx)
                 # F-05: 실시간 손절 서비스에 계좌별 청산 의존성 등록.
@@ -455,6 +469,7 @@ class SchedulerFactory:
         cache: RedisCache,
         settings: Settings,
         execution_stream: ExecutionStreamManager | None = None,
+        memory_manager: AgentMemoryManager | None = None,
     ) -> AccountContext:
         """계좌별 서비스 인스턴스를 조립하여 AccountContext를 반환한다."""
         from src.execution.executor import OrderExecutor
@@ -476,8 +491,11 @@ class SchedulerFactory:
         if account.risk_overrides:
             acct_settings = _apply_risk_overrides(settings, account.risk_overrides)
 
-        # 계좌별 서비스 인스턴스
-        position_manager = PositionManager(session_factory)
+        # 계좌별 서비스 인스턴스 (인라인 청산 경로의 close도 학습 메모리를 기록하도록
+        # memory_manager 주입 — 비동기 reconcile 경로의 shared_position_manager와 동일)
+        position_manager = PositionManager(
+            session_factory, memory_manager=memory_manager
+        )
         portfolio_service = PortfolioStateService(
             broker=broker,
             session_factory=session_factory,

@@ -601,19 +601,19 @@ class TestMemoryManagerAccountId:
         position.exit_date = date(2026, 3, 27)
         position.entry_date = date(2026, 3, 20)
         position.entry_session_id = None
-
-        # Mock pipeline result
-        pipeline = PipelineResult(
-            session_id=uuid4(),
-            started_at=datetime.now(UTC),
-            stock_analyses=[],
-        )
+        # 진입 분석은 진입 시점에 포지션에 영속화된 스냅샷에서 읽는다.
+        position.entry_analysis_snapshot = {
+            "symbol": "005930",
+            "action": "buy",
+            "confidence": "0.8",
+            "key_factors": [],
+        }
 
         with patch.object(mgr, "save_lesson", new_callable=AsyncMock) as mock_save:
             mock_save.return_value = 99
 
             result = await mgr.record_trade_outcome(
-                position, pipeline, account_id="acct-1"
+                position, account_id="acct-1"
             )
 
             assert result == 99

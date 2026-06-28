@@ -74,11 +74,19 @@
             <p class="pnl-negative">{{ "{:.2f}".format(snapshot.drawdown_pct) }}%</p>
         </article>
     </div>
-    <small>기준일: {{ snapshot.snapshot_date }} · 포지션: {{ snapshot.positions_count }}개 · 일일 거래: {{ snapshot.trade_count_daily }}건</small>
+    <small>기준일: {{ snapshot.snapshot_date }} · 포지션: {{ snapshot.positions_count }}개 · 일일 거래: {{ snapshot.trade_count_daily }}건 · 출처: {% if snapshot.is_live %}라이브 KIS · 30초 캐시{% else %}DB 스냅샷(폴백){% endif %}</small>
     {% else %}
     <p>포트폴리오 데이터 없음</p>
     {% endif %}
 </section>
+
+{% if snapshot and snapshot.is_live and snapshot.positions_count != positions|length %}
+<article style="background:#fff4e5;border-left:3px solid #ed6c02;padding:0.5rem 1rem;">
+    <strong>⚠ 포지션 수 불일치:</strong>
+    잔고(라이브 KIS) {{ snapshot.positions_count }}개 ≠ 보유 포지션(DB) {{ positions|length }}개.
+    아래 <strong>포지션 동기화</strong>로 브로커-DB를 맞춰주세요.
+</article>
+{% endif %}
 
 {% if sync_msg %}
 <article style="background:#e8f5e9;border-left:3px solid #2e7d32;padding:0.5rem 1rem;">
@@ -94,7 +102,7 @@
 <!-- 보유 포지션 -->
 <section>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
-        <h2 style="margin:0">보유 포지션 ({{ positions|length }}개)</h2>
+        <h2 style="margin:0">보유 포지션 ({{ positions|length }}개) <small style="font-weight:normal;color:#888;">DB · 마지막 동기화 기준</small></h2>
         <form method="post" action="/admin/accounts/{{ account.id }}/sync-positions">
             <button type="submit" class="outline secondary" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem;">포지션 동기화</button>
         </form>
@@ -136,7 +144,7 @@
 <!-- 미체결 주문 -->
 <section>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
-        <h2 style="margin:0">미체결 주문 ({{ pending_orders|length }}건)</h2>
+        <h2 style="margin:0">미체결 주문 ({{ pending_orders|length }}건) <small style="font-weight:normal;color:#888;">DB · 시스템 기록(submitted)</small></h2>
         <form method="post" action="/admin/accounts/{{ account.id }}/sync-orders">
             <button type="submit" class="outline secondary" style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem;">미체결 정리</button>
         </form>

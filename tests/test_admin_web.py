@@ -45,6 +45,45 @@ def _mock_account(**kwargs):
     return acct
 
 
+def _portfolio_view(*, positions_count=0, is_live=True):
+    """PortfolioView 인스턴스 (account_detail 잔고 요약용)."""
+    from datetime import date
+    from decimal import Decimal
+
+    from src.api.portfolio_live import PortfolioView
+
+    return PortfolioView(
+        total_value=Decimal("1000000"),
+        cash=Decimal("500000"),
+        invested=Decimal("500000"),
+        unrealized_pnl=Decimal("0"),
+        realized_pnl_daily=Decimal("0"),
+        drawdown_pct=Decimal("0"),
+        positions_count=positions_count,
+        trade_count_daily=0,
+        snapshot_date=date(2026, 6, 28),
+        is_live=is_live,
+    )
+
+
+def _mock_position(**kwargs):
+    """PositionRecord ORM mock (account_detail 포지션 표 렌더링용)."""
+    from datetime import date
+    from decimal import Decimal
+
+    pos = MagicMock()
+    pos.id = kwargs.get("id", "pos-1")
+    pos.symbol = kwargs.get("symbol", "005930")
+    pos.strategy_type = kwargs.get("strategy_type", "position")
+    pos.quantity = kwargs.get("quantity", 10)
+    pos.avg_cost = kwargs.get("avg_cost", Decimal("70000"))
+    pos.entry_price = kwargs.get("entry_price", Decimal("70000"))
+    pos.stop_loss_price = kwargs.get("stop_loss_price", Decimal("63000"))
+    pos.take_profit_price = kwargs.get("take_profit_price", None)
+    pos.entry_date = kwargs.get("entry_date", date(2026, 6, 27))
+    return pos
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────
 
 
@@ -187,6 +226,63 @@ class TestAccountDetail:
         async with _client() as c:
             r = await c.get("/admin/accounts/no-such")
         assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_live_count_mismatch_shows_warning(self, mock_session):
+        """B-04: 라이브 잔고 카운트 ≠ DB 포지션 행수 → 불일치 경고 표시."""
+        mock_session.get.return_value = _mock_account()
+        view = _portfolio_view(positions_count=2, is_live=True)
+        with (
+            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=view)),
+            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.get_session_factory"),
+        ):
+            fetcher = MockFetcher.return_value
+            fetcher.get_open_positions = AsyncMock(return_value=[_mock_position()])
+            fetcher.get_pending_orders = AsyncMock(return_value=[])
+
+            async with _client() as c:
+                r = await c.get("/admin/accounts/acc-1")
+        assert r.status_code == 200
+        assert "포지션 수 불일치" in r.text
+
+    @pytest.mark.asyncio
+    async def test_live_count_match_no_warning(self, mock_session):
+        """B-04: 라이브 카운트 == DB 행수면 경고 미표시."""
+        mock_session.get.return_value = _mock_account()
+        view = _portfolio_view(positions_count=1, is_live=True)
+        with (
+            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=view)),
+            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.get_session_factory"),
+        ):
+            fetcher = MockFetcher.return_value
+            fetcher.get_open_positions = AsyncMock(return_value=[_mock_position()])
+            fetcher.get_pending_orders = AsyncMock(return_value=[])
+
+            async with _client() as c:
+                r = await c.get("/admin/accounts/acc-1")
+        assert r.status_code == 200
+        assert "포지션 수 불일치" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_db_fallback_no_warning(self, mock_session):
+        """B-04: DB 폴백(is_live=False)이면 카운트가 달라도 경고 미표시."""
+        mock_session.get.return_value = _mock_account()
+        view = _portfolio_view(positions_count=2, is_live=False)
+        with (
+            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=view)),
+            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.get_session_factory"),
+        ):
+            fetcher = MockFetcher.return_value
+            fetcher.get_open_positions = AsyncMock(return_value=[_mock_position()])
+            fetcher.get_pending_orders = AsyncMock(return_value=[])
+
+            async with _client() as c:
+                r = await c.get("/admin/accounts/acc-1")
+        assert r.status_code == 200
+        assert "포지션 수 불일치" not in r.text
 
 
 # ── Trades ───────────────────────────────────────────────────────────

@@ -2345,7 +2345,7 @@ wheels = [
 
 [[package]]
 name = "stock-trading-agent"
-version = "0.2.0"
+version = "0.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiogram" },

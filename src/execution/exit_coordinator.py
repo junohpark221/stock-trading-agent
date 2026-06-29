@@ -60,6 +60,19 @@ class ExitCoordinator:
             self._prune_locked()
             return position_id in self._inflight
 
+    async def snapshot(self) -> list[dict]:
+        """현재 in-flight 클레임 목록(만료 정리 후). 어드민 관측용 read API.
+
+        private ``_inflight`` 직접 노출 대신 ``[{position_id, age_sec}]`` 요약을 반환.
+        """
+        async with self._lock:
+            self._prune_locked()
+            now = time.monotonic()
+            return [
+                {"position_id": pid, "age_sec": round(now - ts, 1)}
+                for pid, ts in sorted(self._inflight.items())
+            ]
+
     def _prune_locked(self) -> None:
         """TTL 만료 클레임 정리. 호출자가 락을 보유한 상태에서만 호출."""
         if not self._inflight:

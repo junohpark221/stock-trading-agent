@@ -164,6 +164,58 @@ class AgentMemoryManager:
                 f"Memory query failed: {exc}"
             ) from exc
 
+    async def list_memories(
+        self,
+        *,
+        agent_type: str | None = None,
+        symbol: str | None = None,
+        memory_type: str | None = None,
+        account_id: str | None = None,
+        is_active: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[AgentMemory], int]:
+        """어드민 감사용 메모리 조회 — 비활성·만료 포함. ``(rows, total)`` 반환.
+
+        ``get_relevant_memories`` 는 분석 주입용이라 active+미만료만 돌려주므로,
+        백오피스에서 전체 메모리(만료/비활성 포함)를 감사할 때는 이 메서드를 쓴다.
+        """
+        from sqlalchemy import func
+
+        conditions = []
+        if agent_type:
+            conditions.append(AgentMemory.agent_type == agent_type)
+        if symbol:
+            conditions.append(AgentMemory.symbol == symbol)
+        if memory_type:
+            conditions.append(AgentMemory.memory_type == memory_type)
+        if account_id:
+            conditions.append(AgentMemory.account_id == account_id)
+        if is_active is not None:
+            conditions.append(AgentMemory.is_active.is_(is_active))
+
+        try:
+            async with self._session_factory() as session:
+                count_stmt = select(func.count(AgentMemory.id))
+                stmt = select(AgentMemory)
+                for cond in conditions:
+                    count_stmt = count_stmt.where(cond)
+                    stmt = stmt.where(cond)
+                total = (await session.execute(count_stmt)).scalar_one()
+                stmt = (
+                    stmt.order_by(
+                        AgentMemory.is_active.desc(),
+                        AgentMemory.relevance_score.desc(),
+                        AgentMemory.created_at.desc(),
+                    )
+                    .offset(offset)
+                    .limit(limit)
+                )
+                rows = list((await session.execute(stmt)).scalars().all())
+                return rows, total
+        except Exception as exc:
+            raise DatabaseError(f"Memory list failed: {exc}") from exc
+
     # ── Trade Outcome ────────────────────────────────────────────────────
 
     async def record_trade_outcome(

@@ -145,6 +145,21 @@ class StopLossStreamService:
             await self._stream.stop()
             self._stream = None
 
+    # ── Observability (admin read API) ────────────────────────────────
+
+    async def get_status(self) -> dict:
+        """어드민 exec-monitor용 읽기 상태 요약 (private 노출 없음)."""
+        watched = sorted({p.symbol for p in self._positions})
+        return {
+            "enabled": bool(self._settings.STOP_LOSS_WS_ENABLED),
+            "stream_connected": self._stream is not None,
+            "registered_accounts": sorted(self._deps.keys()),
+            "watched_symbols": watched,
+            "watched_count": len(watched),
+            "positions_tracked": len(self._positions),
+            "inflight": await self._coordinator.snapshot(),
+        }
+
     # ── Subscription sync ─────────────────────────────────────────────
 
     async def _sync_loop(self) -> None:

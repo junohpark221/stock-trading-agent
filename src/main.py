@@ -108,6 +108,15 @@ def get_broker_registry():
     return _broker_registry
 
 
+def get_stoploss_stream():
+    """현재 StopLossStreamService 반환(없으면 None). 어드민 exec-monitor 관측용.
+
+    스케줄러/WS 미가동(테스트·로컬) 환경에서는 None일 수 있으므로 호출측이
+    None을 graceful 처리한다(다른 getter와 달리 RuntimeError를 던지지 않는다).
+    """
+    return _stoploss_stream
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""

@@ -164,9 +164,9 @@ class TestDashboard:
         with (
             patch("src.main.get_redis") as mock_redis,
             patch("src.main.get_scheduler") as mock_sched,
-            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=None)),
-            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.dashboard.fetch_portfolio_view", AsyncMock(return_value=None)),
+            patch("src.api.routes.admin_web.dashboard.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.dashboard.get_session_factory"),
         ):
             mock_redis.return_value.ping = AsyncMock()
             mock_sched.return_value.get_status.return_value = {
@@ -188,9 +188,9 @@ class TestDashboard:
         with (
             patch("src.main.get_redis", side_effect=RuntimeError),
             patch("src.main.get_scheduler", side_effect=RuntimeError),
-            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=None)),
-            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.dashboard.fetch_portfolio_view", AsyncMock(return_value=None)),
+            patch("src.api.routes.admin_web.dashboard.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.dashboard.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
             fetcher.get_todays_orders = AsyncMock(return_value=[])
@@ -208,9 +208,9 @@ class TestAccountDetail:
     async def test_found(self, mock_session):
         mock_session.get.return_value = _mock_account()
         with (
-            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=None)),
-            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.accounts.fetch_portfolio_view", AsyncMock(return_value=None)),
+            patch("src.api.routes.admin_web.accounts.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.accounts.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
             fetcher.get_open_positions = AsyncMock(return_value=[])
@@ -233,9 +233,9 @@ class TestAccountDetail:
         mock_session.get.return_value = _mock_account()
         view = _portfolio_view(positions_count=2, is_live=True)
         with (
-            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=view)),
-            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.accounts.fetch_portfolio_view", AsyncMock(return_value=view)),
+            patch("src.api.routes.admin_web.accounts.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.accounts.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
             fetcher.get_open_positions = AsyncMock(return_value=[_mock_position()])
@@ -252,9 +252,9 @@ class TestAccountDetail:
         mock_session.get.return_value = _mock_account()
         view = _portfolio_view(positions_count=1, is_live=True)
         with (
-            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=view)),
-            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.accounts.fetch_portfolio_view", AsyncMock(return_value=view)),
+            patch("src.api.routes.admin_web.accounts.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.accounts.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
             fetcher.get_open_positions = AsyncMock(return_value=[_mock_position()])
@@ -271,9 +271,9 @@ class TestAccountDetail:
         mock_session.get.return_value = _mock_account()
         view = _portfolio_view(positions_count=2, is_live=False)
         with (
-            patch("src.api.routes.admin_web.fetch_portfolio_view", AsyncMock(return_value=view)),
-            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.accounts.fetch_portfolio_view", AsyncMock(return_value=view)),
+            patch("src.api.routes.admin_web.accounts.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.accounts.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
             fetcher.get_open_positions = AsyncMock(return_value=[_mock_position()])
@@ -341,9 +341,9 @@ class TestPerformance:
             [],  # accounts
         )
         with (
-            patch("src.api.routes.admin_web.ReportDataFetcher") as MockFetcher,
-            patch("src.api.routes.admin_web.PerformanceCalculator") as MockCalc,
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.performance.ReportDataFetcher") as MockFetcher,
+            patch("src.api.routes.admin_web.performance.PerformanceCalculator") as MockCalc,
+            patch("src.api.routes.admin_web.performance.get_session_factory"),
         ):
             fetcher = MockFetcher.return_value
             fetcher.get_closed_positions = AsyncMock(return_value=[])
@@ -373,7 +373,7 @@ class TestBacktest:
 
     @pytest.mark.asyncio
     async def test_run_post(self, mock_session):
-        with patch("src.api.routes.admin_web._execute_backtest", new_callable=AsyncMock):
+        with patch("src.api.routes.admin_web.backtest._execute_backtest", new_callable=AsyncMock):
             async with _client() as c:
                 r = await c.post(
                     "/admin/backtest/run",
@@ -474,7 +474,7 @@ class TestStockMaster:
         mock_cache = AsyncMock()
         mock_cache.get_json = AsyncMock(return_value=None)
         with (
-            patch("src.api.routes.admin_web.get_session_factory"),
+            patch("src.api.routes.admin_web.stock_master.get_session_factory"),
             patch("src.data.cache.get_cache", return_value=mock_cache),
         ):
             async with _client() as c:
@@ -487,7 +487,7 @@ class TestStockMaster:
         mock_cache = AsyncMock()
         mock_cache.get_json = AsyncMock(return_value={"status": "running"})
         with (
-            patch("src.api.routes.admin_web.get_session_factory") as mock_factory,
+            patch("src.api.routes.admin_web.stock_master.get_session_factory") as mock_factory,
             patch("src.data.cache.get_cache", return_value=mock_cache),
         ):
             async with _client() as c:
@@ -972,7 +972,7 @@ class TestSyncOrders:
         reconciler.run = AsyncMock(return_value=0)
 
         return [
-            patch("src.api.routes.admin_web.get_session_factory",
+            patch("src.api.routes.admin_web.accounts.get_session_factory",
                   MagicMock(return_value=factory)),
             patch("src.main.get_broker_registry", MagicMock(return_value=registry)),
             patch("src.main.get_telegram_bot", MagicMock(return_value=None)),
@@ -1066,7 +1066,7 @@ class TestSyncOrders:
                 stack.enter_context(p)
             # "오늘"을 KST 2026-06-28로 고정
             stack.enter_context(patch(
-                "src.api.routes.admin_web.today_kst",
+                "src.api.routes.admin_web.accounts.today_kst",
                 MagicMock(return_value=__import__("datetime").date(2026, 6, 28)),
             ))
             async with _client() as c:

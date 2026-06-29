@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}실행 모니터 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>실행 모니터</h2>
+<p><small>실시간 WS 손절 상태와 in-flight 청산, 그리고 승인 거부·만료인데 체결된 고위험 주문(F-06)을 감시한다.</small></p>
+
+<!-- 10초 폴링으로 갱신되는 실시간 상태 -->
+<div id="exec-monitor-status"
+     hx-get="/admin/exec-monitor/status"
+     hx-trigger="load, every 10s"
+     hx-swap="innerHTML">
+    {% include "partials/exec_monitor_status.html" %}
+</div>
+{% endblock %}

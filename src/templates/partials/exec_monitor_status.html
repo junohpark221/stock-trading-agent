@@ -1,0 +1,81 @@
+{% import "partials/_macros.html" as ui %}
+
+<!-- 섹션 A: WS 손절 상태 -->
+<section>
+    <h3>실시간 WS 손절</h3>
+    {% if not ws.available %}
+    {{ ui.empty_state("WS 손절 서비스 비활성 (STOP_LOSS_WS_ENABLED=false 또는 미가동).") }}
+    {% else %}
+    <div class="grid">
+        <article>
+            <header>활성화</header>
+            <p>{% if ws.enabled %}{{ ui.status_badge('ON', 'active') }}{% else %}{{ ui.status_badge('OFF', 'inactive') }}{% endif %}</p>
+        </article>
+        <article>
+            <header>스트림 연결</header>
+            <p>{% if ws.stream_connected %}{{ ui.status_badge('연결됨', 'active') }}{% else %}{{ ui.status_badge('끊김', 'inactive') }}{% endif %}</p>
+        </article>
+        <article>
+            <header>구독 종목</header>
+            <p style="font-size:1.4rem;margin:0;">{{ ws.watched_count }}</p>
+        </article>
+        <article>
+            <header>추적 포지션</header>
+            <p style="font-size:1.4rem;margin:0;">{{ ws.positions_tracked }}</p>
+        </article>
+    </div>
+    {% if ws.watched_symbols %}
+    <p><small>구독: {{ ws.watched_symbols | join(', ') }}</small></p>
+    {% endif %}
+    <h4>In-flight 청산 ({{ ws.inflight | length }})</h4>
+    {% if ws.inflight %}
+    <figure>
+        <table>
+            <thead><tr><th>포지션 ID</th><th>경과(초)</th></tr></thead>
+            <tbody>
+                {% for c in ws.inflight %}
+                <tr><td>{{ c.position_id }}</td><td>{{ c.age_sec }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    {{ ui.empty_state("진행 중인 청산 없음.") }}
+    {% endif %}
+    {% endif %}
+</section>
+
+<!-- 섹션 B: 거부주문 경보 (F-06) -->
+<section class="{% if alerts %}danger-zone{% endif %}">
+    <h3>거부주문 경보 {% if alerts %}{{ ui.status_badge(alerts | length, 'alert') }}{% endif %}</h3>
+    {% if alerts %}
+    <p><strong>승인 거부·만료인데 체결된 고위험 주문입니다. 수동 점검이 필요합니다.</strong></p>
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>일시</th><th>계좌</th><th>종목</th><th>구분</th><th>수량</th>
+                    <th>승인상태</th><th>주문상태</th><th>사유</th><th>브로커주문번호</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for o in alerts %}
+                <tr>
+                    <td>{{ o.created_at | kst('%m-%d %H:%M') }}</td>
+                    <td>{{ o.account_id }}</td>
+                    <td>{{ o.symbol }}</td>
+                    <td>{{ "매수" if o.side == "buy" else "매도" }}</td>
+                    <td>{{ "{:,}".format(o.quantity) }}</td>
+                    <td>{{ ui.status_badge(o.approval_status, 'failed') }}</td>
+                    <td>{{ o.status }}</td>
+                    <td><small>{{ o.rejection_reason or "-" }}</small></td>
+                    <td>{{ o.broker_order_id or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    {{ ui.empty_state("고위험 거부주문 없음.") }}
+    {% endif %}
+</section>

@@ -1,0 +1,52 @@
+{% import "partials/_macros.html" as ui %}
+{% if rows %}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>생성일</th>
+                <th>에이전트</th>
+                <th>유형</th>
+                <th>종목</th>
+                <th>내용</th>
+                <th>관련도</th>
+                <th>만료</th>
+                <th>활성</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in rows %}
+            <tr>
+                <td>{{ m.created_at | kst('%m-%d %H:%M') }}</td>
+                <td>{{ m.agent_type }}</td>
+                <td>{{ m.memory_type }}</td>
+                <td>{{ m.symbol or "범용" }}</td>
+                <td><small>{{ m.content[:80] }}{% if m.content|length > 80 %}…{% endif %}</small></td>
+                <td>{{ "{:.2f}".format(m.relevance_score) }}</td>
+                <td><small>{% if m.expires_at %}{{ m.expires_at | kst('%Y-%m-%d') }}{% else %}-{% endif %}</small></td>
+                <td>
+                    {% if m.is_active %}{{ ui.status_badge('활성', 'active') }}
+                    {% else %}{{ ui.status_badge('비활성', 'inactive') }}{% endif %}
+                </td>
+                <td>
+                    <a href="#"
+                       hx-get="/admin/memory/{{ m.id }}"
+                       hx-target="#memory-detail-body"
+                       hx-swap="innerHTML"
+                       title="전문 보기">&#x1f50d;</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</figure>
+
+{{ ui.pager(
+    "/admin/memory", page, total, total_pages, "#memory-table",
+    per_page=per_page,
+    params={"agent_type": agent_type, "symbol": symbol, "memory_type": memory_type, "is_active": is_active},
+) }}
+{% else %}
+{{ ui.empty_state("학습 메모리가 없습니다.") }}
+{% endif %}

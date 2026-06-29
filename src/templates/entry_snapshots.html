@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% import "partials/_macros.html" as ui %}
+
+{% block title %}진입 분석 스냅샷 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>진입 분석 스냅샷</h2>
+<p><small>진입 시 LLM 분석(action/confidence/key_factors)과 실제 청산 손익을 대조 — 메모리 학습 품질 점검.</small></p>
+
+<form hx-get="/admin/entry-snapshots" hx-target="#snapshot-table" hx-trigger="change" hx-push-url="true">
+    <div class="grid">
+        {{ ui.account_filter(accounts, account_id) }}
+        <label>
+            종목
+            <input type="search" name="symbol" value="{{ symbol or '' }}" placeholder="종목코드">
+        </label>
+        <label>
+            상태
+            <select name="status">
+                <option value="">전체</option>
+                <option value="open" {% if status == 'open' %}selected{% endif %}>보유중</option>
+                <option value="closed" {% if status == 'closed' %}selected{% endif %}>청산</option>
+            </select>
+        </label>
+    </div>
+    <input type="hidden" name="page" value="1">
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+</form>
+
+<div id="snapshot-table">
+    {% include "partials/entry_snapshot_rows.html" %}
+</div>
+{% endblock %}

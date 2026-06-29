@@ -1119,3 +1119,96 @@ class TestPendingOrdersScope:
         sql = str(captured["stmt"].compile(compile_kwargs={"literal_binds": True}))
         assert "'pending'" in sql
         assert "'submitted'" in sql
+
+
+# ── New screens (F-05~F-09) ──────────────────────────────────────────
+
+
+class TestDecisionQueue:
+    @pytest.mark.asyncio
+    async def test_decision_queue_page(self, mock_session):
+        # accounts, 4 status counters, paginate count, rows
+        mock_session.execute.side_effect = _make_execute_results(
+            [],  # accounts
+            0, 0, 0, 0,  # pending/executed/expired/rejected counters
+            0,   # paginate count
+            [],  # rows
+        )
+        async with _client() as c:
+            r = await c.get("/admin/decision-queue")
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_decision_queue_detail_not_found(self, mock_session):
+        mock_session.get.return_value = None
+        async with _client() as c:
+            r = await c.get("/admin/decision-queue/999")
+        assert r.status_code == 404
+
+
+class TestEntrySnapshots:
+    @pytest.mark.asyncio
+    async def test_entry_snapshots_page(self, mock_session):
+        mock_session.execute.side_effect = _make_execute_results(
+            [],  # accounts
+            0,   # count
+            [],  # rows
+        )
+        async with _client() as c:
+            r = await c.get("/admin/entry-snapshots")
+        assert r.status_code == 200
+
+
+class TestMemoryViewer:
+    @pytest.mark.asyncio
+    async def test_memory_page(self):
+        with (
+            patch("src.api.routes.admin_web.memory.AgentMemoryManager") as MockMgr,
+            patch("src.api.routes.admin_web.memory.get_session_factory"),
+        ):
+            mgr = MockMgr.return_value
+            mgr.list_memories = AsyncMock(return_value=([], 0))
+            async with _client() as c:
+                r = await c.get("/admin/memory")
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_memory_cleanup_redirect(self):
+        with (
+            patch("src.api.routes.admin_web.memory.AgentMemoryManager") as MockMgr,
+            patch("src.api.routes.admin_web.memory.get_session_factory"),
+        ):
+            mgr = MockMgr.return_value
+            mgr.cleanup_expired = AsyncMock(return_value=3)
+            async with _client() as c:
+                r = await c.post("/admin/memory/cleanup", follow_redirects=False)
+        assert r.status_code == 303
+        assert "/admin/memory" in r.headers.get("location", "")
+
+
+class TestExecMonitor:
+    @pytest.mark.asyncio
+    async def test_exec_monitor_ws_disabled(self, mock_session):
+        """WS 미가동(get_stoploss_stream=None) + 거부주문 0건 → 정상 렌더."""
+        mock_session.execute.side_effect = _make_execute_results([])  # disapproved orders
+        with patch("src.main.get_stoploss_stream", return_value=None):
+            async with _client() as c:
+                r = await c.get("/admin/exec-monitor")
+        assert r.status_code == 200
+        assert "비활성" in r.text
+
+    @pytest.mark.asyncio
+    async def test_exec_monitor_status_partial_with_ws(self, mock_session):
+        """WS 가동 시 get_status() 요약 표시 (HTMX 폴링 partial)."""
+        mock_session.execute.side_effect = _make_execute_results([])
+        stream = MagicMock()
+        stream.get_status = AsyncMock(return_value={
+            "enabled": True, "stream_connected": True,
+            "registered_accounts": ["acc-1"], "watched_symbols": ["005930"],
+            "watched_count": 1, "positions_tracked": 1, "inflight": [],
+        })
+        with patch("src.main.get_stoploss_stream", return_value=stream):
+            async with _client() as c:
+                r = await c.get("/admin/exec-monitor/status")
+        assert r.status_code == 200
+        assert "005930" in r.text

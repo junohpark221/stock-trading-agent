@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% import "partials/_macros.html" as ui %}
+
+{% block title %}결정 큐 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>결정 큐 모니터</h2>
+<p><small>08:30 결정 잡이 적재 → 장중 실행 드레인이 당일가·갭 게이트 통과분만 발주.</small></p>
+
+<!-- 상태 카운터 -->
+<div class="grid">
+    {% for st in statuses %}
+    <article>
+        <header>{{ ui.status_badge(st) }}</header>
+        <p style="font-size:1.4rem;margin:0;">{{ counts[st] }}</p>
+    </article>
+    {% endfor %}
+</div>
+
+<!-- 필터 -->
+<form hx-get="/admin/decision-queue" hx-target="#queue-table" hx-trigger="change" hx-push-url="true">
+    <div class="grid">
+        {{ ui.account_filter(accounts, account_id) }}
+        <label>
+            상태
+            <select name="status">
+                <option value="">전체</option>
+                {% for st in statuses %}
+                <option value="{{ st }}" {% if status == st %}selected{% endif %}>{{ st }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            종목
+            <input type="search" name="symbol" value="{{ symbol or '' }}" placeholder="종목코드">
+        </label>
+    </div>
+    <div class="grid">
+        {{ ui.date_range(from_date, to_date) }}
+        <div></div>
+    </div>
+    <input type="hidden" name="page" value="1">
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+</form>
+
+<div id="queue-table">
+    {% include "partials/decision_queue_rows.html" %}
+</div>
+
+<!-- 상세 모달 -->
+<dialog id="queue-detail-dialog">
+    <article style="max-width: 900px; max-height: 80vh; overflow-y: auto;">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="this.closest('dialog').close()"></button>
+            <h3>결정 상세</h3>
+        </header>
+        <div id="queue-detail-body"></div>
+    </article>
+</dialog>
+
+<script>
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'queue-detail-body') {
+        document.getElementById('queue-detail-dialog').showModal();
+    }
+});
+</script>
+{% endblock %}

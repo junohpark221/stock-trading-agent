@@ -1,0 +1,36 @@
+{% import "partials/_macros.html" as ui %}
+<dl>
+    <dt>종목 / 액션</dt>
+    <dd>{{ item.symbol }} · {{ item.action }} · {{ "{:,}".format(item.quantity) }}주</dd>
+    <dt>상태</dt>
+    <dd>{{ ui.status_badge(item.status) }} {% if item.gate_reason %}<small>({{ item.gate_reason }})</small>{% endif %}</dd>
+    <dt>기준가 / 전략</dt>
+    <dd>{{ "{:,.0f}".format(item.reference_price) }}원 · {{ item.strategy_type }} · {{ item.order_type }}</dd>
+    <dt>적재 / 만료</dt>
+    <dd>{{ item.created_at | kst('%Y-%m-%d %H:%M') }} → {% if item.expires_at %}{{ item.expires_at | kst('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</dd>
+    {% if item.executed_at %}
+    <dt>발주</dt>
+    <dd>{{ item.executed_at | kst('%Y-%m-%d %H:%M') }}{% if item.order_id %} · order #{{ item.order_id }}{% endif %}</dd>
+    {% endif %}
+    {% if item.session_id %}
+    <dt>의사결정</dt>
+    <dd><a href="/admin/decisions/{{ item.session_id }}"
+           hx-get="/admin/decisions/{{ item.session_id }}"
+           hx-target="#queue-detail-body" hx-swap="innerHTML">세션 {{ item.session_id }}</a></dd>
+    {% endif %}
+    {% if item.entry_analysis_snapshot %}
+    <dt>진입 분석</dt>
+    <dd>
+        action={{ item.entry_analysis_snapshot.get('action') }},
+        confidence={{ item.entry_analysis_snapshot.get('confidence') }}
+        {% if item.entry_analysis_snapshot.get('key_factors') %}
+        <br><small>factors: {{ item.entry_analysis_snapshot.get('key_factors') | join(', ') }}</small>
+        {% endif %}
+    </dd>
+    {% endif %}
+</dl>
+
+<details>
+    <summary>결정 본문 (decision_payload)</summary>
+    <pre style="white-space:pre-wrap;font-size:0.8rem;">{{ item.decision_payload | tojson(indent=2) }}</pre>
+</details>

@@ -1,0 +1,57 @@
+{% import "partials/_macros.html" as ui %}
+{% if rows %}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>종목</th>
+                <th>계좌</th>
+                <th>진입일</th>
+                <th>진입 action</th>
+                <th>신뢰도</th>
+                <th>핵심 요인</th>
+                <th>진입가</th>
+                <th>상태</th>
+                <th>실현손익</th>
+                <th>청산사유</th>
+                <th>의사결정</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in rows %}
+            {% set snap = p.entry_analysis_snapshot or {} %}
+            <tr>
+                <td>{{ p.symbol }}</td>
+                <td>{{ p.account_id }}</td>
+                <td>{{ p.entry_date }}</td>
+                <td>{{ snap.get('action') or "-" }}</td>
+                <td>{{ snap.get('confidence') or "-" }}</td>
+                <td><small>{{ (snap.get('key_factors') or [])[:3] | join(', ') or "-" }}</small></td>
+                <td>{{ "{:,.0f}".format(p.entry_price) }}원</td>
+                <td>
+                    {% if p.status == 'open' %}{{ ui.status_badge('open', 'running') }}
+                    {% else %}{{ ui.status_badge('closed', 'completed') }}{% endif %}
+                </td>
+                <td class="{{ 'pnl-positive' if p.realized_pnl and p.realized_pnl >= 0 else 'pnl-negative' if p.realized_pnl else '' }}">
+                    {{ "{:+,.0f}".format(p.realized_pnl) if p.realized_pnl is not none else "-" }}
+                </td>
+                <td><small>{{ p.exit_reason or "-" }}</small></td>
+                <td>
+                    {% if p.entry_session_id %}
+                    <a href="/admin/decisions?account_id={{ p.account_id }}" title="진입 세션 {{ p.entry_session_id }}">세션</a>
+                    {% else %}-{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</figure>
+
+{{ ui.pager(
+    "/admin/entry-snapshots", page, total, total_pages, "#snapshot-table",
+    per_page=per_page,
+    params={"account_id": account_id, "symbol": symbol, "status": status},
+) }}
+{% else %}
+{{ ui.empty_state("진입 분석 스냅샷이 있는 포지션이 없습니다.") }}
+{% endif %}

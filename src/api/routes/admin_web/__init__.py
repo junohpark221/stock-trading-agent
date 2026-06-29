@@ -12,7 +12,11 @@ from . import (
     auth,
     backtest,
     dashboard,
+    decision_queue_view,
     decisions,
+    entry_snapshots,
+    exec_monitor,
+    memory,
     performance,
     scheduler,
     stock_master,
@@ -31,6 +35,10 @@ for _mod in (
     scheduler,
     stock_master,
     decisions,
+    decision_queue_view,
+    entry_snapshots,
+    memory,
+    exec_monitor,
 ):
     router.include_router(_mod.router)
 

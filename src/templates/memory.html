@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "partials/_macros.html" as ui %}
+
+{% block title %}학습 메모리 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>학습 메모리</h2>
+<p><small>청산 교훈이 에이전트 분석 프롬프트에 주입된다. 만료/비활성 포함 감사 뷰.</small></p>
+
+{% if cleanup_msg %}
+<article style="background:#e8f5e9;border-left:3px solid #2e7d32;padding:0.5rem 1rem;">{{ cleanup_msg }}</article>
+{% endif %}
+
+<div style="display:flex;justify-content:space-between;align-items:center;">
+    <form hx-get="/admin/memory" hx-target="#memory-table" hx-trigger="change" hx-push-url="true" style="flex:1;">
+        <div class="grid">
+            <label>
+                에이전트
+                <input type="search" name="agent_type" value="{{ agent_type or '' }}" placeholder="stock_analyst">
+            </label>
+            <label>
+                종목
+                <input type="search" name="symbol" value="{{ symbol or '' }}" placeholder="종목코드(범용은 비움)">
+            </label>
+            <label>
+                활성
+                <select name="is_active">
+                    <option value="">전체</option>
+                    <option value="true" {% if is_active == 'true' %}selected{% endif %}>활성</option>
+                    <option value="false" {% if is_active == 'false' %}selected{% endif %}>비활성</option>
+                </select>
+            </label>
+        </div>
+        <input type="hidden" name="page" value="1">
+        <input type="hidden" name="per_page" value="{{ per_page }}">
+    </form>
+    <form method="post" action="/admin/memory/cleanup" style="margin-left:1rem;">
+        <button type="submit" class="outline secondary"
+                onclick="return confirm('만료된 메모리를 비활성화하시겠습니까?')">만료 정리</button>
+    </form>
+</div>
+
+<div id="memory-table">
+    {% include "partials/memory_rows.html" %}
+</div>
+
+<dialog id="memory-detail-dialog">
+    <article style="max-width: 800px; max-height: 80vh; overflow-y: auto;">
+        <header>
+            <button aria-label="Close" rel="prev" onclick="this.closest('dialog').close()"></button>
+            <h3>메모리 상세</h3>
+        </header>
+        <div id="memory-detail-body"></div>
+    </article>
+</dialog>
+
+<script>
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'memory-detail-body') {
+        document.getElementById('memory-detail-dialog').showModal();
+    }
+});
+</script>
+{% endblock %}

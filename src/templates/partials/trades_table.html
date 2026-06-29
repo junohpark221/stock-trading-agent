@@ -1,3 +1,4 @@
+{% import "partials/_macros.html" as ui %}
 {% if trades %}
 <figure>
     <table>
@@ -43,25 +44,12 @@
     </table>
 </figure>
 
-<!-- 페이지네이션 -->
-{% if total_pages > 1 %}
-<nav>
-    <ul>
-        {% if page > 1 %}
-        <li><a href="#"
-               hx-get="/admin/trades?page={{ page - 1 }}&per_page={{ per_page }}{% if account_id %}&account_id={{ account_id }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}{% if symbol %}&symbol={{ symbol }}{% endif %}"
-               hx-target="#trade-table">&laquo; 이전</a></li>
-        {% endif %}
-        <li><small>{{ page }} / {{ total_pages }} ({{ total }}건)</small></li>
-        {% if page < total_pages %}
-        <li><a href="#"
-               hx-get="/admin/trades?page={{ page + 1 }}&per_page={{ per_page }}{% if account_id %}&account_id={{ account_id }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}{% if symbol %}&symbol={{ symbol }}{% endif %}"
-               hx-target="#trade-table">다음 &raquo;</a></li>
-        {% endif %}
-    </ul>
-</nav>
-{% endif %}
+{{ ui.pager(
+    "/admin/performance", page, total, total_pages, "#perf-content",
+    per_page=per_page,
+    params={"tab": "trades", "account_id": account_id, "from_date": from_date, "to_date": to_date, "symbol": symbol},
+) }}
 
 {% else %}
-<p>매매 이력이 없습니다.</p>
+{{ ui.empty_state("매매 이력이 없습니다.") }}
 {% endif %}

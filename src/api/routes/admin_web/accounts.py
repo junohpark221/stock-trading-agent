@@ -132,18 +132,18 @@ async def accounts_create(
     return RedirectResponse(url="/admin/accounts", status_code=303)
 
 
-@router.get("/accounts/{account_id}/edit", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
+@router.get("/accounts/{account_id}/edit-form", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def accounts_edit_form(
     request: Request,
     account_id: str,
     session: AsyncSession = Depends(get_db_session),
 ):
-    """GET /admin/accounts/{account_id}/edit — 계좌 수정 폼."""
+    """GET /admin/accounts/{account_id}/edit-form — 인라인 편집 폼 partial (HTMX)."""
     account = await session.get(Account, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    return templates.TemplateResponse("account_edit.html", {
+    return templates.TemplateResponse("partials/account_edit_form.html", {
         "request": request,
         "account": account,
         "strategy_types": [e.value for e in StrategyType],
@@ -157,7 +157,10 @@ async def accounts_edit(
     account_id: str,
     session: AsyncSession = Depends(get_db_session),
 ):
-    """POST /admin/accounts/{account_id}/edit — 계좌 수정 처리."""
+    """POST /admin/accounts/{account_id}/edit — 계좌 수정 처리.
+
+    성공 시 갱신된 계좌정보 partial을 반환해 #account-info 인라인 교체.
+    """
     account = await session.get(Account, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -171,7 +174,7 @@ async def accounts_edit(
         try:
             risk_overrides = json.loads(risk_raw)
         except (json.JSONDecodeError, ValueError):
-            return templates.TemplateResponse("account_edit.html", {
+            return templates.TemplateResponse("partials/account_edit_form.html", {
                 "request": request,
                 "account": account,
                 "strategy_types": [e.value for e in StrategyType],
@@ -208,7 +211,10 @@ async def accounts_edit(
     await session.commit()
 
     logger.info("account_updated_via_web", account_id=account_id)
-    return RedirectResponse(url="/admin/accounts", status_code=303)
+    return templates.TemplateResponse("partials/account_info.html", {
+        "request": request,
+        "account": account,
+    })
 
 
 @router.post("/accounts/{account_id}/toggle", response_class=HTMLResponse, dependencies=[Depends(require_admin)])

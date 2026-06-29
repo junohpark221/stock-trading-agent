@@ -1,37 +1,48 @@
 {% extends "base.html" %}
+{% import "partials/_macros.html" as ui %}
 
-{% block title %}성과 분석 - Trading Agent{% endblock %}
+{% block title %}성과·거래 - Trading Agent{% endblock %}
 
 {% block content %}
-<h2>성과 분석</h2>
+<h2>성과·거래</h2>
 
-<!-- 필터 -->
-<form hx-get="/admin/performance" hx-target="#performance-content" hx-trigger="change" hx-push-url="true">
+<!-- 탭 전환 -->
+<nav class="admin-subnav">
+    <ul>
+        <li><a href="#"
+               hx-get="/admin/performance?tab=metrics"
+               hx-target="#perf-content" hx-push-url="true"
+               class="{{ 'active' if tab != 'trades' else '' }}">성과 지표</a></li>
+        <li><a href="#"
+               hx-get="/admin/performance?tab=trades"
+               hx-target="#perf-content" hx-push-url="true"
+               class="{{ 'active' if tab == 'trades' else '' }}">거래 이력</a></li>
+    </ul>
+</nav>
+
+<!-- 필터 (두 탭 공통) -->
+<form hx-get="/admin/performance" hx-target="#perf-content" hx-trigger="change" hx-push-url="true">
+    <input type="hidden" name="tab" value="{{ tab }}">
     <div class="grid">
+        {{ ui.account_filter(accounts, account_id) }}
+        {{ ui.date_range(from_date, to_date) }}
+        {% if tab == 'trades' %}
         <label>
-            계좌
-            <select name="account_id">
-                <option value="">전체</option>
-                {% for acct in accounts %}
-                <option value="{{ acct.id }}" {% if account_id == acct.id %}selected{% endif %}>
-                    {{ acct.nickname }}
-                </option>
-                {% endfor %}
-            </select>
+            종목
+            <input type="search" name="symbol" value="{{ symbol or '' }}" placeholder="종목코드">
         </label>
-        <label>
-            시작일
-            <input type="date" name="from_date" value="{{ from_date }}">
-        </label>
-        <label>
-            종료일
-            <input type="date" name="to_date" value="{{ to_date }}">
-        </label>
+        {% endif %}
     </div>
+    <input type="hidden" name="page" value="1">
+    <input type="hidden" name="per_page" value="{{ per_page }}">
 </form>
 
-<!-- 성과 콘텐츠 (HTMX 교체 대상) -->
-<div id="performance-content">
-    {% include "partials/performance_content.html" %}
+<!-- 탭 콘텐츠 (HTMX 교체 대상) -->
+<div id="perf-content">
+    {% if tab == 'trades' %}
+        {% include "partials/trades_table.html" %}
+    {% else %}
+        {% include "partials/performance_content.html" %}
+    {% endif %}
 </div>
 {% endblock %}

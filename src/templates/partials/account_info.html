@@ -1,0 +1,41 @@
+<section>
+    <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>
+            {{ account.nickname }}
+            {% if account.kis_is_paper %}<small>(모의)</small>{% else %}<small>(실전)</small>{% endif %}
+        </span>
+        <button class="outline"
+                hx-get="/admin/accounts/{{ account.id }}/edit-form"
+                hx-target="#account-info" hx-swap="innerHTML"
+                style="margin:0;padding:0.3rem 0.8rem;font-size:0.85rem;">편집</button>
+    </h2>
+    <div class="grid">
+        <article>
+            <header>기본 정보</header>
+            <p>전략: {{ account.strategy_type }}</p>
+            <p>리스크 허용도: {{ {"conservative": "보수적", "moderate": "균형", "aggressive": "적극적"}.get(account.risk_tolerance or "moderate", account.risk_tolerance or "moderate") }}</p>
+            <p>계좌 ID: {{ account.id }}</p>
+        </article>
+        <article>
+            <header>투자 철학</header>
+            {% if account.investment_prompt %}
+            <p>{{ account.investment_prompt[:200] }}{% if account.investment_prompt|length > 200 %}…{% endif %}</p>
+            {% else %}
+            <p>설정 없음</p>
+            {% endif %}
+        </article>
+        <article>
+            <header>리스크 오버라이드</header>
+            {% if account.risk_overrides %}
+            <dl>
+                {% for key, value in account.risk_overrides.items() %}
+                <dt>{{ key }}</dt>
+                <dd>{{ value }}</dd>
+                {% endfor %}
+            </dl>
+            {% else %}
+            <p>기본값</p>
+            {% endif %}
+        </article>
+    </div>
+</section>

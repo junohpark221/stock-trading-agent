@@ -1,6 +1,5 @@
 """Backoffice decision-log routes: list + session detail."""
 
-import math
 from datetime import date, datetime, timedelta
 from uuid import UUID
 
@@ -11,9 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
+from src.api.routes.admin_web._common import active_accounts, paginate, render
 from src.api.templates import templates
 from src.core.time import KST
-from src.db.models.account import Account
 from src.db.models.llm import DecisionLog
 from src.db.session import get_db_session
 
@@ -59,18 +58,10 @@ async def decisions_log(
         stmt = stmt.where(DecisionLog.created_at < dt_to)
         count_stmt = count_stmt.where(DecisionLog.created_at < dt_to)
 
-    total = (await session.execute(count_stmt)).scalar_one()
-    total_pages = max(1, math.ceil(total / per_page))
-    page = min(page, total_pages)
-
-    offset = (page - 1) * per_page
-    stmt = stmt.offset(offset).limit(per_page)
-    decisions = list((await session.execute(stmt)).scalars().all())
-
-    acct_result = await session.execute(
-        select(Account).where(Account.is_active.is_(True)).order_by(Account.created_at)
+    decisions, page, total, total_pages = await paginate(
+        session, stmt, count_stmt, page, per_page,
     )
-    accounts = list(acct_result.scalars().all())
+    accounts = await active_accounts(session)
 
     context = {
         "request": request,
@@ -87,9 +78,7 @@ async def decisions_log(
         "to_date": to_date,
     }
 
-    if request.headers.get("HX-Request"):
-        return templates.TemplateResponse("partials/decision_rows.html", context)
-    return templates.TemplateResponse("decisions.html", context)
+    return render(request, "decisions.html", "partials/decision_rows.html", context)
 
 
 @router.get(

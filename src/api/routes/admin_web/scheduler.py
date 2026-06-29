@@ -1,7 +1,5 @@
 """Backoffice scheduler routes: status + pause/resume + manual run."""
 
-import math
-
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from fastapi.responses import HTMLResponse
@@ -9,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
+from src.api.routes.admin_web._common import paginate, render
 from src.api.templates import templates
 from src.db.models.scheduler import JobExecution
 from src.db.session import get_db_session
@@ -49,12 +48,9 @@ async def _build_scheduler_context(
         stmt = stmt.where(JobExecution.status == status)
         count_stmt = count_stmt.where(JobExecution.status == status)
 
-    total = (await session.execute(count_stmt)).scalar_one()
-    total_pages = max(1, math.ceil(total / per_page))
-    page = min(page, total_pages)
-    offset = (page - 1) * per_page
-    stmt = stmt.offset(offset).limit(per_page)
-    history = list((await session.execute(stmt)).scalars().all())
+    history, page, total, total_pages = await paginate(
+        session, stmt, count_stmt, page, per_page,
+    )
 
     return {
         "request": request,
@@ -83,10 +79,7 @@ async def scheduler_page(
     context = await _build_scheduler_context(
         request, session, job_name=job_name, status=status, page=page, per_page=per_page,
     )
-
-    if request.headers.get("HX-Request"):
-        return templates.TemplateResponse("partials/scheduler_status.html", context)
-    return templates.TemplateResponse("scheduler.html", context)
+    return render(request, "scheduler.html", "partials/scheduler_status.html", context)
 
 
 @router.post("/scheduler/pause", response_class=HTMLResponse, dependencies=[Depends(require_admin)])

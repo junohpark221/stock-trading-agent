@@ -122,9 +122,9 @@
                     </td>
                     <td>{{ acct.created_at.strftime("%Y-%m-%d") if acct.created_at else "-" }}</td>
                     <td>
-                        <a href="/admin/accounts/{{ acct.id }}/edit"
+                        <a href="/admin/accounts/{{ acct.id }}"
                            role="button" class="outline"
-                           style="padding: 0.25rem 0.5rem; font-size: 0.85rem;">수정</a>
+                           style="padding: 0.25rem 0.5rem; font-size: 0.85rem;">상세·편집</a>
                         <button hx-post="/admin/accounts/{{ acct.id }}/toggle"
                                 hx-target="#account-row-{{ acct.id }}"
                                 hx-swap="outerHTML"

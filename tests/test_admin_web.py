@@ -290,25 +290,38 @@ class TestAccountDetail:
 
 class TestTrades:
     @pytest.mark.asyncio
-    async def test_trades_page(self, mock_session):
+    async def test_trades_redirects_to_performance_tab(self, mock_session):
+        """매매이력은 성과·거래 화면의 거래 탭으로 병합 — /admin/trades 리다이렉트."""
+        async with _client() as c:
+            r = await c.get("/admin/trades?account_id=acc-1", follow_redirects=False)
+        assert r.status_code == 303
+        loc = r.headers.get("location", "")
+        assert "/admin/performance?tab=trades" in loc
+        assert "account_id=acc-1" in loc
+
+    @pytest.mark.asyncio
+    async def test_performance_trades_tab(self, mock_session):
+        """성과·거래 거래 탭: accounts → count → rows 순으로 조회."""
         mock_session.execute.side_effect = _make_execute_results(
-            0,  # count
-            [],  # trades
-            [],  # accounts
+            [],  # accounts (active_accounts)
+            0,   # count
+            [],  # trades rows
         )
         async with _client() as c:
-            r = await c.get("/admin/trades")
+            r = await c.get("/admin/performance?tab=trades")
         assert r.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_trades_htmx_partial(self, mock_session):
+    async def test_performance_trades_tab_htmx_partial(self, mock_session):
         mock_session.execute.side_effect = _make_execute_results(
-            0,  # count
-            [],  # trades
             [],  # accounts
+            0,   # count
+            [],  # trades rows
         )
         async with _client() as c:
-            r = await c.get("/admin/trades", headers={"HX-Request": "true"})
+            r = await c.get(
+                "/admin/performance?tab=trades", headers={"HX-Request": "true"}
+            )
         assert r.status_code == 200
 
 

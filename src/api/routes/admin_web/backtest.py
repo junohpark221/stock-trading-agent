@@ -1,6 +1,5 @@
 """Backoffice backtest routes: list + run + detail."""
 
-import math
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -12,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
+from src.api.routes.admin_web._common import paginate, render
 from src.api.routes.backtest import _execute_backtest
 from src.api.templates import templates
 from src.core.enums import BacktestMode, BacktestStatus, StrategyType
@@ -44,12 +44,9 @@ async def backtest_page(
         stmt = stmt.where(BacktestRun.status == status)
         count_stmt = count_stmt.where(BacktestRun.status == status)
 
-    total = (await session.execute(count_stmt)).scalar_one()
-    total_pages = max(1, math.ceil(total / per_page))
-    page = min(page, total_pages)
-    offset = (page - 1) * per_page
-    stmt = stmt.offset(offset).limit(per_page)
-    runs = list((await session.execute(stmt)).scalars().all())
+    runs, page, total, total_pages = await paginate(
+        session, stmt, count_stmt, page, per_page,
+    )
 
     context = {
         "request": request,
@@ -65,9 +62,7 @@ async def backtest_page(
         "backtest_statuses": [e.value for e in BacktestStatus],
     }
 
-    if request.headers.get("HX-Request"):
-        return templates.TemplateResponse("partials/backtest_runs.html", context)
-    return templates.TemplateResponse("backtest.html", context)
+    return render(request, "backtest.html", "partials/backtest_runs.html", context)
 
 
 @router.post("/backtest/run", response_class=HTMLResponse, dependencies=[Depends(require_admin)])

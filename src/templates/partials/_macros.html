@@ -1,0 +1,65 @@
+{# Shared backoffice UI macros — filters, pagination, empty state. #}
+
+{% macro empty_state(msg) %}
+<p class="empty-state">{{ msg }}</p>
+{% endmacro %}
+
+
+{% macro account_filter(accounts, account_id) %}
+<label>
+    계좌
+    <select name="account_id">
+        <option value="">전체</option>
+        {% for acct in accounts %}
+        <option value="{{ acct.id }}" {% if account_id == acct.id %}selected{% endif %}>
+            {{ acct.nickname }}
+        </option>
+        {% endfor %}
+    </select>
+</label>
+{% endmacro %}
+
+
+{% macro date_range(from_date, to_date) %}
+<label>
+    시작일
+    <input type="date" name="from_date" value="{{ from_date or '' }}">
+</label>
+<label>
+    종료일
+    <input type="date" name="to_date" value="{{ to_date or '' }}">
+</label>
+{% endmacro %}
+
+
+{#
+  Pagination nav. `params` is a dict of filter query params (excluding page /
+  per_page) carried across page links. `target` is the HTMX swap target id.
+#}
+{% macro pager(base, page, total, total_pages, target, per_page=20, params={}) %}
+{% if total_pages > 1 %}
+{%- set qs -%}
+{%- for k, v in params.items() %}{% if v %}&{{ k }}={{ v }}{% endif %}{% endfor -%}
+{%- endset -%}
+<nav>
+    <ul>
+        {% if page > 1 %}
+        <li><a href="#"
+               hx-get="{{ base }}?page={{ page - 1 }}&per_page={{ per_page }}{{ qs }}"
+               hx-target="{{ target }}">&laquo; 이전</a></li>
+        {% endif %}
+        <li><small>{{ page }} / {{ total_pages }} ({{ total }}건)</small></li>
+        {% if page < total_pages %}
+        <li><a href="#"
+               hx-get="{{ base }}?page={{ page + 1 }}&per_page={{ per_page }}{{ qs }}"
+               hx-target="{{ target }}">다음 &raquo;</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% endmacro %}
+
+
+{% macro status_badge(value, kind='') %}
+<span class="badge badge-{{ kind or value }}">{{ value }}</span>
+{% endmacro %}

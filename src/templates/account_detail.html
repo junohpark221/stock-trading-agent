@@ -3,42 +3,10 @@
 {% block title %}{{ account.nickname }} - Trading Agent{% endblock %}
 
 {% block content %}
-<!-- 계좌 정보 -->
-<section>
-    <h2>
-        {{ account.nickname }}
-        {% if account.kis_is_paper %}<small>(모의)</small>{% else %}<small>(실전)</small>{% endif %}
-    </h2>
-    <div class="grid">
-        <article>
-            <header>기본 정보</header>
-            <p>전략: {{ account.strategy_type }}</p>
-            <p>리스크 허용도: {{ {"conservative": "보수적", "moderate": "균형", "aggressive": "적극적"}.get(account.risk_tolerance or "moderate", account.risk_tolerance or "moderate") }}</p>
-            <p>계좌 ID: {{ account.id }}</p>
-        </article>
-        <article>
-            <header>투자 철학</header>
-            {% if account.investment_prompt %}
-            <p>{{ account.investment_prompt[:200] }}{% if account.investment_prompt|length > 200 %}…{% endif %}</p>
-            {% else %}
-            <p>설정 없음</p>
-            {% endif %}
-        </article>
-        <article>
-            <header>리스크 오버라이드</header>
-            {% if account.risk_overrides %}
-            <dl>
-                {% for key, value in account.risk_overrides.items() %}
-                <dt>{{ key }}</dt>
-                <dd>{{ value }}</dd>
-                {% endfor %}
-            </dl>
-            {% else %}
-            <p>기본값</p>
-            {% endif %}
-        </article>
-    </div>
-</section>
+<!-- 계좌 정보 (인라인 편집) -->
+<div id="account-info">
+    {% include "partials/account_info.html" %}
+</div>
 
 <!-- 잔고 요약 -->
 <section>
@@ -181,9 +149,10 @@
     {% endif %}
 </section>
 
-<!-- 수동 주문 -->
-<section>
-    <h2>수동 주문</h2>
+<!-- 수동 주문 (조회와 분리: 접힌 상태가 기본) -->
+<details {% if manual_order_error or manual_order_success %}open{% endif %}>
+    <summary role="button" class="outline secondary">수동 주문 (긴급 개입)</summary>
+    <section>
     <p><small>승인 생략 즉시 집행. 지정가는 가격을 비우면 현재가로 낸다. 시장가 선택 시 가격은 무시된다. 매수 접수 후 잠시 체결을 확인해 결과를 안내한다.</small></p>
     {% if manual_order_error %}
     <article style="background:#ffe9e9;border-left:3px solid #d93025;padding:0.5rem 1rem;">
@@ -231,7 +200,8 @@
             <button type="submit" name="side" value="sell" class="secondary">매도</button>
         </div>
     </form>
-</section>
+    </section>
+</details>
 
 <p><a href="/admin/">&larr; 대시보드로 돌아가기</a></p>
 {% endblock %}

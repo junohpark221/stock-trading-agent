@@ -439,6 +439,7 @@ async def job_position_decision(
     queue: TradeDecisionQueueManager,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
+    strategy: Strategy | None = None,
     account_id: str = "default",
     investment_prompt: str = "",
     risk_tolerance: str = "moderate",
@@ -447,9 +448,11 @@ async def job_position_decision(
     holidays: str = "",
     telegram_bot: TelegramBot | None = None,
 ) -> None:
-    """포지션 전략 결정 — 개장 전 08:30 KST(화·금). 보유 포지션 분석→결정 큐 적재.
+    """포지션 전략 결정 — 개장 전 08:30 KST(평일). 신규 후보+보유 분석→결정 큐 적재.
 
-    실행은 개장 후 job_execution_drain이 처리한다. 신선도 게이트로 stale 매매 차단.
+    유니버스 스캔(scan_universe, top-N + SMA20>SMA60)으로 신규 진입 후보를 발굴하고
+    보유 종목과 합쳐 한 번에 분석한다. 실행은 개장 후 job_execution_drain이 처리하며,
+    신선도 게이트로 stale 매매를 차단한다.
     """
     ok, detail = await _check_data_freshness(
         session_factory,
@@ -466,11 +469,20 @@ async def job_position_decision(
         return
 
     positions = await position_manager.get_open(account_id=account_id)
-    if not positions:
-        logger.info("job.position_decision.skip", reason="no_open_positions", account_id=account_id)
+    held = {p.symbol for p in positions}
+
+    # 신규 진입 후보 — 유니버스 스캔(top-N + SMA20>SMA60). 보유 종목과 합쳐 한 번에 분석.
+    candidates: set[str] = set()
+    if strategy is not None:
+        candidates = set(await strategy.scan_universe())
+
+    symbols = list(held | candidates)
+    if not symbols:
+        logger.info(
+            "job.position_decision.skip", reason="no_symbols", account_id=account_id
+        )
         return
 
-    symbols = list({p.symbol for p in positions})
     result = await orchestrator.execute(
         symbols,
         investment_prompt=investment_prompt,
@@ -489,7 +501,9 @@ async def job_position_decision(
         "job.position_decision.enqueued",
         count=enqueued,
         session_id=str(result.session_id),
-        positions_count=len(positions),
+        held=len(held),
+        candidates=len(candidates),
+        symbols=len(symbols),
         account_id=account_id,
     )
 

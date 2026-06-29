@@ -58,6 +58,12 @@ class PositionTradingStrategy(Strategy):
     # 유니버스 필터링 기준
     MIN_AVG_TRADING_VALUE: int = 1_000_000_000  # 20일 평균 거래대금 10억원 이상
     TRADING_VALUE_LOOKBACK: int = 30  # 거래대금 평균 계산 기간 (달력일, 약 20거래일)
+    VOLUME_TOP_N: int = 50  # 거래대금 상위 N 종목으로 LLM 분석 대상 제한 (비용 가드)
+
+    # 추세 사전필터 (정배열 상승 추세 종목만 LLM에 투입)
+    TREND_SMA_SHORT: int = 20  # 단기 이동평균 기간
+    TREND_SMA_LONG: int = 60  # 장기 이동평균 기간
+    TREND_LOOKBACK: int = 100  # SMA60 계산용 종가 조회 기간 (달력일, 약 70거래일)
 
     # 진입 조건 임계값
     MIN_CONFIDENCE: Decimal = Decimal("0.60")  # LLM confidence 최소 0.60
@@ -92,9 +98,10 @@ class PositionTradingStrategy(Strategy):
 
         # 상세 로직:
         # 1. StockMaster에서 KOSPI/KOSDAQ 활성 종목 조회
-        # 2. DailyOHLCV에서 최근 20일 평균 거래대금 10억↑ 필터 (DB 집계)
-        # 3. 이미 보유 중인 포지션 트레이딩 종목 제외
-        # 4. 최종 종목 코드 리스트 반환
+        # 2. DailyOHLCV 20일 평균 거래대금 10억↑ 중 상위 VOLUME_TOP_N (DB 집계)
+        # 3. 추세 사전필터: SMA20 > SMA60 (정배열 상승 추세 종목만)
+        # 4. 이미 보유 중인 포지션 트레이딩 종목 제외
+        # 5. 최종 종목 코드 리스트 반환
         """
         async with self._session_factory() as session:
             # Step 1: 활성 종목 조회
@@ -113,47 +120,80 @@ class PositionTradingStrategy(Strategy):
                 logger.info("scan_universe.no_active", strategy="position")
                 return []
 
-            # Step 2: 최근 20일 평균 거래대금 필터 (DB aggregate)
-            # trading_value가 NULL인 경우를 고려하여 COALESCE 사용
-            # 전체 OHLCV를 Python에 로딩하지 않고 DB에서 집계
+            # Step 2: 20일 평균 거래대금 게이트 + 상위 N 제한 (DB aggregate)
+            # trading_value가 NULL인 경우를 고려하여 COALESCE 사용.
+            # 상위 N으로 잘라 LLM 분석 대상(비용)을 제한한다.
+            avg_value = func.avg(func.coalesce(DailyOHLCV.trading_value, 0))
             ohlcv_stmt = (
-                select(
-                    DailyOHLCV.symbol,
-                    func.avg(func.coalesce(DailyOHLCV.trading_value, 0)).label(
-                        "avg_value"
-                    ),
-                )
+                select(DailyOHLCV.symbol, avg_value.label("avg_value"))
                 .where(
                     DailyOHLCV.symbol.in_(active_symbols),
                     DailyOHLCV.date
                     >= func.current_date() - self.TRADING_VALUE_LOOKBACK,
                 )
                 .group_by(DailyOHLCV.symbol)
-                .having(
-                    func.avg(func.coalesce(DailyOHLCV.trading_value, 0))
-                    >= self.MIN_AVG_TRADING_VALUE
-                )
+                .having(avg_value >= self.MIN_AVG_TRADING_VALUE)
+                .order_by(avg_value.desc())
+                .limit(self.VOLUME_TOP_N)
             )
             ohlcv_result = await session.execute(ohlcv_stmt)
-            liquid_symbols = [row[0] for row in ohlcv_result.all()]
+            top_volume_symbols = [row[0] for row in ohlcv_result.all()]
 
-        if not liquid_symbols:
-            logger.info("scan_universe.no_liquid", strategy="position")
+            if not top_volume_symbols:
+                logger.info("scan_universe.no_liquid", strategy="position")
+                return []
+
+            # Step 3: 추세 사전필터용 종가 조회 (SMA20/SMA60 계산)
+            close_stmt = (
+                select(DailyOHLCV.symbol, DailyOHLCV.date, DailyOHLCV.close)
+                .where(
+                    DailyOHLCV.symbol.in_(top_volume_symbols),
+                    DailyOHLCV.date >= func.current_date() - self.TREND_LOOKBACK,
+                )
+                .order_by(DailyOHLCV.symbol, DailyOHLCV.date)
+            )
+            close_result = await session.execute(close_stmt)
+            close_rows = close_result.all()
+
+        # 종목별 종가 시리즈 구성 (date 순 정렬은 SQL에서 보장됨)
+        symbol_closes: dict[str, list[float]] = {}
+        for symbol, _dt, close in close_rows:
+            symbol_closes.setdefault(symbol, []).append(float(close))
+
+        # Step 3-1: 추세 게이트 — SMA20 > SMA60 (정배열). SMA60에 최소 60봉 필요.
+        trend_passed: list[str] = []
+        for symbol, closes in symbol_closes.items():
+            if len(closes) < self.TREND_SMA_LONG:
+                continue
+            close_series = pd.Series(closes)
+            smas = calculate_sma(
+                close_series, periods=[self.TREND_SMA_SHORT, self.TREND_SMA_LONG]
+            )
+            sma_short = smas[self.TREND_SMA_SHORT].dropna()
+            sma_long = smas[self.TREND_SMA_LONG].dropna()
+            if sma_short.empty or sma_long.empty:
+                continue
+            if float(sma_short.iloc[-1]) > float(sma_long.iloc[-1]):
+                trend_passed.append(symbol)
+
+        if not trend_passed:
+            logger.info("scan_universe.no_uptrend", strategy="position")
             return []
 
-        # Step 3: 이미 보유 중인 포지션 트레이딩 종목 제외
+        # Step 4: 이미 보유 중인 포지션 트레이딩 종목 제외
         # 동일 전략 타입의 오픈 포지션을 조회하여 중복 진입 방지
         open_positions = await self.get_open_positions(
             strategy_type=StrategyType.POSITION
         )
         held_symbols = {pos.symbol for pos in open_positions}
-        candidates = [s for s in liquid_symbols if s not in held_symbols]
+        candidates = [s for s in trend_passed if s not in held_symbols]
 
         logger.info(
             "scan_universe.result",
             strategy="position",
             active=len(active_symbols),
-            liquid=len(liquid_symbols),
+            top_volume=len(top_volume_symbols),
+            trend_passed=len(trend_passed),
             held=len(held_symbols),
             candidates=len(candidates),
         )

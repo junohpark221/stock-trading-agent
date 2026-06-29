@@ -359,6 +359,39 @@ class TestJobAccountParams:
         orchestrator.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_position_decision_scans_universe_for_new_entries(self, monkeypatch):
+        """보유 0이어도 scan_universe 후보가 있으면 분석(신규 진입)."""
+        monkeypatch.setattr(
+            "src.scheduler.jobs._check_data_freshness",
+            AsyncMock(return_value=(True, {"coverage_pct": 100.0, "max_date": "x"})),
+        )
+        position_manager = AsyncMock()
+        position_manager.get_open = AsyncMock(return_value=[])  # 보유 없음
+
+        strategy = AsyncMock()
+        strategy.scan_universe = AsyncMock(return_value=["035420", "000660"])
+
+        orchestrator = AsyncMock()
+        orchestrator.execute = AsyncMock(
+            return_value=MagicMock(session_id="test", trade_decisions=[])
+        )
+
+        await job_position_decision(
+            orchestrator=orchestrator,
+            position_manager=position_manager,
+            queue=AsyncMock(),
+            session_factory=MagicMock(),
+            settings=make_settings(),
+            strategy=strategy,
+            account_id="acct-2",
+        )
+
+        strategy.scan_universe.assert_awaited_once()
+        orchestrator.execute.assert_awaited_once()
+        called_symbols = orchestrator.execute.await_args.args[0]
+        assert set(called_symbols) == {"035420", "000660"}
+
+    @pytest.mark.asyncio
     async def test_decision_skips_on_stale_data(self, monkeypatch):
         """신선도 미달이면 분석을 보류(orchestrator 미호출)."""
         monkeypatch.setattr(

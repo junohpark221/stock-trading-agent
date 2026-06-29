@@ -819,7 +819,7 @@ class SchedulerFactory:
                 ),
             )
 
-        # position_decision:{account_id} — position 전략 계좌만 (화·금)
+        # position_decision:{account_id} — position 전략 계좌만 (평일)
         if ctx.strategy_type == StrategyType.POSITION:
             pa_days = SchedulerEngine._parse_day_of_week(s.POSITION_ANALYSIS_DAYS)
             engine.register_job(
@@ -831,6 +831,7 @@ class SchedulerFactory:
                     queue=decision_queue,
                     session_factory=session_factory,
                     settings=s,
+                    strategy=ctx.strategy,
                     account_id=aid,
                     investment_prompt=ctx.investment_prompt,
                     risk_tolerance=ctx.risk_tolerance,

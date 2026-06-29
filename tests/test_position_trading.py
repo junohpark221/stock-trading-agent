@@ -258,64 +258,93 @@ class TestCalculateATR:
 
 
 class TestScanUniverse:
-    @pytest.mark.asyncio
-    async def test_filters_by_market_cap_and_liquidity(self):
-        """시총 + 거래대금 필터링 동작 확인."""
+    @staticmethod
+    def _close_rows(symbol_trends: dict[str, str], bars: int = 70):
+        """종목별 종가 행(symbol, date, close) 생성.
+
+        trend: 'up'(SMA20>SMA60 정배열) / 'down'(역배열) / 'short'(봉 부족).
+        """
+        rows = []
+        for sym, trend in symbol_trends.items():
+            n = 30 if trend == "short" else bars
+            for i in range(n):
+                # up/short: 상승, down: 하락 (모두 양수 유지)
+                price = 10000.0 + ((n - i) if trend == "down" else i) * 100
+                rows.append((sym, i, price))
+        return rows
+
+    @staticmethod
+    def _session_with(master, ohlcv, close):
         mock_session = AsyncMock()
+        m, o, c = MagicMock(), MagicMock(), MagicMock()
+        m.all.return_value = master
+        o.all.return_value = ohlcv
+        c.all.return_value = close
+        mock_session.execute = AsyncMock(side_effect=[m, o, c])
+        return mock_session
 
-        # 첫 번째 쿼리: StockMaster (시총 필터)
-        master_result = MagicMock()
-        master_result.all.return_value = [("005930",), ("000660",), ("035420",)]
-
-        # 두 번째 쿼리: DailyOHLCV (거래대금 필터)
-        ohlcv_result = MagicMock()
-        ohlcv_result.all.return_value = [("005930",), ("000660",)]
-
-        mock_session.execute = AsyncMock(
-            side_effect=[master_result, ohlcv_result]
+    @pytest.mark.asyncio
+    async def test_uptrend_candidates_pass(self):
+        """거래대금 상위 + SMA20>SMA60 정배열 종목만 통과."""
+        mock_session = self._session_with(
+            master=[("005930",), ("000660",), ("035420",)],
+            ohlcv=[("005930",), ("000660",)],  # top-N 거래대금 통과
+            close=self._close_rows({"005930": "up", "000660": "up"}),
         )
-
-        strategy = _make_strategy(
-            session_factory=_mock_session_factory(mock_session)
-        )
-
+        strategy = _make_strategy(session_factory=_mock_session_factory(mock_session))
         with patch.object(strategy, "get_open_positions", new_callable=AsyncMock) as mock_open:
             mock_open.return_value = []
             result = await strategy.scan_universe()
+        assert sorted(result) == ["000660", "005930"]
 
-        assert result == ["005930", "000660"]
+    @pytest.mark.asyncio
+    async def test_downtrend_filtered(self):
+        """SMA20 ≤ SMA60(역배열) 종목은 제외."""
+        mock_session = self._session_with(
+            master=[("005930",), ("000660",)],
+            ohlcv=[("005930",), ("000660",)],
+            close=self._close_rows({"005930": "up", "000660": "down"}),
+        )
+        strategy = _make_strategy(session_factory=_mock_session_factory(mock_session))
+        with patch.object(strategy, "get_open_positions", new_callable=AsyncMock) as mock_open:
+            mock_open.return_value = []
+            result = await strategy.scan_universe()
+        assert result == ["005930"]
+
+    @pytest.mark.asyncio
+    async def test_insufficient_bars_filtered(self):
+        """SMA60 계산에 60봉 미만이면 제외."""
+        mock_session = self._session_with(
+            master=[("005930",), ("000660",)],
+            ohlcv=[("005930",), ("000660",)],
+            close=self._close_rows({"005930": "up", "000660": "short"}),
+        )
+        strategy = _make_strategy(session_factory=_mock_session_factory(mock_session))
+        with patch.object(strategy, "get_open_positions", new_callable=AsyncMock) as mock_open:
+            mock_open.return_value = []
+            result = await strategy.scan_universe()
+        assert result == ["005930"]
 
     @pytest.mark.asyncio
     async def test_excludes_held_positions(self):
         """이미 보유 중인 종목 제외."""
-        mock_session = AsyncMock()
-
-        master_result = MagicMock()
-        master_result.all.return_value = [("005930",), ("000660",)]
-        ohlcv_result = MagicMock()
-        ohlcv_result.all.return_value = [("005930",), ("000660",)]
-
-        mock_session.execute = AsyncMock(
-            side_effect=[master_result, ohlcv_result]
+        mock_session = self._session_with(
+            master=[("005930",), ("000660",)],
+            ohlcv=[("005930",), ("000660",)],
+            close=self._close_rows({"005930": "up", "000660": "up"}),
         )
-
-        strategy = _make_strategy(
-            session_factory=_mock_session_factory(mock_session)
-        )
-
+        strategy = _make_strategy(session_factory=_mock_session_factory(mock_session))
         held_pos = MagicMock()
         held_pos.symbol = "005930"
         with patch.object(strategy, "get_open_positions", new_callable=AsyncMock) as mock_open:
             mock_open.return_value = [held_pos]
             result = await strategy.scan_universe()
-
         assert result == ["000660"]
 
     @pytest.mark.asyncio
-    async def test_empty_when_no_large_cap(self):
-        """시총 조건 만족 종목 없으면 빈 리스트."""
+    async def test_empty_when_no_active(self):
+        """활성 종목 없으면 빈 리스트(조기 종료)."""
         mock_session = AsyncMock()
-
         master_result = MagicMock()
         master_result.all.return_value = []
         mock_session.execute = AsyncMock(return_value=master_result)

@@ -308,7 +308,7 @@ class TestPhase6Config:
         # 배치 재구성: 결정/실행 분리 + 게이트 (2026-06-29)
         assert s.PRE_OPEN_PREP_TIME == "08:00"
         assert s.DECISION_TIME == "08:30"
-        assert s.POSITION_ANALYSIS_DAYS == "tue,fri"  # 휴장 토 → 평일 정정
+        assert s.POSITION_ANALYSIS_DAYS == "mon,tue,wed,thu,fri"  # 평일 매일
         assert s.EXECUTION_DRAIN_INTERVAL_MIN == 5
         assert s.EXECUTION_GAP_GUARD_PCT == 3.0
         assert s.DATA_FRESHNESS_MIN_COVERAGE_PCT == 95.0

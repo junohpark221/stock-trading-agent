@@ -163,7 +163,7 @@ class Settings(BaseSettings):
     DATA_FRESHNESS_MIN_COVERAGE_PCT: float = 95.0  # 직전 거래일 일봉 커버리지 최소(%)
 
     SWING_ANALYSIS_DAYS: str = "mon,tue,wed,thu,fri"  # 스윙 결정 실행 요일(평일)
-    POSITION_ANALYSIS_DAYS: str = "tue,fri"           # 포지션 결정 요일(휴장 토→평일 정정)
+    POSITION_ANALYSIS_DAYS: str = "mon,tue,wed,thu,fri"  # 포지션 결정 요일(평일 매일 — 신규 진입 포착)
     STOP_LOSS_CHECK_INTERVAL_MIN: int = 5
     DAILY_REPORT_TIME: str = "20:00"
     WEEKLY_REPORT_DAY: str = "sat"

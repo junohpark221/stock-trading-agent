@@ -394,6 +394,53 @@ class TestWrapJob:
         await engine._wrap_job("test_job", fn)
 
     @pytest.mark.asyncio
+    async def test_success_low_freq_sends_telegram(
+        self, mock_session_factory, settings_enabled
+    ):
+        """저빈도 잡 성공 → '배치 작업 완료' 알림 발송(유지)."""
+        telegram_bot = AsyncMock()
+        engine = SchedulerEngine(
+            session_factory=mock_session_factory,
+            settings=settings_enabled,
+            telegram_bot=telegram_bot,
+        )
+
+        mock_session = _make_mock_session()
+        mock_session.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", 46))
+        mock_session.get = AsyncMock(return_value=MagicMock())
+        mock_session_factory.return_value = mock_session
+
+        await engine._wrap_job("market_data_collect", AsyncMock())
+
+        telegram_bot.send_message.assert_awaited_once()
+        assert "배치 작업 완료" in telegram_bot.send_message.call_args[0][0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "job_name",
+        ["execution_drain:acct-1", "stop_loss_check:acct-1", "sync_positions_intraday"],
+    )
+    async def test_success_high_freq_silent(
+        self, mock_session_factory, settings_enabled, job_name
+    ):
+        """고빈도 잡 성공 → 완료 핑 미발송(노이즈 방지). 실패 알림은 별개로 유지됨."""
+        telegram_bot = AsyncMock()
+        engine = SchedulerEngine(
+            session_factory=mock_session_factory,
+            settings=settings_enabled,
+            telegram_bot=telegram_bot,
+        )
+
+        mock_session = _make_mock_session()
+        mock_session.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", 47))
+        mock_session.get = AsyncMock(return_value=MagicMock())
+        mock_session_factory.return_value = mock_session
+
+        await engine._wrap_job(job_name, AsyncMock())
+
+        telegram_bot.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_db_insert_failure_still_runs_job(self, engine, mock_session_factory):
         """DB INSERT 실패해도 작업은 실행된다 (fail-open)."""
         # session factory가 에러를 일으키도록

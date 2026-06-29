@@ -3,13 +3,14 @@
 import structlog
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
 from src.api.portfolio_live import fetch_portfolio_view
 from src.api.templates import templates
 from src.db.models.account import Account
+from src.db.models.execution import Order, TradeDecisionQueue
 from src.db.session import get_db_session, get_session_factory
 from src.report.data_fetcher import ReportDataFetcher
 
@@ -85,6 +86,39 @@ async def dashboard(
         "filled": sum(1 for o in todays_orders if o.status == "filled"),
     }
 
+    # 6) 운영 경보 — F-06 거부주문 미해결 + 결정 큐 pending (3단계 매매구조)
+    disapproved_count = (
+        await session.execute(
+            select(func.count(Order.id)).where(
+                or_(
+                    Order.rejection_reason == "disapproved_but_filled",
+                    and_(
+                        Order.approval_status.in_(["rejected", "timeout"]),
+                        Order.status.in_(["filled", "partially_filled"]),
+                    ),
+                )
+            )
+        )
+    ).scalar_one()
+    queue_pending = (
+        await session.execute(
+            select(func.count(TradeDecisionQueue.id)).where(
+                TradeDecisionQueue.status == "pending",
+            )
+        )
+    ).scalar_one()
+
+    # 7) WS 손절 상태 요약 (미가동 시 None)
+    from src.main import get_stoploss_stream
+
+    ws_summary = None
+    stream = get_stoploss_stream()
+    if stream is not None:
+        try:
+            ws_summary = await stream.get_status()
+        except Exception:
+            logger.warning("dashboard_ws_status_failed", exc_info=True)
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "db_status": db_status,
@@ -94,6 +128,9 @@ async def dashboard(
         "recent_orders": recent_orders,
         "order_summary": order_summary,
         "cleanup_msg": cleanup_msg,
+        "disapproved_count": disapproved_count,
+        "queue_pending": queue_pending,
+        "ws_summary": ws_summary,
     })
 
 

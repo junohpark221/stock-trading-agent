@@ -160,6 +160,8 @@ class TestDashboard:
         mock_session.execute.side_effect = _make_execute_results(
             MagicMock(),  # SELECT 1
             [_mock_account()],  # accounts
+            0,  # disapproved order count (F-06)
+            0,  # decision queue pending count
         )
         with (
             patch("src.main.get_redis") as mock_redis,
@@ -184,6 +186,8 @@ class TestDashboard:
         mock_session.execute.side_effect = _make_execute_results(
             MagicMock(),  # SELECT 1
             [],  # accounts
+            0,  # disapproved order count (F-06)
+            0,  # decision queue pending count
         )
         with (
             patch("src.main.get_redis", side_effect=RuntimeError),

@@ -8,6 +8,13 @@
     {% include "partials/account_info.html" %}
 </div>
 
+<!-- 관련 화면 바로가기 -->
+<p>
+    <a href="/admin/decision-queue?account_id={{ account.id }}" role="button" class="outline secondary" style="padding:0.25rem 0.7rem;font-size:0.85rem;">결정 큐</a>
+    <a href="/admin/entry-snapshots?account_id={{ account.id }}" role="button" class="outline secondary" style="padding:0.25rem 0.7rem;font-size:0.85rem;">진입 스냅샷</a>
+    <a href="/admin/exec-monitor" role="button" class="outline secondary" style="padding:0.25rem 0.7rem;font-size:0.85rem;">실행 모니터</a>
+</p>
+
 <!-- 잔고 요약 -->
 <section>
     <h2>잔고 요약</h2>

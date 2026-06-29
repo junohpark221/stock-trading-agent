@@ -3,6 +3,16 @@
 {% block title %}대시보드 - Trading Agent{% endblock %}
 
 {% block content %}
+{% import "partials/_macros.html" as ui %}
+
+<!-- 운영 경보 (F-06 거부주문) -->
+{% if disapproved_count %}
+<article class="danger-zone">
+    <strong>⚠ 거부주문 경보 {{ disapproved_count }}건</strong> — 승인 거부·만료인데 체결된 고위험 주문.
+    <a href="/admin/exec-monitor" role="button" class="outline" style="padding:0.2rem 0.6rem;font-size:0.85rem;">실행 모니터 →</a>
+</article>
+{% endif %}
+
 <!-- 시스템 상태 -->
 <section>
     <h2>시스템 상태</h2>
@@ -33,6 +43,15 @@
             <p><span class="status-dot status-disconnected"></span>중지됨</p>
             {% endif %}
             <small>등록 작업: {{ scheduler.get("jobs", [])|length }}개</small>
+        </article>
+        <article>
+            <header>실시간 손절 (WS)</header>
+            {% if ws_summary and ws_summary.enabled and ws_summary.stream_connected %}
+            <p><span class="status-dot status-connected"></span>구독 {{ ws_summary.watched_count }}종목</p>
+            {% else %}
+            <p><span class="status-dot status-disconnected"></span>비활성</p>
+            {% endif %}
+            <small><a href="/admin/decision-queue">결정 큐 대기: {{ queue_pending }}건</a></small>
         </article>
     </div>
 </section>

@@ -262,6 +262,25 @@ class KISPsblOrderOutput(BaseModel):
     psbl_qty_calc_unpr: str = ""    # 가능수량계산단가
 
 
+# ── 매도가능조회 (TTTC8408R output) ────────────────────────────────
+
+class KISPsblSellOutput(BaseModel):
+    """매도가능수량조회 응답 — ``TTTC8408R`` ``output`` 객체.
+
+    KIS 엔드포인트 ``/uapi/domestic-stock/v1/trading/inquire-psbl-sell``.
+
+    보유수량(``cblc_qty``)에서 미체결 매도주문·결제미수 등으로 줄어든
+    **실제 주문가능수량(``ord_psbl_qty``)**을 조회한다(F-12 매도 preflight).
+    KIS 모의투자(VTTC...)는 본 TR을 미지원할 수 있으므로 호출부에서
+    graceful 폴백(None)을 전제로 한다.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    ord_psbl_qty: str = ""          # 주문가능수량 (실제 매도 가능)
+    cblc_qty: str = ""              # 잔고수량 (보유)
+
+
 # ── 주문체결조회 (TTTC0081R/VTTC0081R output1 배열) ─────────────────
 
 class KISOrderCcldOutput(BaseModel):
@@ -307,6 +326,7 @@ __all__ = [
     "KISBalanceOutput2",
     "KISBalanceRlzPlOutput2",
     "KISPsblOrderOutput",
+    "KISPsblSellOutput",
     "_to_decimal",
     "_to_int",
 ]

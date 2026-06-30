@@ -514,6 +514,63 @@ class TestUpdateStopLoss:
             await manager.update_stop_loss(1, Decimal("69000"))
 
 
+class TestTransitionToTrailing:
+    """부분익절 후 잔량 트레일링 전환 (F-10 Phase 2)."""
+
+    @pytest.mark.asyncio
+    async def test_clears_tp_and_raises_stop_to_break_even(self) -> None:
+        """take_profit_price 소거 + stop을 본전(평단)으로 상향."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(
+            stop_loss_price=Decimal("67000"),  # 진입가-ATR×2 (본전 아래)
+            take_profit_price=Decimal("77000"),
+            avg_cost=Decimal("70000"),
+        )
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)
+
+        await manager.transition_to_trailing(1, break_even_price=Decimal("70000"))
+
+        assert record.take_profit_price is None
+        assert record.stop_loss_price == Decimal("70000")  # 본전으로 상향
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_keeps_higher_existing_stop(self) -> None:
+        """기존 손절이 이미 본전보다 높으면 유지(하향 안 함)."""
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(
+            stop_loss_price=Decimal("72000"),  # 이미 본전 위 (트레일링 진행분)
+            avg_cost=Decimal("70000"),
+        )
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)
+
+        await manager.transition_to_trailing(1, break_even_price=Decimal("70000"))
+
+        assert record.take_profit_price is None
+        assert record.stop_loss_price == Decimal("72000")  # 유지
+
+    @pytest.mark.asyncio
+    async def test_not_found(self) -> None:
+        factory, session = _mock_session_factory()
+        session.execute.return_value = _mock_scalar_result(None)
+        manager = PositionManager(factory)
+
+        with pytest.raises(DatabaseError, match="Position not found"):
+            await manager.transition_to_trailing(999, break_even_price=Decimal("70000"))
+
+    @pytest.mark.asyncio
+    async def test_closed_position(self) -> None:
+        factory, session = _mock_session_factory()
+        record = _mock_position_record(status="closed")
+        session.execute.return_value = _mock_scalar_result(record)
+        manager = PositionManager(factory)
+
+        with pytest.raises(DatabaseError, match="Cannot update closed"):
+            await manager.transition_to_trailing(1, break_even_price=Decimal("70000"))
+
+
 # ===========================================================================
 # 학습 메모리 기록 훅 (전량 청산 시 record_trade_outcome)
 # ===========================================================================

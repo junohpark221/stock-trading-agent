@@ -175,6 +175,8 @@ class ExitExecutionService:
                 account_id=account_id,
                 account_label=account_label,
                 broker=broker,
+                # 부분익절 사다리(F-10 Phase 2): None이면 전량(기존 동작).
+                exit_quantity=signal.exit_quantity,
             )
         except Exception as exc:
             logger.exception(

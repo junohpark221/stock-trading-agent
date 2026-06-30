@@ -171,6 +171,7 @@ class TestImmediateSignal:
             account_id="default",
             account_label="",
             broker=None,
+            exit_quantity=None,
         )
 
 

@@ -10,7 +10,8 @@ import pytest
 
 from src.broker.kis.ws_codec import PriceTick
 from src.broker.kis.ws_price import KISPriceStream
-from src.execution.exit_coordinator import ExitCoordinator
+from src.core.enums import ExitReason
+from src.execution.exit_coordinator import PHASE_PARTIAL_TP, ExitCoordinator
 from src.execution.stoploss_stream import StopLossStreamService
 from src.strategy.exit_checker import ExitConditionChecker
 
@@ -272,3 +273,45 @@ async def test_start_noop_when_disabled():
     svc._settings.STOP_LOSS_WS_ENABLED = False
     await svc.start([])
     assert svc._stream is None
+
+
+# ── F-10 Phase 2: 부분익절 사다리 (POSITION) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_position_take_profit_triggers_partial():
+    """POSITION이 익절가(+3ATR) 도달 → 33% 부분익절 신호(PARTIAL_TAKE_PROFIT)."""
+    svc, exit_service, _pm, coord = _make_service()
+    pos = _make_position(entry=Decimal("70000"), stop=Decimal("66000"))
+    pos.strategy_type = "position"
+    pos.take_profit_price = Decimal("76000")
+    pos.quantity = 10
+    svc._positions = [pos]
+
+    await svc._on_tick(PriceTick(symbol="005930", price=Decimal("77000"), time="093045"))
+
+    exit_service.process_exit_signals.assert_awaited_once()
+    signal = exit_service.process_exit_signals.call_args[0][0][0]
+    assert signal.reason == ExitReason.PARTIAL_TAKE_PROFIT
+    assert signal.exit_quantity == 3  # 33% × 10
+    # partial_tp 위상으로 선점(보호 레그와 독립)
+    assert await coord.is_claimed(pos.id, PHASE_PARTIAL_TP) is True
+
+
+@pytest.mark.asyncio
+async def test_swing_take_profit_full_exit_unchanged():
+    """SWING은 사다리 미적용 — 익절가 도달 시 전량 익절(회귀 가드)."""
+    svc, exit_service, _pm, _ = _make_service()
+    pos = _make_position(entry=Decimal("70000"), stop=Decimal("66000"))
+    pos.strategy_type = "swing"
+    pos.take_profit_price = Decimal("73000")
+    pos.trailing_stop_pct = None  # 트레일링 비활성 → 익절가 도달 시 매도
+    pos.quantity = 10
+    svc._positions = [pos]
+
+    await svc._on_tick(PriceTick(symbol="005930", price=Decimal("74000"), time="093045"))
+
+    exit_service.process_exit_signals.assert_awaited_once()
+    signal = exit_service.process_exit_signals.call_args[0][0][0]
+    assert signal.reason == ExitReason.TAKE_PROFIT
+    assert signal.exit_quantity is None  # 전량

@@ -484,6 +484,64 @@ class PositionManager:
             highest_price=str(price),
         )
 
+    async def transition_to_trailing(
+        self, position_id: int, *, break_even_price: Decimal
+    ) -> None:
+        """부분익절 후 잔량을 트레일링 모드로 전환(F-10 Phase 2).
+
+        - ``take_profit_price = None``: 익절가 도달 재발화 차단(이후 사이클은
+          트레일링/손절/시간 청산만 평가).
+        - ``stop_loss_price = max(기존 손절, break_even_price)``: 부분익절로 이익을
+          확정한 잔량을 본전 플로어로 보호('무위험 러너'). 동적 트레일링과 병행
+          (둘 중 먼저 닿는 쪽이 청산).
+
+        Parameters
+        ----------
+        position_id: 포지션 ID
+        break_even_price: 본전가(보통 평단가 ``avg_cost``).
+
+        Raises
+        ------
+        DatabaseError: 포지션을 찾을 수 없거나 이미 청산된 경우
+        """
+        try:
+            async with self._session_factory() as session:
+                stmt = select(PositionRecord).where(
+                    PositionRecord.id == position_id
+                )
+                result = await session.execute(stmt)
+                record = result.scalar_one_or_none()
+
+                if record is None:
+                    raise DatabaseError(
+                        f"Position not found: id={position_id}"
+                    )
+
+                if record.status == "closed":
+                    raise DatabaseError(
+                        f"Cannot update closed position: id={position_id}"
+                    )
+
+                record.take_profit_price = None
+                current_stop = record.stop_loss_price or Decimal("0")
+                if break_even_price > current_stop:
+                    record.stop_loss_price = break_even_price
+                await session.commit()
+                new_stop = record.stop_loss_price
+        except DatabaseError:
+            raise
+        except Exception as exc:
+            raise DatabaseError(
+                f"Trailing transition failed: {exc}"
+            ) from exc
+
+        logger.info(
+            "position.transition_to_trailing",
+            id=position_id,
+            break_even_price=str(break_even_price),
+            new_stop_loss=str(new_stop),
+        )
+
     async def update_quantity(
         self,
         position_id: int,

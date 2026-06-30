@@ -26,7 +26,13 @@ from typing import TYPE_CHECKING
 import structlog
 
 from src.broker.kis.ws_price import KISPriceStream
-from src.strategy.trailing import is_trailing_active, trailing_stop_price
+from src.core.enums import ExitReason
+from src.execution.exit_coordinator import exit_phase
+from src.strategy.trailing import (
+    is_trailing_active,
+    partial_tp_quantity,
+    trailing_stop_price,
+)
 
 if TYPE_CHECKING:
     from src.broker.credentials import AccountCredentials
@@ -230,7 +236,18 @@ class StopLossStreamService:
             tp_signal = deps.exit_checker.check_take_profit(
                 position, current_price, unrealized_pnl_pct
             )
-            if tp_signal is not None and not trailing_on:
+            pq = (
+                partial_tp_quantity(position.strategy_type, position.quantity)
+                if tp_signal is not None and position.take_profit_price is not None
+                else None
+            )
+            if tp_signal is not None and pq is not None:
+                # F-10 Phase 2: POSITION이 +3ATR(익절가) 도달 → pq주 부분익절 후
+                # 잔량은 트레일링으로 전환(체결 시 take_profit_price 소거 → 재발화 차단).
+                tp_signal.exit_quantity = pq
+                tp_signal.reason = ExitReason.PARTIAL_TAKE_PROFIT
+                signal = tp_signal
+            elif tp_signal is not None and not trailing_on:
                 # 트레일링 미설정/비활성 → 익절가 도달 시 매도.
                 signal = tp_signal
             elif trailing_on:
@@ -250,11 +267,12 @@ class StopLossStreamService:
         if signal is None:
             return
 
-        # 이중 청산 방지: position_id 선점 성공 시에만 발주.
-        if not await self._coordinator.try_claim(position.id):
+        # 이중 청산 방지: (position_id, phase) 선점 성공 시에만 발주(F-10 Phase 2 복합키).
+        phase = exit_phase(signal.reason)
+        if not await self._coordinator.try_claim(position.id, phase):
             logger.debug(
                 "stoploss_stream.skip_inflight",
-                symbol=position.symbol, position_id=position.id,
+                symbol=position.symbol, position_id=position.id, phase=phase,
             )
             return
 
@@ -270,7 +288,7 @@ class StopLossStreamService:
                 account_label=deps.account_label,
             )
         except Exception:
-            await self._coordinator.release(position.id)
+            await self._coordinator.release(position.id, phase)
             logger.exception(
                 "stoploss_stream.dispatch_failed",
                 symbol=position.symbol, position_id=position.id,
@@ -279,7 +297,7 @@ class StopLossStreamService:
 
         # 발주 실패 시 재시도 가능하도록 클레임 해제(성공 클레임은 TTL까지 보유).
         if not any(r.success for r in results):
-            await self._coordinator.release(position.id)
+            await self._coordinator.release(position.id, phase)
         logger.info(
             "stoploss_stream.exit_triggered",
             symbol=position.symbol,

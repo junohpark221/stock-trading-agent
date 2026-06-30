@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.execution.exit_coordinator import ExitCoordinator
+from src.core.enums import ExitReason
+from src.execution.exit_coordinator import (
+    PHASE_PARTIAL_TP,
+    PHASE_PROTECTIVE,
+    ExitCoordinator,
+    exit_phase,
+)
 
 
 @pytest.mark.asyncio
@@ -52,3 +58,49 @@ async def test_release_unknown_is_noop():
     coord = ExitCoordinator(ttl_sec=100)
     await coord.release(999)  # 미선점 해제는 무해
     assert await coord.try_claim(999) is True
+
+
+# ── F-10 Phase 2: (position_id, phase) 복합키 ──────────────────────────
+
+
+def test_exit_phase_mapping():
+    assert exit_phase(ExitReason.PARTIAL_TAKE_PROFIT) == PHASE_PARTIAL_TP
+    assert exit_phase(ExitReason.STOP_LOSS) == PHASE_PROTECTIVE
+    assert exit_phase(ExitReason.TRAILING_STOP) == PHASE_PROTECTIVE
+    assert exit_phase(ExitReason.TAKE_PROFIT) == PHASE_PROTECTIVE
+
+
+@pytest.mark.asyncio
+async def test_partial_and_protective_phases_independent():
+    """같은 포지션이라도 partial_tp/protective 레그는 독립 선점된다."""
+    coord = ExitCoordinator(ttl_sec=100)
+    assert await coord.try_claim(7, PHASE_PARTIAL_TP) is True
+    # 부분익절이 in-flight여도 보호(손절/트레일) 레그는 막히지 않음
+    assert await coord.try_claim(7, PHASE_PROTECTIVE) is True
+
+
+@pytest.mark.asyncio
+async def test_same_phase_still_dedups():
+    """같은 위상 중복은 그대로 차단(dedup 유지)."""
+    coord = ExitCoordinator(ttl_sec=100)
+    assert await coord.try_claim(7, PHASE_PARTIAL_TP) is True
+    assert await coord.try_claim(7, PHASE_PARTIAL_TP) is False
+
+
+@pytest.mark.asyncio
+async def test_release_phase_specific():
+    """해제는 위상별로 동작한다."""
+    coord = ExitCoordinator(ttl_sec=100)
+    await coord.try_claim(7, PHASE_PARTIAL_TP)
+    await coord.try_claim(7, PHASE_PROTECTIVE)
+    await coord.release(7, PHASE_PARTIAL_TP)
+    assert await coord.is_claimed(7, PHASE_PARTIAL_TP) is False
+    assert await coord.is_claimed(7, PHASE_PROTECTIVE) is True
+
+
+@pytest.mark.asyncio
+async def test_snapshot_includes_phase():
+    coord = ExitCoordinator(ttl_sec=100)
+    await coord.try_claim(7, PHASE_PARTIAL_TP)
+    snap = await coord.snapshot()
+    assert snap == [{"position_id": 7, "phase": PHASE_PARTIAL_TP, "age_sec": snap[0]["age_sec"]}]

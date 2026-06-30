@@ -194,6 +194,7 @@ class ExitReason(StrEnum):
 
     STOP_LOSS = "stop_loss"
     TAKE_PROFIT = "take_profit"
+    PARTIAL_TAKE_PROFIT = "partial_take_profit"
     TRAILING_STOP = "trailing_stop"
     TIME_BASED = "time_based"
     FUNDAMENTAL = "fundamental"

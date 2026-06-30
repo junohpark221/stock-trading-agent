@@ -134,6 +134,7 @@ def _event_to_order_result(
 _EXIT_REASON_TO_ACTION: dict[str, DecisionAction] = {
     ExitReason.STOP_LOSS: DecisionAction.STOP_LOSS,
     ExitReason.TAKE_PROFIT: DecisionAction.TAKE_PROFIT,
+    ExitReason.PARTIAL_TAKE_PROFIT: DecisionAction.TAKE_PROFIT,
     ExitReason.TRAILING_STOP: DecisionAction.SELL,
     ExitReason.TIME_BASED: DecisionAction.SELL,
     ExitReason.FUNDAMENTAL: DecisionAction.SELL,
@@ -1043,6 +1044,28 @@ class OrderExecutor:
             decision_ids=decision_ids,
         )
 
+    @staticmethod
+    def _resolve_sellable_quantity(
+        quantity: int, sellable: int | None, *, is_stop_loss: bool
+    ) -> int | None:
+        """매도 preflight 결정 — 발주 수량을 매도가능수량으로 클램프(F-12).
+
+        Returns:
+            발주할 수량(클램프 가능). ``None``이면 매도 스킵.
+
+        규칙(사용자 확정: 클램프 + 손절 예외):
+        - ``sellable is None``(조회 불가/실패/모의) → 원수량 유지(클램프 안 함).
+        - ``sellable >= quantity`` → 원수량 유지.
+        - ``0 < sellable < quantity`` → ``sellable``로 축소(클램프).
+        - ``sellable <= 0`` → 긴급 손절은 원수량 유지(스킵 안 함, 스트랜딩 방지),
+          그 외는 ``None``(스킵).
+        """
+        if sellable is None or sellable >= quantity:
+            return quantity
+        if sellable > 0:
+            return sellable
+        return quantity if is_stop_loss else None
+
     async def execute_exit(
         self,
         *,
@@ -1186,6 +1209,84 @@ class OrderExecutor:
                     web_verify_result=verification.result, decision_ids=decision_ids,
                     error=f"청산 승인 {approval_status.value}",
                 )
+
+            # 5-pre. 매도 preflight (F-12): 매도가능수량(ord_psbl_qty) 확인 후 클램프.
+            # 보유수량과 달리 미체결 매도주문·결제미수로 줄어든 실제 매도가능수량을
+            # 초과하면 KIS가 거부하므로 사전 클램프. 조회 불가(None)면 미적용.
+            # 긴급 손절은 절대 스킵하지 않는다(포지션 스트랜딩 방지).
+            sellable = await effective_broker.get_sellable_quantity(symbol)
+            # 계약은 int|None이나, 브로커 구현 이상 시에도 청산이 깨지지 않도록
+            # 비-int는 None(=preflight 미적용)으로 폴백(fail-open).
+            if not isinstance(sellable, int) or isinstance(sellable, bool):
+                sellable = None
+            resolved_qty = self._resolve_sellable_quantity(
+                quantity, sellable, is_stop_loss=is_stop_loss
+            )
+            if resolved_qty is None:
+                reason_msg = f"매도가능수량 부족 — 매도가능=0, 요청={quantity}주"
+                logger.warning(
+                    "executor.sell_preflight.skip",
+                    symbol=symbol, quantity=quantity, sellable=sellable,
+                    account_id=account_id,
+                )
+                await self._update_order(
+                    order.id, status=OrderStatus.CANCELLED,
+                    rejection_reason=reason_msg,
+                )
+                await self._notify_safe(MessageTemplates.rejection_notification(
+                    account_label=account_label,
+                    symbol=symbol, name=symbol, side=side,
+                    reason=reason_msg, stage="sell_preflight",
+                ))
+                did = await self._record_decision_safe(
+                    session_id=session_id, stage=DecisionStage.EXIT,
+                    decision=DecisionAction.REJECT, symbol=symbol,
+                    reasoning=reason_msg,
+                    parent_id=parent_decision_id,
+                    account_id=account_id,
+                    data_snapshot={
+                        "order_id": order.id,
+                        "exit_reason": reason.value,
+                        "sellable_qty": sellable,
+                        "requested_qty": quantity,
+                    },
+                )
+                if did:
+                    decision_ids.append(did)
+                return self._fail_result(
+                    order=order, symbol=symbol, side=side, quantity=quantity,
+                    approval_status=approval_status,
+                    web_verify_result=verification.result,
+                    decision_ids=decision_ids,
+                    error=reason_msg,
+                )
+            if resolved_qty != quantity:
+                logger.warning(
+                    "executor.sell_preflight.clamp",
+                    symbol=symbol, original_qty=quantity,
+                    adjusted_qty=resolved_qty, sellable=sellable,
+                    account_id=account_id,
+                )
+                did = await self._record_decision_safe(
+                    session_id=session_id, stage=DecisionStage.EXIT,
+                    decision=action, symbol=symbol,
+                    reasoning=(
+                        f"매도가능수량 클램프: {quantity}주→{resolved_qty}주 "
+                        f"(매도가능={sellable})"
+                    ),
+                    parent_id=parent_decision_id,
+                    account_id=account_id,
+                    data_snapshot={
+                        "order_id": order.id,
+                        "exit_reason": reason.value,
+                        "original_qty": quantity,
+                        "adjusted_qty": resolved_qty,
+                        "sellable_qty": sellable,
+                    },
+                )
+                if did:
+                    decision_ids.append(did)
+                quantity = resolved_qty
 
             # 5. 브로커 주문
             order_result = await effective_broker.place_order(OrderRequest(
@@ -1420,6 +1521,21 @@ class OrderExecutor:
                 f"브로커 매도 체결 완료, DB 포지션 미청산\n"
                 f"즉시 수동 확인 필요"
             )
+
+        # F-10 Phase 2: 부분익절 체결 → 잔량을 트레일링 모드로 전환(TP 소거 +
+        # 본전 플로어). reduce 성공과 분리(전환 실패가 부분매도 기록을 무효화하지
+        # 않도록). 전환 실패 시 다음 사이클에 TP가 남아 재시도된다.
+        if position_partial and reason == ExitReason.PARTIAL_TAKE_PROFIT:
+            try:
+                await self._position_manager.transition_to_trailing(
+                    position.id, break_even_price=position.avg_cost,
+                )
+            except Exception:
+                logger.warning(
+                    "executor.partial_tp_transition_failed",
+                    order_id=order.id, position_id=position.id,
+                    symbol=symbol, exc_info=True,
+                )
 
         await self._update_order(
             order.id,

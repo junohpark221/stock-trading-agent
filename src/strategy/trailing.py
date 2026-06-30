@@ -27,6 +27,30 @@ _ZERO = Decimal("0")
 # 원칙이나, 진입 시점/ATR 결측 시 저장·사용할 기본 폭. 백테스트 기본값(5.0)과 정합.
 POSITION_TRAILING_FALLBACK_PCT = Decimal("5.0")
 
+# 부분익절 비율(F-10 Phase 2). POSITION 전략이 +3ATR(익절가) 도달 시 이 비율만
+# 부분익절하고 잔량은 트레일링으로 전환한다(추세 추종의 오른쪽 꼬리 수익 확보).
+PARTIAL_TP_RATIO = Decimal("0.33")
+
+
+def partial_tp_quantity(strategy_type: str, position_quantity: int) -> int | None:
+    """부분익절 수량을 산출(F-10 Phase 2). 사다리 미적용이면 None.
+
+    POSITION 전략만 부분익절 사다리를 적용한다(SWING 등은 기존 전량/스킵 유지).
+    수량이 1주 이하이거나 비율 적용 결과가 잔량 전량이면 None을 반환해 호출부가
+    기존 전량 익절 경로로 빠지게 한다.
+
+    Returns:
+        부분익절 수량(주, 1 ≤ q < position_quantity). 사다리 미적용이면 None.
+    """
+    if strategy_type != StrategyType.POSITION.value:
+        return None
+    if position_quantity <= 1:
+        return None
+    q = max(1, int(Decimal(position_quantity) * PARTIAL_TP_RATIO))
+    if q >= position_quantity:
+        return None
+    return q
+
 
 def _params(strategy_type: str) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
     """전략별 (활성화 임계%, ATR 배수, 고정 트레일 폭%)를 반환.

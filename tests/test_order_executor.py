@@ -249,6 +249,9 @@ def mock_broker():
     # Cash gate: 기본적으로 충분한 가용 현금 반환 (기존 테스트는 cash gate 통과 가정).
     # cash gate 자체를 검증하는 테스트는 override하여 낮은 값 반환.
     broker.get_buyable_cash = AsyncMock(return_value=Decimal("1_000_000_000"))
+    # 매도 preflight(F-12): 기본 None = 조회 정보 없음 → 클램프 미적용(기존 동작).
+    # preflight를 검증하는 테스트는 override한다.
+    broker.get_sellable_quantity = AsyncMock(return_value=None)
     return broker
 
 
@@ -862,6 +865,138 @@ async def test_execute_exit_position_close_fails(executor, mock_position_manager
 
 
 # ---------------------------------------------------------------------------
+# Exit: 매도가능수량 preflight (F-12)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_sellable_clamps_quantity(executor, mock_broker):
+    """매도가능수량 < 요청수량 → 발주 수량을 sellable로 클램프(비손절)."""
+    es = _make_exit_signal(reason=ExitReason.TAKE_PROFIT, urgency="end_of_day")
+    pos = _make_fake_position()  # quantity=10
+    mock_broker.get_sellable_quantity = AsyncMock(return_value=6)
+    sell_result = _make_order_result(status=OrderStatus.FILLED, filled_quantity=6)
+    sell_result.side = OrderSide.SELL
+    mock_broker.place_order = AsyncMock(return_value=sell_result)
+
+    result = await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(),
+    )
+
+    assert result.success is True
+    order_req = mock_broker.place_order.call_args[0][0]
+    assert order_req.quantity == 6  # 10 → 6으로 클램프
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_stop_loss_zero_sellable_proceeds(executor, mock_broker):
+    """매도가능=0이라도 긴급 손절은 스킵하지 않고 원수량으로 진행(스트랜딩 방지)."""
+    es = _make_exit_signal(reason=ExitReason.STOP_LOSS, urgency="immediate")
+    pos = _make_fake_position()  # quantity=10
+    mock_broker.get_sellable_quantity = AsyncMock(return_value=0)
+    sell_result = _make_order_result(status=OrderStatus.FILLED, filled_quantity=10)
+    sell_result.side = OrderSide.SELL
+    mock_broker.place_order = AsyncMock(return_value=sell_result)
+
+    result = await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(),
+    )
+
+    assert result.success is True
+    mock_broker.place_order.assert_awaited_once()
+    order_req = mock_broker.place_order.call_args[0][0]
+    assert order_req.quantity == 10  # 손절은 클램프/스킵 안 함
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_nonstoploss_zero_sellable_skips(executor, mock_broker):
+    """비손절 청산에서 매도가능=0이면 발주 스킵(과매도 방지)."""
+    es = _make_exit_signal(reason=ExitReason.FUNDAMENTAL, urgency="end_of_day")
+    pos = _make_fake_position()
+    mock_broker.get_sellable_quantity = AsyncMock(return_value=0)
+
+    result = await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(),
+    )
+
+    assert result.success is False
+    mock_broker.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_sellable_none_no_clamp(executor, mock_broker):
+    """매도가능수량 조회 불가(None)면 클램프 없이 원수량 발주."""
+    es = _make_exit_signal(reason=ExitReason.TAKE_PROFIT, urgency="end_of_day")
+    pos = _make_fake_position()  # quantity=10
+    mock_broker.get_sellable_quantity = AsyncMock(return_value=None)
+    sell_result = _make_order_result(status=OrderStatus.FILLED, filled_quantity=10)
+    sell_result.side = OrderSide.SELL
+    mock_broker.place_order = AsyncMock(return_value=sell_result)
+
+    result = await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(),
+    )
+
+    assert result.success is True
+    order_req = mock_broker.place_order.call_args[0][0]
+    assert order_req.quantity == 10
+
+
+# ---------------------------------------------------------------------------
+# Exit: 부분익절 사다리 (F-10 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_partial_tp_reduces_and_transitions(
+    executor, mock_broker, mock_position_manager
+):
+    """부분익절: reduce 경유(close 아님) + 잔량 트레일링 전환 호출."""
+    es = _make_exit_signal(reason=ExitReason.PARTIAL_TAKE_PROFIT, urgency="end_of_day")
+    pos = _make_fake_position()  # quantity=10, avg_cost=72000
+    sell_result = _make_order_result(status=OrderStatus.FILLED, filled_quantity=3)
+    sell_result.side = OrderSide.SELL
+    mock_broker.place_order = AsyncMock(return_value=sell_result)
+
+    result = await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(), exit_quantity=3,
+    )
+
+    assert result.success is True
+    # 부분 체결(3 < 10) → reduce, close 미호출
+    mock_position_manager.reduce.assert_awaited_once()
+    mock_position_manager.close.assert_not_awaited()
+    # 잔량 트레일링 전환 — 본전가는 평단가
+    mock_position_manager.transition_to_trailing.assert_awaited_once()
+    t_kwargs = mock_position_manager.transition_to_trailing.call_args
+    assert t_kwargs[0][0] == pos.id
+    assert t_kwargs[1]["break_even_price"] == pos.avg_cost
+    # 발주 수량은 부분익절 수량
+    order_req = mock_broker.place_order.call_args[0][0]
+    assert order_req.quantity == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_full_close_no_transition(
+    executor, mock_broker, mock_position_manager
+):
+    """전량 청산(TAKE_PROFIT)은 close 경유 + 트레일링 전환 미호출(회귀 가드)."""
+    es = _make_exit_signal(reason=ExitReason.TAKE_PROFIT, urgency="end_of_day")
+    pos = _make_fake_position()  # quantity=10
+    sell_result = _make_order_result(status=OrderStatus.FILLED, filled_quantity=10)
+    sell_result.side = OrderSide.SELL
+    mock_broker.place_order = AsyncMock(return_value=sell_result)
+
+    result = await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(),
+    )
+
+    assert result.success is True
+    mock_position_manager.close.assert_awaited_once()
+    mock_position_manager.transition_to_trailing.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # Audit Trail
 # ---------------------------------------------------------------------------
 
@@ -1025,6 +1160,7 @@ async def test_execute_exit_broker_override(executor, mock_broker):
     """execute_exit에서 broker override 동작 확인."""
     alt_broker = AsyncMock()
     alt_broker.place_order = AsyncMock(return_value=_make_order_result())
+    alt_broker.get_sellable_quantity = AsyncMock(return_value=None)
 
     sig = _make_exit_signal()
     pos = _make_fake_position()

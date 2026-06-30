@@ -1191,6 +1191,104 @@ class TestKISClientFetchDailyRealizedPnl:
         assert client._auth.build_headers.call_args.args[1] == "VTTC8494R"
 
 
+class TestKISClientGetSellableQuantity:
+    """get_sellable_quantity (TTTC8408R): 매도가능수량(ord_psbl_qty) 조회 — F-12."""
+
+    @pytest.mark.asyncio
+    async def test_returns_ord_psbl_qty(self):
+        """정상 응답에서 ord_psbl_qty(주문가능수량)를 파싱한다."""
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output": {"ord_psbl_qty": "42", "cblc_qty": "100"},
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        sellable = await client.get_sellable_quantity("005930")
+        assert sellable == 42
+
+    @pytest.mark.asyncio
+    async def test_output_as_list_parsed(self):
+        """output이 단일원소 리스트로 와도 방어적으로 파싱한다."""
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output": [{"ord_psbl_qty": "7", "cblc_qty": "7"}],
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        sellable = await client.get_sellable_quantity("005930")
+        assert sellable == 7
+
+    @pytest.mark.asyncio
+    async def test_empty_symbol_returns_none(self):
+        """symbol이 비어있으면 네트워크 호출 없이 None."""
+        client = _make_kis_client()
+        client._session.get = AsyncMock()
+
+        sellable = await client.get_sellable_quantity("")
+        assert sellable is None
+        client._session.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_output_returns_none(self):
+        """output 부재 시 None (preflight 미적용 = 차단 안 함)."""
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "0", "msg_cd": "0000", "msg1": "ok"},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        sellable = await client.get_sellable_quantity("005930")
+        assert sellable is None
+
+    @pytest.mark.asyncio
+    async def test_kis_error_falls_back_to_none(self):
+        """모의 미지원 등 KISResponseError 발생 시 None 폴백(graceful)."""
+        client = _make_kis_client()
+        client._session.get = AsyncMock(
+            side_effect=KISResponseError(msg_cd="EGW00999", msg1="미지원", tr_id="VTTC8408R")
+        )
+
+        sellable = await client.get_sellable_quantity("005930")
+        assert sellable is None
+
+    @pytest.mark.asyncio
+    async def test_real_uses_live_tr_id(self):
+        client = _make_kis_client()
+        client._is_paper = lambda: False
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                       "output": {"ord_psbl_qty": "1", "cblc_qty": "1"}},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        await client.get_sellable_quantity("005930")
+        assert client._auth.build_headers.call_args.args[1] == "TTTC8408R"
+
+    @pytest.mark.asyncio
+    async def test_paper_uses_demo_tr_id(self):
+        client = _make_kis_client()
+        client._is_paper = lambda: True
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                       "output": {"ord_psbl_qty": "1", "cblc_qty": "1"}},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        await client.get_sellable_quantity("005930")
+        assert client._auth.build_headers.call_args.args[1] == "VTTC8408R"
+
+
 class TestKISClientGetPositions:
     @pytest.mark.asyncio
     async def test_filters_zero_qty(self):

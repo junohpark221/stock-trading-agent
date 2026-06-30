@@ -112,6 +112,24 @@ class BrokerInterface(ABC):
             미수 없이 매수 가능한 KRW 금액 (Decimal). 0이면 현금 부족.
         """
 
+    async def get_sellable_quantity(self, symbol: str) -> int | None:
+        """매도가능수량(주)을 조회한다 (F-12 매도 preflight).
+
+        보유수량과 달리 미체결 매도주문·결제미수로 줄어든 **실제 주문가능수량**을
+        반환해야 한다 — KIS의 경우 TR ``TTTC8408R``의 ``ord_psbl_qty``.
+
+        기본 구현은 ``None``(=preflight 정보 없음 → 클램프 미적용)을 반환한다.
+        매도가능수량 조회를 지원하는 브로커(KISClient)만 override한다. 호출부는
+        ``None``을 "차단하지 않음"으로 해석해야 한다(긴급 손절 스트랜딩 방지).
+
+        Args:
+            symbol: 조회 대상 종목 코드 (KIS는 PDNO 필수).
+
+        Returns:
+            매도가능수량(주). 조회 미지원/실패면 ``None``.
+        """
+        return None
+
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     @abstractmethod

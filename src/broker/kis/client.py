@@ -39,6 +39,7 @@ from src.broker.kis.models import (
     KISOrderOutput,
     KISPriceOutput,
     KISPsblOrderOutput,
+    KISPsblSellOutput,
     KISRvseCnclPsblOutput,
     _to_decimal,
     _to_int,
@@ -790,6 +791,63 @@ class KISClient(BrokerInterface):
 
         output = KISPsblOrderOutput.model_validate(raw_output)
         return _to_decimal(output.nrcvb_buy_amt)
+
+    async def get_sellable_quantity(self, symbol: str) -> int | None:
+        """매도가능수량(``ord_psbl_qty``)을 조회한다(F-12 매도 preflight).
+
+        KIS 매도가능수량조회 — TR ``TTTC8408R``(실전).
+        엔드포인트: ``/uapi/domestic-stock/v1/trading/inquire-psbl-sell``.
+
+        보유수량(``hldg_qty``)만으로는 미체결 매도주문·결제미수로 줄어든
+        실제 매도가능수량을 알 수 없다. 이 API는 KIS가 산정한 주문가능수량을
+        반환하므로, 매도 발주 전 과매도(KIS 거부)를 사전에 막을 수 있다.
+
+        모의계좌(``VTTC8408R``)는 본 TR 지원이 불확실하므로 모의이거나 조회가
+        실패하면 ``None``(=preflight 정보 없음 → 클램프 미적용)을 반환한다.
+        호출부는 ``None``을 "차단하지 않음"으로 해석해야 한다(긴급 손절 스트랜딩 방지).
+
+        Args:
+            symbol: 종목 코드 (PDNO). 빈 문자열이면 None.
+
+        Returns:
+            매도가능수량(주). 조회 불가/실패/모의 미지원이면 ``None``.
+        """
+        if not symbol:
+            return None
+
+        is_paper = self._is_paper()
+        tr_id = "VTTC8408R" if is_paper else "TTTC8408R"
+
+        params: dict[str, str] = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "PDNO": symbol,
+        }
+
+        try:
+            data = await self._request(
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-psbl-sell",
+                tr_id,
+                params=params,
+            )
+        except (KISResponseError, APIError, BrokerError) as exc:
+            logger.warning(
+                "kis.sellable_quantity_fetch_failed",
+                tr_id=tr_id,
+                symbol=symbol,
+                error=str(exc),
+            )
+            return None
+
+        raw_output = data.get("output")
+        if isinstance(raw_output, list):
+            raw_output = raw_output[0] if raw_output else None
+        if not raw_output:
+            return None
+
+        output = KISPsblSellOutput.model_validate(raw_output)
+        return _to_int(output.ord_psbl_qty)
 
     # ── Account ───────────────────────────────────────────────────────
 

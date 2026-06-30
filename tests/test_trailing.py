@@ -15,6 +15,7 @@ from src.strategy.trailing import (
     calculate_atr,
     entry_trailing_params,
     is_trailing_active,
+    partial_tp_quantity,
     resolve_trailing_pct,
     trailing_activate_pct,
     trailing_stop_price,
@@ -162,3 +163,35 @@ def test_calculate_atr_simple():
     bars = [_ohlcv(Decimal("100"), Decimal("102"), Decimal("98")) for _ in range(20)]
     atr = calculate_atr(bars, period=14)
     assert atr == Decimal("4")
+
+
+# ── 부분익절 수량 (F-10 Phase 2) ──────────────────────────────────────
+
+
+def test_partial_tp_quantity_position():
+    # 33% × 100 = 33 (PARTIAL_TP_RATIO=0.33)
+    assert partial_tp_quantity(_POSITION, 100) == 33
+
+
+def test_partial_tp_quantity_non_position_none():
+    # SWING 등은 사다리 미적용
+    assert partial_tp_quantity(_SWING, 100) is None
+    assert partial_tp_quantity("unknown", 100) is None
+
+
+def test_partial_tp_quantity_single_share_none():
+    # 1주 이하는 쪼갤 수 없음 → 전량 익절 경로로
+    assert partial_tp_quantity(_POSITION, 1) is None
+    assert partial_tp_quantity(_POSITION, 0) is None
+
+
+def test_partial_tp_quantity_two_shares_floor_to_one():
+    # 33% × 2 = 0.66 → max(1, 0) = 1 (1 < 2 이므로 부분)
+    assert partial_tp_quantity(_POSITION, 2) == 1
+
+
+def test_partial_tp_quantity_never_full():
+    # 비율 결과가 잔량 전량이면 None (전량 익절로). 작은 수량 회귀 가드.
+    for qty in range(2, 50):
+        pq = partial_tp_quantity(_POSITION, qty)
+        assert pq is None or (pq >= 1 and pq < qty)

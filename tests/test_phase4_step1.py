@@ -79,7 +79,7 @@ class TestExitReason:
             assert ExitReason(value).value == value
 
     def test_member_count(self):
-        assert len(ExitReason) == 10
+        assert len(ExitReason) == 11
 
     def test_invalid_value(self):
         with pytest.raises(ValueError):

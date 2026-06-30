@@ -535,6 +535,9 @@ class ExitSignal(BaseModel):
     unrealized_pnl_pct: Decimal
     recommended_action: DecisionAction
     reasoning: str
+    # 부분 청산 수량 — None이면 전량 청산(기본). 부분익절 사다리(F-10 Phase 2)가
+    # POSITION 전략의 +3ATR 도달 시 일부만 매도하도록 채운다.
+    exit_quantity: int | None = None
 
 
 class PortfolioState(BaseModel):

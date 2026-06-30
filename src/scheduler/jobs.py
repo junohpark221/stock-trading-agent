@@ -15,15 +15,17 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy import func, select
 
-from src.core.enums import DecisionAction, StrategyType
+from src.core.enums import DecisionAction, ExitReason, StrategyType
 from src.core.time import KST as _KST
 from src.data.collector import collect_daily_ohlcv
 from src.db.models.market_data import DailyOHLCV, StockMaster
+from src.execution.exit_coordinator import exit_phase
 from src.notification.templates import MessageTemplates
 from src.strategy.risk_manager import BatchReservation
 from src.strategy.trailing import (
     calculate_atr,
     is_trailing_active,
+    partial_tp_quantity,
     trailing_stop_price,
 )
 
@@ -728,6 +730,22 @@ async def job_stop_loss_check(
 
             signal = exit_checker.check_take_profit(position, current_price, unrealized_pnl_pct)
             if signal:
+                pq = partial_tp_quantity(position.strategy_type, position.quantity)
+                if pq is not None and position.take_profit_price is not None:
+                    # F-10 Phase 2: POSITION이 +3ATR(익절가) 도달 → pq주 부분익절 후
+                    # 잔량은 트레일링으로 전환(체결 시 take_profit_price 소거 → 재발화 차단).
+                    signal.exit_quantity = pq
+                    signal.reason = ExitReason.PARTIAL_TAKE_PROFIT
+                    logger.info(
+                        "job.partial_take_profit",
+                        symbol=position.symbol,
+                        current_price=str(current_price),
+                        take_profit_price=str(position.take_profit_price),
+                        position_qty=position.quantity,
+                        partial_qty=pq,
+                    )
+                    exit_signals.append(signal)
+                    continue
                 if trailing_on:
                     # 트레일링 활성 + 익절가 도달: 즉시 매도가 아니라 고점 추적을 계속해
                     # 추가 상승을 노린다(트레일링 스톱 모드 전환).
@@ -790,7 +808,8 @@ async def job_stop_loss_check(
         # 이중 청산 방지: WS(StopLossStreamService)/이전 사이클이 in-flight로 잡은
         # 포지션은 스킵하고, 선점 성공한 것만 발주한다(coordinator 미주입 시 전량 발주).
         signals_to_run = exit_signals
-        claimed_ids: dict[str, int] = {}
+        # symbol → (position_id, phase) — 복합키(F-10 Phase 2)로 부분익절/보호 레그 분리.
+        claimed: dict[str, tuple[int, str]] = {}
         if coordinator is not None:
             signals_to_run = []
             for sig in exit_signals:
@@ -798,8 +817,9 @@ async def job_stop_loss_check(
                 if pos is None:
                     signals_to_run.append(sig)  # 매칭 실패는 exit_service가 스킵
                     continue
-                if await coordinator.try_claim(pos.id):
-                    claimed_ids[sig.symbol] = pos.id
+                phase = exit_phase(sig.reason)
+                if await coordinator.try_claim(pos.id, phase):
+                    claimed[sig.symbol] = (pos.id, phase)
                     signals_to_run.append(sig)
                 else:
                     logger.info(
@@ -819,11 +839,11 @@ async def job_stop_loss_check(
                 )
         finally:
             # 발주 실패(또는 예외) 클레임만 해제해 재시도 허용. 성공 클레임은 TTL까지 보유.
-            if coordinator is not None and claimed_ids:
+            if coordinator is not None and claimed:
                 failed = {r.symbol for r in results if not r.success}
-                for sym, pid in claimed_ids.items():
+                for sym, (pid, phase) in claimed.items():
                     if not results or sym in failed:
-                        await coordinator.release(pid)
+                        await coordinator.release(pid, phase)
         logger.info(
             "job.stop_loss_check.exit_executed",
             signal_count=len(exit_signals),

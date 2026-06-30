@@ -98,6 +98,141 @@ class AccountContext:
     strategy: Strategy | None = None
 
 
+# ── SchedulerRuntime ──────────────────────────────────────────────────
+
+
+@dataclass
+class SchedulerRuntime:
+    """실행 중 스케줄러 재구성에 필요한 재료 묶음 (B-10).
+
+    ``create_scheduler``가 만든 공유 의존성·계좌 컨텍스트·watchlist 등을 보관해,
+    백오피스에서 계좌 설정이 바뀌면 프로세스 재시작 없이 해당 계좌의 컨텍스트를
+    재빌드하고 잡을 재등록(``reload_account``)할 수 있게 한다.
+
+    ``contexts``는 등록 순서를 보존하는 리스트로, 리스트 인덱스가 곧
+    ``account_index``(cron 시차 부여)다 — 재빌드 시 같은 인덱스를 재사용한다.
+    """
+
+    engine: SchedulerEngine
+    registry: BrokerRegistry
+    stoploss_stream: StopLossStreamService
+    session_factory: async_sessionmaker[AsyncSession]
+    cache: RedisCache
+    settings: Settings
+    telegram_bot: TelegramBot
+    approval_manager: ApprovalManager
+    orchestrator: PipelineOrchestrator
+    recorder: object
+    web_verifier: object
+    cost_tracker: object
+    memory_manager: AgentMemoryManager
+    generator: ReportGenerator
+    execution_stream: ExecutionStreamManager
+    decision_queue: TradeDecisionQueueManager
+    exit_coordinator: ExitCoordinator
+    watchlist_symbols: list[str]
+    contexts: list[AccountContext]
+
+    async def reload_account(self, account_id: str) -> bool:
+        """계좌 컨텍스트를 재빌드하고 해당 계좌 잡을 재등록한다.
+
+        risk_overrides·투자철학·risk_tolerance·strategy_type 등 컨텍스트 파생값을
+        새 DB 상태로 일관 갱신한다. 전략 타입이 바뀐 경우 옛 전략의 잡이 남지
+        않도록 **해당 계좌의 기존 잡을 모두 제거한 뒤 새로 등록**한다(이벤트 루프
+        양보 지점이 없어 스왑은 원자적). KIS 인증정보 변경은 registry의 브로커를
+        재생성하지 않으므로 본 경로로 반영되지 않는다(재시작 필요).
+
+        Returns:
+            성공 시 True. 계좌가 startup 컨텍스트에 없거나(비활성/실패) 재빌드 중
+            예외가 나면 False(이 경우 기존 컨텍스트·잡을 그대로 유지).
+        """
+        idx = next(
+            (i for i, c in enumerate(self.contexts) if c.account_id == account_id),
+            None,
+        )
+        if idx is None:
+            logger.warning(
+                "scheduler_runtime.reload_account_not_found",
+                account_id=account_id,
+            )
+            return False
+
+        try:
+            account = await SchedulerFactory._load_account(
+                self.session_factory, account_id
+            )
+            if account is None:
+                logger.warning(
+                    "scheduler_runtime.reload_account_inactive",
+                    account_id=account_id,
+                )
+                return False
+
+            broker = self.registry.get(account_id)
+            new_ctx = SchedulerFactory._build_account_context(
+                account=account,
+                broker=broker,
+                orchestrator=self.orchestrator,
+                recorder=self.recorder,
+                web_verifier=self.web_verifier,
+                approval_manager=self.approval_manager,
+                cost_tracker=self.cost_tracker,
+                telegram_bot=self.telegram_bot,
+                session_factory=self.session_factory,
+                cache=self.cache,
+                settings=self.settings,
+                execution_stream=self.execution_stream,
+                memory_manager=self.memory_manager,
+            )
+
+            # 잡 정합: 옛 계좌 잡을 모두 제거 후 새 컨텍스트로 재등록.
+            # 잡 id 규칙은 ``{job_type}:{account_id}`` — 공통 잡은 접미사 없음.
+            stale = [
+                name
+                for name in list(self.engine._job_fns)
+                if name.endswith(f":{account_id}")
+            ]
+            for name in stale:
+                self.engine.unregister_job(name)
+
+            SchedulerFactory._register_account_jobs(
+                self.engine,
+                new_ctx,
+                orchestrator=self.orchestrator,
+                watchlist_symbols=self.watchlist_symbols,
+                generator=self.generator,
+                telegram_bot=self.telegram_bot,
+                settings=self.settings,
+                session_factory=self.session_factory,
+                decision_queue=self.decision_queue,
+                account_index=idx,
+                coordinator=self.exit_coordinator,
+            )
+
+            # F-05 실시간 손절 청산 의존성도 새 컨텍스트로 갱신(재등록=덮어쓰기).
+            self.stoploss_stream.register_account(
+                new_ctx.account_id,
+                exit_checker=new_ctx.exit_checker,
+                exit_service=new_ctx.exit_service,
+                position_manager=new_ctx.position_manager,
+                account_label=new_ctx.account_label,
+            )
+
+            self.contexts[idx] = new_ctx
+            logger.info(
+                "scheduler_runtime.account_reloaded",
+                account_id=account_id,
+                strategy_type=new_ctx.strategy_type.value,
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "scheduler_runtime.reload_account_failed",
+                account_id=account_id,
+            )
+            return False
+
+
 # ── SchedulerFactory ──────────────────────────────────────────────────
 
 
@@ -121,14 +256,16 @@ class SchedulerFactory:
         BrokerRegistry,
         ExecutionStreamManager,
         StopLossStreamService,
+        SchedulerRuntime,
     ]:
         """서비스 그래프 조립 → SchedulerEngine 반환.
 
         Returns:
-            (scheduler_engine, broker_registry, execution_stream, stoploss_stream)
-            — main.py는
+            (scheduler_engine, broker_registry, execution_stream, stoploss_stream,
+            scheduler_runtime) — main.py는
             - registry 를 shutdown 시 disconnect_all()
             - execution_stream / stoploss_stream 을 startup 시 start() / shutdown 시 stop()
+            - scheduler_runtime 으로 백오피스 계좌 편집 시 ``reload_account`` 호출(B-10)
         """
         from src.agent.agents.market_analyst import MarketAnalyst
         from src.agent.agents.risk_manager import RiskManager
@@ -396,7 +533,30 @@ class SchedulerFactory:
             watchlist_count=len(watchlist_symbols),
         )
 
-        return engine, registry, execution_stream, stoploss_stream
+        # B-10: 실행 중 계좌 재반영용 재료 묶음.
+        runtime = SchedulerRuntime(
+            engine=engine,
+            registry=registry,
+            stoploss_stream=stoploss_stream,
+            session_factory=session_factory,
+            cache=cache,
+            settings=settings,
+            telegram_bot=telegram_bot,
+            approval_manager=approval_manager,
+            orchestrator=orchestrator,
+            recorder=recorder,
+            web_verifier=web_verifier,
+            cost_tracker=cost_tracker,
+            memory_manager=memory_manager,
+            generator=generator,
+            execution_stream=execution_stream,
+            decision_queue=decision_queue,
+            exit_coordinator=exit_coordinator,
+            watchlist_symbols=watchlist_symbols,
+            contexts=contexts,
+        )
+
+        return engine, registry, execution_stream, stoploss_stream, runtime
 
     # ── Account Loading ──────────────────────────────────────────────
 
@@ -417,6 +577,29 @@ class SchedulerFactory:
                 exc_info=True,
             )
             return []
+
+    @staticmethod
+    async def _load_account(
+        session_factory: async_sessionmaker[AsyncSession],
+        account_id: str,
+    ) -> Account | None:
+        """단건 활성 계좌 로드 (reload_account용). 비활성/부재/에러 시 None."""
+        try:
+            async with session_factory() as session:
+                result = await session.execute(
+                    select(Account).where(
+                        Account.id == account_id,
+                        Account.is_active.is_(True),
+                    ),
+                )
+                return result.scalar_one_or_none()
+        except Exception:
+            logger.warning(
+                "scheduler_factory.load_account_failed",
+                account_id=account_id,
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     def _synthesize_default_account(settings: Settings) -> Account:

@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import structlog
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -158,6 +160,22 @@ class SchedulerEngine:
             coalesce=True,
         )
         logger.debug("scheduler.register_job", job_name=job_name)
+
+    def unregister_job(self, job_name: str) -> None:
+        """단일 작업을 스케줄러에서 제거. 등록되지 않은 이름이면 no-op.
+
+        계좌 컨텍스트 재빌드(``reload_account``) 시, 전략 타입 변경 등으로
+        더 이상 필요 없는 옛 계좌 잡을 제거하는 데 쓴다. ``_job_fns``와
+        APScheduler 양쪽에서 제거한다.
+        """
+        self._job_fns.pop(job_name, None)
+
+        if not self._settings.SCHEDULER_ENABLED:
+            return
+
+        with contextlib.suppress(JobLookupError):
+            self._scheduler.remove_job(job_name)
+        logger.debug("scheduler.unregister_job", job_name=job_name)
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 

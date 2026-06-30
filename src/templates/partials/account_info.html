@@ -1,4 +1,7 @@
 <section>
+    {% if reload_message %}
+    <p role="status" style="padding:0.5rem 0.8rem;background:#fff6e0;border:1px solid #e0c068;border-radius:4px;font-size:0.85rem;">{{ reload_message }}</p>
+    {% endif %}
     <h2 style="display:flex;justify-content:space-between;align-items:center;">
         <span>
             {{ account.nickname }}

@@ -34,6 +34,7 @@ _scheduler_engine: object | None = None  # SchedulerEngine (lazy import)
 _broker_registry: object | None = None  # BrokerRegistry (lazy import)
 _execution_stream: object | None = None  # ExecutionStreamManager (lazy import)
 _stoploss_stream: object | None = None  # StopLossStreamService (lazy import)
+_scheduler_runtime: object | None = None  # SchedulerRuntime (lazy import)
 logger = structlog.get_logger(__name__)
 
 
@@ -108,6 +109,17 @@ def get_broker_registry():
     return _broker_registry
 
 
+def get_scheduler_runtime():
+    """현재 SchedulerRuntime 반환. 미초기화 시 RuntimeError.
+
+    백오피스 계좌 편집 핸들러가 ``reload_account``를 호출할 때 사용(B-10).
+    ``SCHEDULER_ENABLED=False``이거나 lifespan 미시작이면 미초기화 상태다.
+    """
+    if _scheduler_runtime is None:
+        raise RuntimeError("SchedulerRuntime not initialized. App lifespan not started.")
+    return _scheduler_runtime
+
+
 def get_stoploss_stream():
     """현재 StopLossStreamService 반환(없으면 None). 어드민 exec-monitor 관측용.
 
@@ -122,7 +134,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """FastAPI lifespan: startup/shutdown 리소스 관리."""
     global _redis_client, _telegram_bot, _approval_manager
     global _scheduler_engine, _broker_registry
-    global _execution_stream, _stoploss_stream
+    global _execution_stream, _stoploss_stream, _scheduler_runtime
 
     settings = get_settings()
     is_dev = settings.ENV == "development"
@@ -182,6 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             _broker_registry,
             _execution_stream,
             _stoploss_stream,
+            _scheduler_runtime,
         ) = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
@@ -211,6 +224,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────
+    _scheduler_runtime = None
     if _scheduler_engine is not None:
         await _scheduler_engine.stop()
         _scheduler_engine = None

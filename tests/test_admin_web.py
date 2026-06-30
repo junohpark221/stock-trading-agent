@@ -289,6 +289,49 @@ class TestAccountDetail:
         assert "포지션 수 불일치" not in r.text
 
 
+class TestAccountEditReload:
+    """B-10: 계좌 편집 저장 직후 reload_account로 실행 중 스케줄러에 즉시 반영."""
+
+    @pytest.mark.asyncio
+    async def test_edit_triggers_reload(self, mock_session):
+        mock_session.get.return_value = _mock_account(id="acc-1")
+        runtime = MagicMock()
+        runtime.reload_account = AsyncMock(return_value=True)
+        original = main_mod._scheduler_runtime
+        try:
+            main_mod._scheduler_runtime = runtime
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/edit",
+                    data={
+                        "nickname": "새이름",
+                        "strategy_type": "position",
+                        "risk_overrides": '{"DAILY_LOSS_LIMIT_KRW": 1000000}',
+                    },
+                )
+        finally:
+            main_mod._scheduler_runtime = original
+        assert r.status_code == 200
+        runtime.reload_account.assert_awaited_once_with("acc-1")
+
+    @pytest.mark.asyncio
+    async def test_edit_graceful_when_scheduler_unavailable(self, mock_session):
+        """스케줄러 미가동(runtime None) → RuntimeError 흡수, 저장은 유지·안내 표시."""
+        mock_session.get.return_value = _mock_account(id="acc-1")
+        original = main_mod._scheduler_runtime
+        try:
+            main_mod._scheduler_runtime = None
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/edit",
+                    data={"strategy_type": "position"},
+                )
+        finally:
+            main_mod._scheduler_runtime = original
+        assert r.status_code == 200
+        assert "스케줄러 미가동" in r.text
+
+
 # ── Trades ───────────────────────────────────────────────────────────
 
 

@@ -300,7 +300,7 @@ async def test_create_scheduler_mock_broker_legacy():
             ],
         )
 
-        engine, registry, _stream, _sl = await SchedulerFactory.create_scheduler(
+        engine, registry, _stream, _sl, _rt = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),
@@ -343,7 +343,7 @@ async def test_create_scheduler_no_accounts_no_key():
             ],
         )
 
-        engine, registry, _stream, _sl = await SchedulerFactory.create_scheduler(
+        engine, registry, _stream, _sl, _rt = await SchedulerFactory.create_scheduler(
             settings=settings,
             session_factory=session_factory,
             cache=MagicMock(),
@@ -392,3 +392,193 @@ def test_get_scheduler_returns_engine():
         assert main_mod.get_scheduler() is sentinel
     finally:
         main_mod._scheduler_engine = original
+
+
+def test_get_scheduler_runtime_raises_when_not_initialized():
+    """get_scheduler_runtime() — 초기화 전이면 RuntimeError(B-10)."""
+    import src.main as main_mod
+
+    original = main_mod._scheduler_runtime
+    try:
+        main_mod._scheduler_runtime = None
+        with pytest.raises(RuntimeError, match="SchedulerRuntime not initialized"):
+            main_mod.get_scheduler_runtime()
+    finally:
+        main_mod._scheduler_runtime = original
+
+
+# ── SchedulerRuntime.reload_account (B-10) ───────────────────────────────
+
+
+def _make_account_context(account_id: str, strategy_type):
+    """모든 서비스 필드를 MagicMock으로 채운 AccountContext."""
+    from src.scheduler.factory import AccountContext
+
+    return AccountContext(
+        account_id=account_id,
+        nickname="닉",
+        account_no="12345678-01",
+        broker=MagicMock(),
+        auth=None,
+        strategy_type=strategy_type,
+        portfolio_service=MagicMock(),
+        position_manager=MagicMock(),
+        exit_checker=MagicMock(),
+        exit_service=MagicMock(),
+        order_executor=MagicMock(),
+        monitor=MagicMock(),
+        investment_prompt="",
+        risk_tolerance="moderate",
+        account_label="닉 (8-01)",
+    )
+
+
+def _make_runtime(engine, contexts):
+    from src.scheduler.factory import SchedulerRuntime
+
+    return SchedulerRuntime(
+        engine=engine,
+        registry=MagicMock(),
+        stoploss_stream=MagicMock(),
+        session_factory=_mock_session_factory()[0],
+        cache=MagicMock(),
+        settings=make_settings(SCHEDULER_ENABLED=False),
+        telegram_bot=AsyncMock(),
+        approval_manager=AsyncMock(),
+        orchestrator=MagicMock(),
+        recorder=MagicMock(),
+        web_verifier=MagicMock(),
+        cost_tracker=MagicMock(),
+        memory_manager=MagicMock(),
+        generator=MagicMock(),
+        execution_stream=MagicMock(),
+        decision_queue=MagicMock(),
+        exit_coordinator=MagicMock(),
+        watchlist_symbols=["005930"],
+        contexts=contexts,
+    )
+
+
+def _make_engine_with_jobs(*job_names):
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    from src.scheduler.engine import SchedulerEngine
+
+    engine = SchedulerEngine(
+        session_factory=_mock_session_factory()[0],
+        settings=make_settings(SCHEDULER_ENABLED=False),
+        telegram_bot=AsyncMock(),
+    )
+    for name in job_names:
+        engine.register_job(name, AsyncMock(), IntervalTrigger(minutes=5))
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_reload_account_rebuilds_and_reconciles_jobs():
+    """전략 타입이 position→swing으로 바뀌면 옛 잡 제거 + 새 잡 등록, 공통 잡은 보존."""
+    from src.core.enums import StrategyType
+    from src.scheduler.factory import SchedulerFactory
+
+    engine = _make_engine_with_jobs(
+        "position_decision:acct-1",
+        "stop_loss_check:acct-1",
+        "weekly_report",  # 공통 잡 — 보존되어야 함
+    )
+    old_ctx = _make_account_context("acct-1", StrategyType.POSITION)
+    runtime = _make_runtime(engine, [old_ctx])
+
+    new_ctx = _make_account_context("acct-1", StrategyType.SWING)
+    account = MagicMock()
+    account.id = "acct-1"
+
+    def fake_register(eng, ctx, **kwargs):
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        eng.register_job("swing_decision:acct-1", AsyncMock(), IntervalTrigger(minutes=5))
+        eng.register_job("stop_loss_check:acct-1", AsyncMock(), IntervalTrigger(minutes=5))
+
+    with (
+        patch.object(
+            SchedulerFactory, "_load_account", new_callable=AsyncMock, return_value=account
+        ),
+        patch.object(
+            SchedulerFactory, "_build_account_context", return_value=new_ctx
+        ) as mock_build,
+        patch.object(
+            SchedulerFactory, "_register_account_jobs", side_effect=fake_register
+        ),
+    ):
+        ok = await runtime.reload_account("acct-1")
+
+    assert ok is True
+    # 빌드는 재로드된 account(새 risk_overrides 반영)로 호출됨
+    assert mock_build.call_args.kwargs["account"] is account
+    # 옛 전략 잡 제거, 새 전략 잡 등록
+    assert "position_decision:acct-1" not in engine._job_fns
+    assert "swing_decision:acct-1" in engine._job_fns
+    assert "stop_loss_check:acct-1" in engine._job_fns
+    # 공통 잡은 그대로
+    assert "weekly_report" in engine._job_fns
+    # 컨텍스트 교체 + 손절 스트림 재등록
+    assert runtime.contexts[0] is new_ctx
+    runtime.stoploss_stream.register_account.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reload_account_unknown_id_returns_false():
+    from src.core.enums import StrategyType
+
+    engine = _make_engine_with_jobs("stop_loss_check:acct-1")
+    runtime = _make_runtime(engine, [_make_account_context("acct-1", StrategyType.POSITION)])
+
+    ok = await runtime.reload_account("acct-2")
+    assert ok is False
+    # 잡 변동 없음
+    assert "stop_loss_check:acct-1" in engine._job_fns
+
+
+@pytest.mark.asyncio
+async def test_reload_account_inactive_returns_false_keeps_context():
+    """_load_account이 None(비활성/부재)이면 False, 컨텍스트·잡 불변."""
+    from src.core.enums import StrategyType
+    from src.scheduler.factory import SchedulerFactory
+
+    engine = _make_engine_with_jobs("position_decision:acct-1")
+    old_ctx = _make_account_context("acct-1", StrategyType.POSITION)
+    runtime = _make_runtime(engine, [old_ctx])
+
+    with patch.object(
+        SchedulerFactory, "_load_account", new_callable=AsyncMock, return_value=None
+    ):
+        ok = await runtime.reload_account("acct-1")
+
+    assert ok is False
+    assert runtime.contexts[0] is old_ctx
+    assert "position_decision:acct-1" in engine._job_fns
+
+
+@pytest.mark.asyncio
+async def test_reload_account_build_failure_keeps_old_context():
+    """재빌드 중 예외 → False, 기존 컨텍스트 유지(부분 교체 금지)."""
+    from src.core.enums import StrategyType
+    from src.scheduler.factory import SchedulerFactory
+
+    engine = _make_engine_with_jobs("position_decision:acct-1")
+    old_ctx = _make_account_context("acct-1", StrategyType.POSITION)
+    runtime = _make_runtime(engine, [old_ctx])
+    account = MagicMock()
+    account.id = "acct-1"
+
+    with (
+        patch.object(
+            SchedulerFactory, "_load_account", new_callable=AsyncMock, return_value=account
+        ),
+        patch.object(
+            SchedulerFactory, "_build_account_context", side_effect=RuntimeError("boom")
+        ),
+    ):
+        ok = await runtime.reload_account("acct-1")
+
+    assert ok is False
+    assert runtime.contexts[0] is old_ctx

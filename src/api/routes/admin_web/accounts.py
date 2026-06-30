@@ -211,9 +211,28 @@ async def accounts_edit(
     await session.commit()
 
     logger.info("account_updated_via_web", account_id=account_id)
+
+    # B-10: 실행 중 스케줄러에 변경을 즉시 반영(재시작 불필요).
+    # risk_overrides·전략·프롬프트 등 컨텍스트 파생값을 재빌드+잡 재등록한다.
+    # KIS 인증정보 변경은 registry 브로커를 재생성하지 않으므로 재시작 필요.
+    creds_changed = bool(kis_app_key or kis_app_secret or kis_account_no)
+    reload_message: str | None = None
+    try:
+        from src.main import get_scheduler_runtime
+
+        reloaded = await get_scheduler_runtime().reload_account(account_id)
+        if not reloaded:
+            reload_message = "변경은 저장됐으나 실행 중 스케줄러 반영에 실패했습니다. 다음 재시작 시 반영됩니다."
+        elif creds_changed:
+            reload_message = "리스크·전략 설정은 즉시 반영됐습니다. KIS 인증정보 변경은 재시작 후 적용됩니다."
+    except RuntimeError:
+        # 스케줄러 미가동(SCHEDULER_ENABLED=False / lifespan 미시작)
+        reload_message = "변경 저장됨. 스케줄러 미가동 — 다음 시작 시 반영됩니다."
+
     return templates.TemplateResponse("partials/account_info.html", {
         "request": request,
         "account": account,
+        "reload_message": reload_message,
     })
 
 

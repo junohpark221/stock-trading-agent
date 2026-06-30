@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from src.broker.kis.ws_price import KISPriceStream
+from src.strategy.trailing import is_trailing_active, trailing_stop_price
 
 if TYPE_CHECKING:
     from src.broker.credentials import AccountCredentials
@@ -216,24 +217,36 @@ class StopLossStreamService:
 
         # 손절 → 익절 → 트레일링 (폴링 잡 job_stop_loss_check와 동일 우선순위).
         # 시간청산(time_based)은 가격 무관이라 5분 폴링에 맡긴다.
+        # 트레일링 활성 여부(F-10 B2): 미실현 수익이 전략 임계 이상일 때만 bite.
+        # WS는 고빈도라 저장된 trailing_stop_pct(진입 ATR 베이스라인/고정 폭)를 사용하고,
+        # POSITION의 ATR 동적 재계산은 5분 폴링(job_stop_loss_check)에 맡긴다.
+        trailing_on = (
+            position.trailing_stop_pct is not None
+            and is_trailing_active(position.strategy_type, unrealized_pnl_pct)
+        )
+
         signal = deps.exit_checker.check_stop_loss(position, current_price, unrealized_pnl_pct)
         if signal is None:
             tp_signal = deps.exit_checker.check_take_profit(
                 position, current_price, unrealized_pnl_pct
             )
-            if tp_signal is not None and position.trailing_stop_pct is None:
-                # 트레일링 미설정 → 익절가 도달 시 매도.
+            if tp_signal is not None and not trailing_on:
+                # 트레일링 미설정/비활성 → 익절가 도달 시 매도.
                 signal = tp_signal
-            elif position.trailing_stop_pct is not None:
-                # 트레일링 설정 → 익절가 도달은 즉시 매도가 아니라 고점 추적 계속.
+            elif trailing_on:
+                # 트레일링 활성 → 익절가 도달은 즉시 매도가 아니라 고점 추적 계속.
                 # 트레일링 스톱가만 평가한다(폴링 잡과 동일).
                 baseline = position.highest_price or position.entry_price
-                trailing_stop_price = baseline * (
-                    Decimal("1") - position.trailing_stop_pct / _HUNDRED
+                ts_price = trailing_stop_price(
+                    position.strategy_type,
+                    entry_price=position.entry_price,
+                    baseline_high=baseline,
+                    stored_pct=position.trailing_stop_pct,
                 )
-                signal = deps.exit_checker.check_trailing_stop(
-                    position, current_price, unrealized_pnl_pct, trailing_stop_price,
-                )
+                if ts_price is not None:
+                    signal = deps.exit_checker.check_trailing_stop(
+                        position, current_price, unrealized_pnl_pct, ts_price,
+                    )
         if signal is None:
             return
 

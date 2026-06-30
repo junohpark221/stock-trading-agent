@@ -1497,3 +1497,131 @@ async def test_batch_reservation_none_skips_gate(
     assert result.success is True
     # 게이트가 없으므로 승인은 정상 요청됨
     mock_approval_manager.request_approval.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# F-16: 갭/진입가 괴리 보정 (손절·익절 비율 보존 + 수량 재사이징)
+# ---------------------------------------------------------------------------
+
+
+def _set_sizing_settings(settings) -> None:
+    """PositionSizer 재호출에 필요한 사이징 설정값 주입(MagicMock 기본값 회피)."""
+    settings.RISK_PER_TRADE_PCT = 2.0
+    settings.MAX_POSITION_PCT = 100.0
+    settings.MAX_POSITION_SIZE_KRW = 1_000_000_000
+    settings.STOP_LOSS_PERCENT = 3.0
+
+
+@pytest.mark.asyncio
+async def test_gap_resize_shrinks_quantity_on_upward_gap(
+    executor, mock_broker, mock_settings,
+):
+    """상방 갭 통과 시 risk_per_share 증가분만큼 수량을 축소(F-16 A1)."""
+    _set_sizing_settings(mock_settings)
+    # 기준가 72000, live 74000(상방 갭). 손절 68000(기준가 대비 -5.56%).
+    # risk_amount=10M*2%=200000, scaled_stop=74000*(1-4000/72000)=69888.9,
+    # risk_per_share≈4111 → risk_qty=48. 원수량 60 → min(60,48)=48.
+    td = _make_trade_decision(quantity=60, price=Decimal("74000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+        reference_price=Decimal("72000"),
+    )
+
+    assert result.success is True
+    order_req = mock_broker.place_order.call_args.args[0]
+    assert order_req.quantity == 48
+
+
+@pytest.mark.asyncio
+async def test_gap_resize_only_shrinks_never_grows(
+    executor, mock_broker, mock_settings,
+):
+    """하방 갭이어도 수량은 원수량 유지(축소만, 예산 초과 없음, F-16 A1)."""
+    _set_sizing_settings(mock_settings)
+    # live 70000(하방 갭) → risk_per_share 감소 → risk_qty 증가하지만 min으로 원수량 유지.
+    td = _make_trade_decision(quantity=10, price=Decimal("70000"))
+    result = await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+        reference_price=Decimal("72000"),
+    )
+
+    assert result.success is True
+    order_req = mock_broker.place_order.call_args.args[0]
+    assert order_req.quantity == 10
+
+
+@pytest.mark.asyncio
+async def test_finalize_rescales_stop_tp_preserving_ratio(
+    executor, mock_broker, mock_position_manager, mock_settings,
+):
+    """체결가 기준으로 손절/익절을 원래 비율로 재적용(F-16 A2)."""
+    _set_sizing_settings(mock_settings)
+    mock_broker.place_order = AsyncMock(
+        return_value=_make_order_result(filled_price=Decimal("74000"), filled_quantity=10),
+    )
+    td = _make_trade_decision(quantity=10, price=Decimal("74000"))
+    await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+        reference_price=Decimal("72000"),
+    )
+
+    kwargs = mock_position_manager.create.call_args.kwargs
+    fill = Decimal("74000")
+    p_stop = (Decimal("72000") - Decimal("68000")) / Decimal("72000")
+    p_tp = (Decimal("80000") - Decimal("72000")) / Decimal("72000")
+    assert kwargs["stop_loss_price"] == fill * (Decimal("1") - p_stop)
+    assert kwargs["take_profit_price"] == fill * (Decimal("1") + p_tp)
+
+
+@pytest.mark.asyncio
+async def test_no_reference_price_keeps_decision_stop_tp(
+    executor, mock_position_manager,
+):
+    """reference_price 미주입(수동/단건) → 손절/익절은 결정값 그대로(보정 스킵)."""
+    td = _make_trade_decision()
+    await executor.execute_entry(
+        trade_decision=td, session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    kwargs = mock_position_manager.create.call_args.kwargs
+    assert kwargs["stop_loss_price"] == Decimal("68000")
+    assert kwargs["take_profit_price"] == Decimal("80000")
+
+
+# ---------------------------------------------------------------------------
+# F-10 B1: 진입 시 트레일링/시간 청산 파라미터 비-NULL 주입
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_entry_injects_trailing_params_position(
+    executor, mock_position_manager,
+):
+    """POSITION 진입: trailing_stop_pct/max_holding_days가 비-NULL로 저장."""
+    await executor.execute_entry(
+        trade_decision=_make_trade_decision(), session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    kwargs = mock_position_manager.create.call_args.kwargs
+    assert kwargs["trailing_stop_pct"] is not None
+    assert kwargs["max_holding_days"] == 60
+
+
+@pytest.mark.asyncio
+async def test_entry_injects_trailing_params_swing(
+    executor, mock_position_manager,
+):
+    """SWING 진입: 고정 트레일 폭 + max 10일 주입."""
+    await executor.execute_entry(
+        trade_decision=_make_trade_decision(), session_id=uuid.uuid4(),
+        strategy_type=StrategyType.SWING.value,
+    )
+
+    kwargs = mock_position_manager.create.call_args.kwargs
+    assert kwargs["trailing_stop_pct"] == Decimal("5.0")
+    assert kwargs["max_holding_days"] == 10

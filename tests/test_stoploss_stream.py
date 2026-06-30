@@ -215,6 +215,38 @@ async def test_trailing_breach_triggers_exit():
 
 
 @pytest.mark.asyncio
+async def test_trailing_skipped_below_activation_threshold():
+    """활성화 게이트(F-10 B2): 미실현 수익이 임계 미만이면 트레일링 미발동."""
+    svc, exit_service, _pm, _ = _make_service()
+    pos = _make_position(
+        entry=Decimal("70000"), stop=Decimal("60000"),
+        trailing=Decimal("5.0"), highest=Decimal("80000"),
+    )
+    pos.strategy_type = "swing"  # 활성화 임계 3%
+    svc._positions = [pos]
+
+    # 현재가 71000 → 미실현 +1.43% < 3% → 트레일가(76000) 하회여도 청산 안 함.
+    await svc._on_tick(PriceTick(symbol="005930", price=Decimal("71000"), time="093045"))
+    exit_service.process_exit_signals.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trailing_fires_above_activation_threshold():
+    """활성화 임계 이상이면 트레일링 정상 발동(F-10 B2)."""
+    svc, exit_service, _pm, _ = _make_service()
+    pos = _make_position(
+        entry=Decimal("70000"), stop=Decimal("60000"),
+        trailing=Decimal("5.0"), highest=Decimal("80000"),
+    )
+    pos.strategy_type = "swing"
+    svc._positions = [pos]
+
+    # 현재가 75000 → 미실현 +7.1% ≥ 3% 활성, 트레일가 76000 ≥ 75000 → 청산.
+    await svc._on_tick(PriceTick(symbol="005930", price=Decimal("75000"), time="093045"))
+    assert exit_service.process_exit_signals.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_dispatch_failure_releases_claim():
     svc, exit_service, _pm, coord = _make_service()
     exit_service.process_exit_signals = AsyncMock(return_value=[MagicMock(success=False)])

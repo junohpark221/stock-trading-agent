@@ -21,6 +21,7 @@ from src.api.routes.portfolio import PositionItem
 from src.core.enums import StrategyType
 from src.db.models.strategy import PositionRecord
 from src.db.session import get_db_session
+from src.strategy.trailing import entry_trailing_params
 
 logger = structlog.get_logger(__name__)
 
@@ -168,19 +169,13 @@ async def run_strategy(req: StrategyRunRequest) -> JSONResponse:
         session_id = pipeline_result.session_id
         position_manager = strategy._position_manager
 
-        # 전략별 트레일링/보유일 파라미터
-        trailing_pct = None
-        max_days = None
-        if req.strategy_type == StrategyType.POSITION:
-            from src.strategy.position_trading import PositionTradingStrategy
-            max_days = PositionTradingStrategy.MAX_HOLDING_DAYS
-        elif req.strategy_type == StrategyType.SWING:
-            from src.strategy.swing_trading import SwingTradingStrategy
-            trailing_pct = SwingTradingStrategy.TRAILING_TRAIL_PCT
-            max_days = SwingTradingStrategy.MAX_HOLDING_DAYS
-
         for signal in signals:
             entry_price = signal.position_value_krw / signal.quantity if signal.quantity > 0 else signal.stop_loss_price
+
+            # 전략별 트레일링/보유일 — 라이브 진입(executor)과 동일한 단일 헬퍼 사용(F-10).
+            trailing_pct, max_days = entry_trailing_params(
+                strategy.strategy_type.value, entry_price
+            )
 
             await position_manager.create(
                 symbol=signal.symbol,

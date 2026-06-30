@@ -47,6 +47,8 @@ from src.core.models import (
 from src.db.models.execution import Execution, Order
 from src.db.models.market_data import StockMaster
 from src.notification.templates import MessageTemplates
+from src.strategy.sizing import PositionSizer
+from src.strategy.trailing import entry_trailing_params
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -191,6 +193,7 @@ class OrderExecutor:
         manual: bool = False,
         batch_reservation: BatchReservation | None = None,
         entry_analysis_snapshot: dict | None = None,
+        reference_price: Decimal | None = None,
     ) -> ExecutionResult:
         """진입 주문 실행.
 
@@ -207,6 +210,10 @@ class OrderExecutor:
         batch_reservation: 배치 매수 시 같은 배치의 in-flight 진입을 누적하는 예약
             (F-04). 주어지면 승인 요청 전에 누적 한도 게이트를 적용하고, 접수(미체결)
             성공 시 예약에 누적한다. 수동/단건 주문은 None(게이트 스킵).
+        reference_price: 전략이 손절/익절을 산출한 기준가(결정 큐 reference_price,
+            08:30 결정가). 주어지면 갭게이트 통과 등으로 진입가가 기준가에서 벌어졌을 때
+            손절/익절을 원래 비율로 재적용하고 수량을 재사이징해 의도 R:R·리스크를
+            보존한다(F-16). 수동/단건 주문은 None(보정 스킵).
         """
         side = _ACTION_TO_SIDE.get(trade_decision.action, OrderSide.BUY)
         symbol = trade_decision.symbol
@@ -503,6 +510,51 @@ class OrderExecutor:
 
                     effective_quantity = risk_result.adjusted_quantity or modified_qty
 
+            # 5-0. 갭/진입가 괴리 보정 — 발주 전 수량 재사이징 (F-16).
+            # reference_price(전략 손절 산출 기준가) 대비 live 진입가(price)가 벌어지면
+            # risk_per_share가 달라져 의도 risk budget을 초과할 수 있다. 손절가를 원래
+            # 비율로 재적용한 값으로 PositionSizer를 재호출해 수량을 재산정하되, 항상
+            # 축소(min)만 적용한다(상방 갭이면 리스크 기반 수량이 작아져 자연 채택,
+            # 하방 갭이면 원수량 유지로 예산 초과 없음). 수동 주문은 스킵.
+            if (
+                side == OrderSide.BUY
+                and not manual
+                and reference_price is not None
+                and reference_price > 0
+            ):
+                rescaled = self._rescale_exit_prices(
+                    reference_price=reference_price,
+                    stop0=trade_decision.stop_loss_price,
+                    tp0=trade_decision.take_profit_price,
+                    target_price=price,
+                )
+                if rescaled is not None:
+                    scaled_stop, scaled_tp = rescaled
+                    try:
+                        size_state = await self._portfolio_service.get_current_state()
+                        sizing = PositionSizer(self._settings).calculate(
+                            symbol=symbol,
+                            entry_price=price,
+                            stop_loss_price=scaled_stop,
+                            take_profit_price=scaled_tp,
+                            total_portfolio_value=size_state.total_value,
+                        )
+                        if 0 < sizing.quantity < effective_quantity:
+                            logger.info(
+                                "executor.gap_resize",
+                                symbol=symbol,
+                                reference_price=str(reference_price),
+                                live_price=str(price),
+                                original_qty=effective_quantity,
+                                resized_qty=sizing.quantity,
+                                account_id=account_id,
+                            )
+                            effective_quantity = sizing.quantity
+                    except Exception:
+                        logger.warning(
+                            "executor.gap_resize_failed", symbol=symbol, exc_info=True
+                        )
+
             # 5-a. Cash Gate (미수 방지): place_order 직전 브로커 주문가능현금 확인.
             # dnca_tot_amt(예수금총액)는 D+2 정산 전이라 당일 매수분을 차감하지
             # 않음 → 실제 가용은 TTTC8908R의 nrcvb_buy_amt만 정확. 초과 시 모드별
@@ -633,7 +685,7 @@ class OrderExecutor:
                     session_id=session_id, parent_decision_id=parent_decision_id,
                     account_id=account_id, account_label=account_label,
                     verification=verification, approval_status=approval_status,
-                    decision_ids=decision_ids,
+                    decision_ids=decision_ids, reference_price=reference_price,
                 )
 
             # 6-c. SUBMITTED — KIS 실제 주문의 정상 경로
@@ -745,7 +797,7 @@ class OrderExecutor:
                     session_id=session_id, parent_decision_id=parent_decision_id,
                     account_id=account_id, account_label=account_label,
                     verification=verification, approval_status=approval_status,
-                    decision_ids=decision_ids,
+                    decision_ids=decision_ids, reference_price=reference_price,
                 )
 
             # 6-e. WS 미연결 — 체결은 reconciler가 처리
@@ -780,6 +832,48 @@ class OrderExecutor:
                 error=str(exc),
             )
 
+    @staticmethod
+    def _rescale_exit_prices(
+        *,
+        reference_price: Decimal,
+        stop0: Decimal | None,
+        tp0: Decimal | None,
+        target_price: Decimal,
+    ) -> tuple[Decimal, Decimal | None] | None:
+        """진입가 괴리 시 손절·익절을 원래 비율로 재적용(F-16).
+
+        reference_price(전략이 stop0/tp0를 산출한 기준가) 대비 손절/익절 비율을
+        target_price(live 진입가 또는 체결가)에 그대로 곱해 의도한 R:R·리스크%를
+        보존한다. 비율을 보존하므로 손절 *폭(%)* 은 변하지 않고(좁아지지 않고)
+        절대가만 진입가에 맞춰 따라간다.
+
+        입력이 비정상(기준가/체결가 비양수, 손절가 결측, 손절 비율이 0..1 밖,
+        역전된 손절가)이면 ``None`` 을 반환해 호출자가 원본을 유지하게 한다.
+
+        Returns
+        -------
+        (new_stop, new_tp) — new_tp는 익절가 결측/비정상이면 None.
+        """
+        if (
+            reference_price <= 0
+            or target_price <= 0
+            or stop0 is None
+            or stop0 <= 0
+        ):
+            return None
+        p_stop = (reference_price - stop0) / reference_price
+        # 정상 롱 진입은 0 < p_stop < 1 (손절가가 기준가보다 낮음). 벗어나면 보류.
+        if not (Decimal("0") < p_stop < Decimal("1")):
+            return None
+        new_stop = target_price * (Decimal("1") - p_stop)
+
+        new_tp: Decimal | None = None
+        if tp0 is not None and tp0 > 0:
+            p_tp = (tp0 - reference_price) / reference_price
+            if p_tp > 0:
+                new_tp = target_price * (Decimal("1") + p_tp)
+        return new_stop, new_tp
+
     async def _finalize_entry_fill(
         self,
         *,
@@ -798,6 +892,7 @@ class OrderExecutor:
         verification: WebVerification,
         approval_status: ApprovalStatus,
         decision_ids: list[UUID],
+        reference_price: Decimal | None = None,
     ) -> ExecutionResult:
         """진입 주문 체결 확정 후처리 — 체결기록·포지션생성·알림·audit."""
         now = datetime.now(UTC)
@@ -821,8 +916,22 @@ class OrderExecutor:
             executed_at=now,
         )
 
-        # 손절가: 명시적 값 > 설정 기반 기본값
+        # 손절/익절가: 체결가 기준 비율 재적용(F-16) > 명시적 값 > 설정 기반 기본값.
+        # reference_price가 주어지면 실제 체결가(fill_price) 대비 원래 비율로 손절/익절을
+        # 재산정해 갭/체결가 괴리에서도 의도한 R:R·리스크%를 보존한다.
         stop_loss = trade_decision.stop_loss_price
+        take_profit = trade_decision.take_profit_price
+        if reference_price is not None and reference_price > 0:
+            rescaled = self._rescale_exit_prices(
+                reference_price=reference_price,
+                stop0=trade_decision.stop_loss_price,
+                tp0=trade_decision.take_profit_price,
+                target_price=fill_price,
+            )
+            if rescaled is not None:
+                stop_loss, rescaled_tp = rescaled
+                if rescaled_tp is not None:
+                    take_profit = rescaled_tp
         if not stop_loss or stop_loss <= 0:
             default_sl_pct = Decimal(str(self._settings.STOP_LOSS_PERCENT))
             stop_loss = fill_price * (Decimal("1") - default_sl_pct / Decimal("100"))
@@ -830,6 +939,13 @@ class OrderExecutor:
                 "executor.default_stop_loss",
                 symbol=symbol, stop_loss=str(stop_loss), pct=str(default_sl_pct),
             )
+
+        # F-10: 전략 상수로 트레일링/시간 청산 파라미터를 포지션에 주입(라이브 배선).
+        # 두 값이 비-NULL이어야 폴링·WS·exit_checker의 트레일링/시간 청산 게이트가
+        # 실제로 동작한다(인프라는 이미 두 값을 대기 중).
+        trailing_stop_pct, max_holding_days = entry_trailing_params(
+            strategy_type, fill_price
+        )
 
         position_id: int | None = None
         try:
@@ -839,7 +955,9 @@ class OrderExecutor:
                 quantity=fill_quantity,
                 entry_price=fill_price,
                 stop_loss_price=stop_loss,
-                take_profit_price=trade_decision.take_profit_price,
+                take_profit_price=take_profit,
+                trailing_stop_pct=trailing_stop_pct,
+                max_holding_days=max_holding_days,
                 entry_session_id=session_id,
                 account_id=account_id,
                 entry_analysis_snapshot=order.entry_analysis_snapshot,

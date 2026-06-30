@@ -15,12 +15,17 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy import func, select
 
-from src.core.enums import DecisionAction
+from src.core.enums import DecisionAction, StrategyType
 from src.core.time import KST as _KST
 from src.data.collector import collect_daily_ohlcv
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.notification.templates import MessageTemplates
 from src.strategy.risk_manager import BatchReservation
+from src.strategy.trailing import (
+    calculate_atr,
+    is_trailing_active,
+    trailing_stop_price,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -31,6 +36,7 @@ if TYPE_CHECKING:
     from src.config import Settings
     from src.core.models import PipelineResult, TradeDecision
     from src.data.providers.base import DataProvider
+    from src.db.models.strategy import PositionRecord
     from src.execution.decision_queue import TradeDecisionQueueManager
     from src.execution.executor import OrderExecutor
     from src.execution.exit_coordinator import ExitCoordinator
@@ -51,6 +57,34 @@ logger = structlog.get_logger(__name__)
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
 _Q2 = Decimal("0.01")
+
+# POSITION 트레일링용 ATR 산출 — ATR(14) 계산에 필요한 봉 확보를 위한 조회 일수.
+_ATR_PERIOD = 14
+_ATR_LOOKBACK_DAYS = 40
+
+
+async def _position_trailing_atr(
+    broker: BrokerInterface, position: PositionRecord
+) -> Decimal | None:
+    """POSITION 전략 트레일링용 ATR 동적 폭 산출에 쓸 ATR. 비대상/실패 시 None.
+
+    F-10 B3: 라이브 폴링에서 POSITION 트레일링 폭을 ATR×배수로 동적 산출하기 위해
+    매 사이클 ATR을 재계산한다(저빈도 5분 폴링). SWING(고정 폭)·조회 실패는 None
+    → 저장된 trailing_stop_pct(고정/폴백)로 폴백.
+    """
+    if position.strategy_type != StrategyType.POSITION.value:
+        return None
+    try:
+        ohlcv = await broker.get_daily_ohlcv(
+            position.symbol, period_days=_ATR_LOOKBACK_DAYS
+        )
+        atr = calculate_atr(ohlcv, period=_ATR_PERIOD)
+        return atr if atr > _ZERO else None
+    except Exception:
+        logger.warning(
+            "job.stop_loss_check.atr_failed", symbol=position.symbol, exc_info=True
+        )
+        return None
 
 
 # ── Token / Data Collection ────────────────────────────────────────────
@@ -287,6 +321,7 @@ async def _execute_buy_decisions(
                 account_label=account_label,
                 batch_reservation=reservation,
                 entry_analysis_snapshot=meta.get("snapshot"),
+                reference_price=meta.get("reference_price"),
             )
             order_id = getattr(exec_result, "order_id", None)
             results.append((td.symbol, exec_result.success, order_id))
@@ -580,6 +615,9 @@ async def job_execution_drain(
             "session_id": p.session_id,
             "snapshot": p.entry_analysis_snapshot,
             "pending_id": p.id,
+            # F-16: 전략이 손절/익절을 산출한 기준가(=결정가). 갭으로 진입가가
+            # 벌어졌을 때 executor가 손절/익절 비율 보존 + 수량 재사이징에 사용.
+            "reference_price": p.reference_price,
         }
 
     if gap_failed_ids:
@@ -681,11 +719,18 @@ async def job_stop_loss_check(
                 exit_signals.append(signal)
                 continue  # 손절 시그널이 나오면 다른 조건은 불필요
 
+            # 트레일링 활성 여부(F-10 B2): 미실현 수익이 전략 임계 이상일 때만 트레일링이
+            # bite. 임계 미달이면 익절가 도달 시 즉시 매도(아래 분기)로 처리.
+            trailing_on = (
+                position.trailing_stop_pct is not None
+                and is_trailing_active(position.strategy_type, unrealized_pnl_pct)
+            )
+
             signal = exit_checker.check_take_profit(position, current_price, unrealized_pnl_pct)
             if signal:
-                if position.trailing_stop_pct is not None:
-                    # 트레일링 스탑 설정 시: 익절가 도달을 트레일링 스탑 모드 전환으로 취급.
-                    # 즉시 매도하지 않고 고점 추적을 계속하여 추가 상승을 노린다.
+                if trailing_on:
+                    # 트레일링 활성 + 익절가 도달: 즉시 매도가 아니라 고점 추적을 계속해
+                    # 추가 상승을 노린다(트레일링 스톱 모드 전환).
                     logger.info(
                         "job.take_profit_to_trailing",
                         symbol=position.symbol,
@@ -698,21 +743,28 @@ async def job_stop_loss_check(
                     exit_signals.append(signal)
                     continue
 
-            # 트레일링 스톱 (trailing_stop_pct가 설정된 경우만)
-            if position.trailing_stop_pct is not None:
+            # 트레일링 스톱 (활성 상태에서만). POSITION은 ATR×배수로 폭을 동적 산출(B3),
+            # SWING/ATR 결측은 저장된 trailing_stop_pct(고정/폴백) 사용.
+            if trailing_on:
+                atr = await _position_trailing_atr(broker, position)
                 baseline = position.highest_price or position.entry_price
-                trailing_stop_price = baseline * (
-                    Decimal("1") - position.trailing_stop_pct / _HUNDRED
+                ts_price = trailing_stop_price(
+                    position.strategy_type,
+                    entry_price=position.entry_price,
+                    baseline_high=baseline,
+                    stored_pct=position.trailing_stop_pct,
+                    atr=atr,
                 )
-                signal = exit_checker.check_trailing_stop(
-                    position,
-                    current_price,
-                    unrealized_pnl_pct,
-                    trailing_stop_price,
-                )
-                if signal:
-                    exit_signals.append(signal)
-                    continue
+                if ts_price is not None:
+                    signal = exit_checker.check_trailing_stop(
+                        position,
+                        current_price,
+                        unrealized_pnl_pct,
+                        ts_price,
+                    )
+                    if signal:
+                        exit_signals.append(signal)
+                        continue
 
             signal = exit_checker.check_time_based(
                 position,

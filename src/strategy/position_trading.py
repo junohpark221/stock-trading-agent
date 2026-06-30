@@ -37,6 +37,7 @@ from src.strategy.base import Strategy
 from src.strategy.exit_calculator import ExitPriceCalculator
 from src.strategy.registry import register_strategy
 from src.strategy.sizing import PositionSizer
+from src.strategy.trailing import calculate_atr, trailing_stop_price
 
 if TYPE_CHECKING:
     from src.db.models.strategy import PositionRecord
@@ -482,23 +483,19 @@ class PositionTradingStrategy(Strategy):
         # 진입 후 최고가
         highest_since_entry = max(bar.high for bar in entry_bars)
 
-        # 트레일링 비율 계산
-        # 고정 비율 대신 ATR 기반 동적 비율 사용:
-        # trailing_pct = (ATR × TRAILING_ATR_MULT) / 진입가 × 100
+        # 트레일링 폭/가격 산출은 공유 헬퍼에 위임(라이브 폴링·WS와 동일 계산, F-10):
+        # POSITION은 ATR×배수/진입가, ATR 결측 시 저장된 trailing_stop_pct 폴백.
+        atr: Decimal | None = None
         if len(ohlcv_list) >= self.ATR_PERIOD + 1:
-            atr = self._calculate_atr(ohlcv_list, period=self.ATR_PERIOD)
-            trailing_amount = atr * self.TRAILING_ATR_MULT
-            # 진입가 대비 트레일링 비율(%)로 변환
-            trailing_pct = (trailing_amount / position.entry_price) * Decimal("100")
-        elif position.trailing_stop_pct is not None:
-            # ATR 계산 불가 시 DB에 저장된 trailing_stop_pct 사용
-            trailing_pct = position.trailing_stop_pct
-        else:
-            return None
+            computed = self._calculate_atr(ohlcv_list, period=self.ATR_PERIOD)
+            atr = computed if computed > Decimal("0") else None
 
-        return ExitPriceCalculator.trailing_stop_price(
-            highest_since_entry=highest_since_entry,
-            trailing_pct=trailing_pct,
+        return trailing_stop_price(
+            self.strategy_type.value,
+            entry_price=position.entry_price,
+            baseline_high=highest_since_entry,
+            stored_pct=position.trailing_stop_pct,
+            atr=atr,
         )
 
     async def _get_sector(self, symbol: str) -> str:
@@ -513,42 +510,7 @@ class PositionTradingStrategy(Strategy):
     def _calculate_atr(ohlcv_list: list[OHLCV], period: int = 14) -> Decimal:
         """ATR(Average True Range) 계산 — SMA 방식.
 
-        # ATR 계산 상세:
-        # 1. True Range = max(고가-저가, |고가-전일종가|, |저가-전일종가|)
-        #    - 고가-저가: 당일 변동 폭
-        #    - |고가-전일종가|: 갭업 후 변동
-        #    - |저가-전일종가|: 갭다운 후 변동
-        # 2. ATR = 최근 period일 TR의 단순 이동 평균 (SMA)
-        # 3. 변동성이 클수록 ATR이 높아져 손절/익절 폭이 넓어짐
-
-        Parameters
-        ----------
-        ohlcv_list : 날짜 오름차순 정렬된 OHLCV 리스트
-        period : ATR 평균 기간 (기본 14일)
-
-        Returns
-        -------
-        Decimal — ATR 값 (소수점 이하 포함)
+        단일 출처인 ``src.strategy.trailing.calculate_atr`` 에 위임한다(라이브 폴링·
+        백테스트와 동일 계산 보장, F-10).
         """
-        if len(ohlcv_list) < period + 1:
-            # ATR 계산에 최소 period+1개 봉 필요 (전일 종가 참조)
-            return Decimal("0")
-
-        true_ranges: list[Decimal] = []
-        for i in range(1, len(ohlcv_list)):
-            high = ohlcv_list[i].high
-            low = ohlcv_list[i].low
-            prev_close = ohlcv_list[i - 1].close
-
-            # True Range: 세 값 중 최대값
-            tr = max(
-                high - low,
-                abs(high - prev_close),
-                abs(low - prev_close),
-            )
-            true_ranges.append(tr)
-
-        # 최근 period일의 TR만 사용하여 SMA 계산
-        recent_trs = true_ranges[-period:]
-        atr = sum(recent_trs) / Decimal(str(period))
-        return atr
+        return calculate_atr(ohlcv_list, period=period)

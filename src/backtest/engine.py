@@ -55,6 +55,7 @@ from src.report.metrics import PerformanceCalculator
 from src.strategy.exit_calculator import ExitPriceCalculator
 from src.strategy.exit_checker import ExitConditionChecker
 from src.strategy.sizing import PositionSizer
+from src.strategy.trailing import is_trailing_active, trailing_stop_price
 
 from .data_loader import HistoricalDataLoader
 from .llm_replay import LLMReplayProvider
@@ -84,6 +85,8 @@ _SWING_DEFAULTS: dict[str, int | float] = {
     "tp_pct": 5.0,
     "min_signals": 2,
     "max_holding_days": 10,
+    # F-10: 라이브 SWING 트레일링(고정 5%)과 정합. 이전엔 백테스트만 트레일링 부재.
+    "trailing_stop_pct": 5.0,
 }
 
 
@@ -296,14 +299,19 @@ class BacktestEngine:
             # 4가지 청산 조건 순차 체크 (우선순위: SL > Trailing > TP > Time)
             exit_signal = self._exit_checker.check_stop_loss(pos, close, pnl_pct)
 
-            if exit_signal is None and pos.trailing_stop_pct is not None:
-                # 트레일링 스톱: 수익이 trailing_stop_pct 이상일 때만 활성화
-                activation_pct = pos.trailing_stop_pct
-                if pnl_pct >= activation_pct:
-                    trailing_price = ExitPriceCalculator.trailing_stop_price(
-                        self._highest_prices[symbol],
-                        pos.trailing_stop_pct,
-                    )
+            if (
+                exit_signal is None
+                and pos.trailing_stop_pct is not None
+                and is_trailing_active(pos.strategy_type, pnl_pct)
+            ):
+                # 트레일링 활성화 게이트·폭 산출은 공유 헬퍼 사용(라이브와 동일, F-10).
+                trailing_price = trailing_stop_price(
+                    pos.strategy_type,
+                    entry_price=pos.entry_price,
+                    baseline_high=self._highest_prices[symbol],
+                    stored_pct=pos.trailing_stop_pct,
+                )
+                if trailing_price is not None:
                     exit_signal = self._exit_checker.check_trailing_stop(
                         pos, close, pnl_pct, trailing_price,
                     )
@@ -440,7 +448,9 @@ class BacktestEngine:
                 )
                 max_days = int(params.get("max_holding_days", _POS_DEFAULTS["max_holding_days"]))
             else:
-                trailing_pct = None
+                trailing_pct = Decimal(
+                    str(params.get("trailing_stop_pct", _SWING_DEFAULTS["trailing_stop_pct"])),
+                )
                 max_days = int(params.get("max_holding_days", _SWING_DEFAULTS["max_holding_days"]))
 
             self._position_id_counter += 1

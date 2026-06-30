@@ -19,6 +19,7 @@ from src.broker.kis.client import KISClient
 from src.broker.kis.models import (
     KISBalanceOutput1,
     KISBalanceOutput2,
+    KISBalanceRlzPlOutput2,
     KISBaseResponse,
     KISDailyChartOutput,
     KISPriceOutput,
@@ -249,6 +250,26 @@ class TestKISBalanceOutput1:
         assert pos.average_cost == Decimal("70000")
         assert pos.current_price == Decimal("72000")
         assert pos.market_value == Decimal("720000")
+
+
+class TestKISBalanceRlzPlOutput2:
+    """TTTC8494R output2(실현손익 요약) 파싱."""
+
+    def test_parses_realized_fields(self):
+        out = KISBalanceRlzPlOutput2(rlzt_pfls="123456", rlzt_erng_rt="2.34")
+        assert _to_decimal(out.rlzt_pfls) == Decimal("123456")
+        assert _to_decimal(out.rlzt_erng_rt) == Decimal("2.34")
+
+    def test_defaults_empty(self):
+        out = KISBalanceRlzPlOutput2()
+        assert _to_decimal(out.rlzt_pfls) == Decimal(0)
+        assert _to_decimal(out.rlzt_erng_rt) == Decimal(0)
+
+    def test_ignores_extra_fields(self):
+        out = KISBalanceRlzPlOutput2.model_validate(
+            {"rlzt_pfls": "-5000", "rlzt_erng_rt": "-1.2", "dnca_tot_amt": "999"}
+        )
+        assert _to_decimal(out.rlzt_pfls) == Decimal("-5000")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -931,11 +952,9 @@ class TestKISClientGetBalance:
     @pytest.mark.asyncio
     async def test_balance_fields(self):
         client = _make_kis_client()
-        resp = _make_ok_response(
-            output={},
-            tr_cont="",
-        )
-        # Manually build the full response
+        # 1st GET = 잔고(TTTC8434R), 2nd GET = 실현손익(TTTC8494R).
+        # 당일 매수만 한 날(thdt_buy_amt>0, thdt_sll_amt=0)이라도 daily_pnl은
+        # 순매매현금흐름이 아니라 실현손익(rlzt_pfls)을 따라야 한다 — F-18 회귀 가드.
         balance_resp = mock_aiohttp_response(
             json_data={
                 "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
@@ -953,12 +972,53 @@ class TestKISClientGetBalance:
             },
             headers={"tr_cont": ""},
         )
-        client._session.get = AsyncMock(return_value=balance_resp)
+        rlzpl_resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output1": [],
+                "output2": [{"rlzt_pfls": "0", "rlzt_erng_rt": "0"}],
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(side_effect=[balance_resp, rlzpl_resp])
 
         bal = await client.get_balance()
         assert bal.cash == Decimal("50000000")
         assert bal.invested == Decimal("700000")
         assert bal.unrealized_pnl == Decimal("20000")
+        # 매수만 한 날이라도 daily_pnl은 음수가 아니다(실현손익 0).
+        assert bal.daily_pnl == Decimal(0)
+        assert bal.daily_pnl >= Decimal(0)
+
+    @pytest.mark.asyncio
+    async def test_daily_pnl_uses_realized_pnl(self):
+        """daily_pnl/daily_pnl_pct/realized_pnl이 실현손익 TR 값을 따른다."""
+        client = _make_kis_client()
+        balance_resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output1": [],
+                "output2": [
+                    {"dnca_tot_amt": "50000000", "tot_evlu_amt": "50000000",
+                     "thdt_buy_amt": "0", "thdt_sll_amt": "0"},
+                ],
+            },
+            headers={"tr_cont": ""},
+        )
+        rlzpl_resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output1": [],
+                "output2": [{"rlzt_pfls": "150000", "rlzt_erng_rt": "1.5"}],
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(side_effect=[balance_resp, rlzpl_resp])
+
+        bal = await client.get_balance()
+        assert bal.daily_pnl == Decimal("150000")
+        assert bal.daily_pnl_pct == Decimal("1.5")
+        assert bal.realized_pnl == Decimal("150000")
 
     @pytest.mark.asyncio
     async def test_positions_count_active_only(self):
@@ -1053,6 +1113,82 @@ class TestKISClientGetBuyableCash:
 
         buyable = await client.get_buyable_cash("005930", Decimal("72000"))
         assert buyable == Decimal(0)
+
+
+class TestKISClientFetchDailyRealizedPnl:
+    """_fetch_daily_realized_pnl (TTTC8494R): 당일 실현손익/실현수익률 조회."""
+
+    @pytest.mark.asyncio
+    async def test_parses_realized_pnl(self):
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output1": [],
+                "output2": [{"rlzt_pfls": "-25000", "rlzt_erng_rt": "-0.8"}],
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        pnl, rate = await client._fetch_daily_realized_pnl()
+        assert pnl == Decimal("-25000")
+        assert rate == Decimal("-0.8")
+
+    @pytest.mark.asyncio
+    async def test_empty_output2_returns_zero(self):
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                       "output1": [], "output2": []},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        pnl, rate = await client._fetch_daily_realized_pnl()
+        assert pnl == Decimal(0)
+        assert rate == Decimal(0)
+
+    @pytest.mark.asyncio
+    async def test_kis_error_falls_back_to_zero(self):
+        """모의 미지원 등 KISResponseError 발생 시 (0, 0) 폴백."""
+        client = _make_kis_client()
+        client._session.get = AsyncMock(
+            side_effect=KISResponseError(msg_cd="EGW00999", msg1="미지원", tr_id="VTTC8494R")
+        )
+
+        pnl, rate = await client._fetch_daily_realized_pnl()
+        assert pnl == Decimal(0)
+        assert rate == Decimal(0)
+
+    @pytest.mark.asyncio
+    async def test_real_uses_live_tr_id(self):
+        client = _make_kis_client()
+        client._is_paper = lambda: False
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                       "output1": [], "output2": [{"rlzt_pfls": "0", "rlzt_erng_rt": "0"}]},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        await client._fetch_daily_realized_pnl()
+        # _do_request → build_headers(token, tr_id, tr_cont=...): tr_id는 두 번째 위치 인자.
+        assert client._auth.build_headers.call_args.args[1] == "TTTC8494R"
+
+    @pytest.mark.asyncio
+    async def test_paper_uses_demo_tr_id(self):
+        client = _make_kis_client()
+        client._is_paper = lambda: True
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                       "output1": [], "output2": [{"rlzt_pfls": "0", "rlzt_erng_rt": "0"}]},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+
+        await client._fetch_daily_realized_pnl()
+        assert client._auth.build_headers.call_args.args[1] == "VTTC8494R"
 
 
 class TestKISClientGetPositions:

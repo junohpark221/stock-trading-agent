@@ -271,6 +271,9 @@ class TestGetCurrentStateWithPositions:
         # peak should be updated to current (100M > 95M)
         assert state.peak_value == Decimal("100000000")
         assert state.drawdown_pct == Decimal(0)
+        # F-18: daily_pnl/daily_pnl_pct는 balance(실현손익 기준)를 그대로 패스스루.
+        assert state.daily_pnl == Decimal("200000")
+        assert state.daily_pnl_pct == Decimal("0.20")
 
 
 class TestDrawdownCalculation:

@@ -32,6 +32,7 @@ from src.broker.kis.auth import KISAuth
 from src.broker.kis.models import (
     KISBalanceOutput1,
     KISBalanceOutput2,
+    KISBalanceRlzPlOutput2,
     KISBaseResponse,
     KISDailyChartOutput,
     KISOrderCcldOutput,
@@ -799,13 +800,16 @@ class KISClient(BrokerInterface):
         cash = _to_decimal(summary.dnca_tot_amt)
         invested = _to_decimal(summary.pchs_amt_smtl_amt)
         unrealized = _to_decimal(summary.evlu_pfls_smtl_amt)
+        daily_pnl, daily_pnl_pct = await self._fetch_daily_realized_pnl()
 
         return AccountBalance(
             total_assets=_to_decimal(summary.tot_evlu_amt),
             cash=cash,
             invested=invested,
             unrealized_pnl=unrealized,
-            daily_pnl=_to_decimal(summary.thdt_sll_amt) - _to_decimal(summary.thdt_buy_amt),
+            realized_pnl=daily_pnl,
+            daily_pnl=daily_pnl,
+            daily_pnl_pct=daily_pnl_pct,
             positions_count=len([p for p in positions if _to_int(p.hldg_qty) > 0]),
             timestamp=datetime.now(),
         )
@@ -831,13 +835,16 @@ class KISClient(BrokerInterface):
         cash = _to_decimal(summary.dnca_tot_amt)
         invested = _to_decimal(summary.pchs_amt_smtl_amt)
         unrealized = _to_decimal(summary.evlu_pfls_smtl_amt)
+        daily_pnl, daily_pnl_pct = await self._fetch_daily_realized_pnl()
 
         balance = AccountBalance(
             total_assets=_to_decimal(summary.tot_evlu_amt),
             cash=cash,
             invested=invested,
             unrealized_pnl=unrealized,
-            daily_pnl=_to_decimal(summary.thdt_sll_amt) - _to_decimal(summary.thdt_buy_amt),
+            realized_pnl=daily_pnl,
+            daily_pnl=daily_pnl,
+            daily_pnl_pct=daily_pnl_pct,
             positions_count=len([p for p in raw_positions if _to_int(p.hldg_qty) > 0]),
             timestamp=datetime.now(),
         )
@@ -850,6 +857,64 @@ class KISClient(BrokerInterface):
         ]
 
         return balance, positions
+
+    async def _fetch_daily_realized_pnl(self) -> tuple[Decimal, Decimal]:
+        """당일 실현손익·실현수익률을 조회한다.
+
+        KIS 주식잔고조회_실현손익 — TR ``TTTC8494R`` (실전) / ``VTTC8494R`` (모의).
+        엔드포인트: ``/uapi/domestic-stock/v1/trading/inquire-balance-rlz-pl``.
+
+        ``daily_pnl``을 "당일 매도대금 − 당일 매수대금"(순 매매현금흐름)이 아니라
+        **실제 당일 실현손익**으로 채우기 위한 보조 조회. ``PRCS_DVSN="01"``
+        (전일매매 미포함)이라 당일 청산분 손익만 집계되며, ``output2`` 요약 1건만
+        필요해 페이지네이션 없이 1회 요청한다.
+
+        Returns:
+            ``(실현손익, 실현수익률)``. 응답이 비어있거나 모의계좌 미지원 등으로
+            조회에 실패하면 ``(0, 0)`` — 실현손익 조회 실패가 잔고 조회 전체를
+            깨지 않게 하고, 한도 미발동(과차단보다 안전)으로 폴백한다.
+        """
+        is_paper = self._is_paper()
+        tr_id = "VTTC8494R" if is_paper else "TTTC8494R"
+
+        params: dict[str, str] = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "01",  # 전일매매 미포함 → 당일분만
+            "COST_ICLD_YN": "N",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        try:
+            data = await self._request(
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-balance-rlz-pl",
+                tr_id,
+                params=params,
+            )
+        except (KISResponseError, APIError, BrokerError) as exc:
+            logger.warning(
+                "kis.daily_realized_pnl_fetch_failed",
+                tr_id=tr_id,
+                error=str(exc),
+            )
+            return Decimal(0), Decimal(0)
+
+        raw_output2 = data.get("output2")
+        if isinstance(raw_output2, list):
+            raw_output2 = raw_output2[0] if raw_output2 else None
+        if not raw_output2:
+            return Decimal(0), Decimal(0)
+
+        summary = KISBalanceRlzPlOutput2.model_validate(raw_output2)
+        return _to_decimal(summary.rlzt_pfls), _to_decimal(summary.rlzt_erng_rt)
 
     async def _fetch_balance_pages(
         self,

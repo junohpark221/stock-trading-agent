@@ -220,6 +220,22 @@ class KISBalanceOutput2(BaseModel):
     evlu_pfls_smtl_amt: str = ""    # 평가손익 합계
 
 
+# ── 잔고 실현손익 — 계좌요약 (TTTC8494R/VTTC8494R output2 첫 번째 항목) ──
+
+
+class KISBalanceRlzPlOutput2(BaseModel):
+    """주식잔고조회_실현손익 계좌요약 — ``TTTC8494R``/``VTTC8494R`` ``output2`` 첫 요소.
+
+    KIS 엔드포인트 ``/uapi/domestic-stock/v1/trading/inquire-balance-rlz-pl``.
+    ``PRCS_DVSN="01"``(전일매매 미포함)로 조회하면 당일분 실현손익만 집계된다.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    rlzt_pfls: str = ""             # 실현손익 (당일 합계)
+    rlzt_erng_rt: str = ""          # 실현수익률
+
+
 # ── 매수가능조회 (TTTC8908R/VTTC8908R output) ───────────────────────
 
 class KISPsblOrderOutput(BaseModel):
@@ -289,6 +305,7 @@ __all__ = [
     "KISOrderCcldOutput",
     "KISBalanceOutput1",
     "KISBalanceOutput2",
+    "KISBalanceRlzPlOutput2",
     "KISPsblOrderOutput",
     "_to_decimal",
     "_to_int",

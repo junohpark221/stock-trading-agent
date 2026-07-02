@@ -18,7 +18,7 @@
             {% for d in decisions %}
             <tr>
                 <td>{{ d.created_at | kst('%m-%d %H:%M') }}</td>
-                <td>{{ d.symbol or "-" }}</td>
+                <td>{% if d.symbol %}{{ names.get(d.symbol, d.symbol) }} ({{ d.symbol }}){% else %}-{% endif %}</td>
                 <td>
                     {% if d.stage == 'market_analysis' %}
                     <span class="badge badge-running">시장분석</span>

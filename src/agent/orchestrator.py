@@ -69,12 +69,15 @@ class PipelineOrchestrator:
         investment_prompt: str | None = None,
         risk_tolerance: str = "moderate",
         account_id: str = "default",
+        names: dict[str, str] | None = None,
     ) -> PipelineResult:
         """전체 파이프라인 실행.
 
         Args:
             symbols: 분석 대상 종목 코드 리스트
             session_id: 세션 ID (None이면 자동 생성)
+            names: 종목코드→종목명 매핑(F-19). 분석/리스크 프롬프트에 종목명 노출용.
+                누락 종목은 코드만 사용.
 
         Returns:
             PipelineResult with all analysis results
@@ -113,6 +116,7 @@ class PipelineOrchestrator:
                 investment_prompt=investment_prompt,
                 risk_tolerance=risk_tolerance,
                 account_id=account_id,
+                name=(names or {}).get(symbol),
             )
             for symbol in symbols
         ]
@@ -178,16 +182,20 @@ class PipelineOrchestrator:
         investment_prompt: str | None = None,
         risk_tolerance: str = "moderate",
         account_id: str = "default",
+        name: str | None = None,
     ) -> _SymbolResult:
         """종목별 Stock → Risk → Trade 파이프라인 실행."""
         async with semaphore:
             sr = _SymbolResult(symbol=symbol)
+            # F-19: 종목명이 있으면 분석/리스크/트레이드 데이터에 실어 프롬프트에 노출.
+            _name_kv = {"name": name} if name else {}
 
             # ── StockAnalyst ──
             try:
                 sa, stock_decision_id = await self._stock_analyst.analyze(
                     data={
                         "symbol": symbol,
+                        **_name_kv,
                         "market_condition": market_condition.model_dump(),
                     },
                     session_id=session_id,
@@ -210,6 +218,7 @@ class PipelineOrchestrator:
                 ra, risk_decision_id = await self._risk_manager.analyze(
                     data={
                         "symbol": symbol,
+                        **_name_kv,
                         "stock_analysis": sa.model_dump(),  # type: ignore[union-attr]
                         "market_condition": market_condition.model_dump(),
                         "risk_tolerance": risk_tolerance,
@@ -234,6 +243,7 @@ class PipelineOrchestrator:
                 td, _trade_decision_id = await self._trader.analyze(
                     data={
                         "symbol": symbol,
+                        **_name_kv,
                         "risk_assessment": ra.model_dump(),  # type: ignore[union-attr]
                         "stock_analysis": sa.model_dump(),  # type: ignore[union-attr]
                         "market_condition": market_condition.model_dump(),

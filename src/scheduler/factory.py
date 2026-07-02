@@ -28,6 +28,7 @@ from src.scheduler.jobs import (
     job_llm_cost_report,
     job_market_data_collect,
     job_monthly_report,
+    job_news_collect,
     job_position_decision,
     job_pre_open_prep,
     job_reconcile_open_orders,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     from src.config import Settings
     from src.data.cache import RedisCache
     from src.data.providers.base import DataProvider
+    from src.data.providers.naver_provider import NaverProvider
     from src.execution.approval import ApprovalManager
     from src.execution.decision_queue import TradeDecisionQueueManager
     from src.execution.execution_stream import ExecutionStreamManager
@@ -132,6 +134,7 @@ class SchedulerRuntime:
     exit_coordinator: ExitCoordinator
     watchlist_symbols: list[str]
     contexts: list[AccountContext]
+    naver_provider: NaverProvider | None = None
 
     async def reload_account(self, account_id: str) -> bool:
         """계좌 컨텍스트를 재빌드하고 해당 계좌 잡을 재등록한다.
@@ -391,6 +394,19 @@ class SchedulerFactory:
                 settings=settings,
             )
 
+        # ── 4-0. NaverProvider — 뉴스 수집 잡용 (NAVER 키 있을 때만) ──
+        naver_provider: NaverProvider | None = None
+        if settings.NAVER_CLIENT_ID and settings.NAVER_CLIENT_SECRET:
+            from src.data.providers.naver_provider import NaverProvider
+
+            naver_provider = NaverProvider(
+                cache=cache,
+                session_factory=session_factory,
+                settings=settings,
+            )
+            await naver_provider.initialize()
+            logger.info("scheduler_factory.naver_provider_ready")
+
         # ── 4-1. 서버 시작 시 stock_master 동기화 ─────────────────────
         if provider is not None:
             try:
@@ -494,6 +510,7 @@ class SchedulerFactory:
         SchedulerFactory._register_common_jobs(
             engine,
             provider=provider,
+            naver_provider=naver_provider,
             watchlist_symbols=watchlist_symbols,
             generator=generator,
             telegram_bot=telegram_bot,
@@ -554,6 +571,7 @@ class SchedulerFactory:
             exit_coordinator=exit_coordinator,
             watchlist_symbols=watchlist_symbols,
             contexts=contexts,
+            naver_provider=naver_provider,
         )
 
         return engine, registry, execution_stream, stoploss_stream, runtime
@@ -802,6 +820,7 @@ class SchedulerFactory:
         engine: SchedulerEngine,
         *,
         provider: DataProvider | None,
+        naver_provider: NaverProvider | None = None,
         watchlist_symbols: list[str],
         generator: ReportGenerator,
         telegram_bot: TelegramBot,
@@ -821,6 +840,20 @@ class SchedulerFactory:
                 "market_data_collect",
                 partial(job_market_data_collect, provider=provider, symbols=watchlist_symbols),
                 CronTrigger(day_of_week="mon-fri", hour=md_h, minute=md_m, timezone="UTC"),
+            )
+
+        # news_collect — NAVER 키 있을 때만(NaverProvider 존재). 종목명 검색어로 수집(F-19).
+        if naver_provider is not None:
+            nc_h, nc_m = SchedulerEngine._parse_time(s.NEWS_COLLECTION_TIME)
+            engine.register_job(
+                "news_collect",
+                partial(
+                    job_news_collect,
+                    provider=naver_provider,
+                    symbols=watchlist_symbols,
+                    session_factory=session_factory,
+                ),
+                CronTrigger(day_of_week="mon-fri", hour=nc_h, minute=nc_m, timezone="UTC"),
             )
 
         # pre_open_prep — 08:00 KST 개장 전 결측 백필 + 신선도 게이트 (평일, KST)

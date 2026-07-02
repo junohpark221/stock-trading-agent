@@ -10,7 +10,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
-from src.api.routes.admin_web._common import active_accounts, paginate, render
+from src.api.routes.admin_web._common import (
+    active_accounts,
+    paginate,
+    render,
+    symbol_names,
+)
 from src.api.templates import templates
 from src.core.time import KST
 from src.db.models.llm import DecisionLog
@@ -62,11 +67,13 @@ async def decisions_log(
         session, stmt, count_stmt, page, per_page,
     )
     accounts = await active_accounts(session)
+    names = await symbol_names(session, [d.symbol for d in decisions if d.symbol])
 
     context = {
         "request": request,
         "decisions": decisions,
         "accounts": accounts,
+        "names": names,
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -102,8 +109,11 @@ async def decision_session_detail(
     if not chain:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    names = await symbol_names(session, [d.symbol for d in chain if d.symbol])
+
     return templates.TemplateResponse("partials/decision_detail.html", {
         "request": request,
         "chain": chain,
+        "names": names,
         "session_id": str(session_id),
     })

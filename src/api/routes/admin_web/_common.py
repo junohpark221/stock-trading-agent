@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.templates import templates
+from src.data.stock_names import resolve_symbol_names
 from src.db.models.account import Account
 
 
@@ -52,3 +53,12 @@ async def active_accounts(session: AsyncSession) -> list[Account]:
         select(Account).where(Account.is_active.is_(True)).order_by(Account.created_at)
     )
     return list(result.scalars().all())
+
+
+async def symbol_names(session: AsyncSession, symbols: list[str]) -> dict[str, str]:
+    """{종목코드: 종목명} 매핑 — 로그 화면의 종목명 병기용(N+1 회피).
+
+    미존재 종목은 누락되므로 템플릿에서 ``names.get(x.symbol, x.symbol)``로 폴백.
+    de-listed(is_active=False) 종목도 이름을 반환한다.
+    """
+    return await resolve_symbol_names(session, symbols)

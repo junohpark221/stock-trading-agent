@@ -14,7 +14,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
-from src.api.routes.admin_web._common import active_accounts, paginate, render
+from src.api.routes.admin_web._common import (
+    active_accounts,
+    paginate,
+    render,
+    symbol_names,
+)
 from src.core.time import today_kst
 from src.db.models.strategy import PositionRecord
 from src.db.session import get_db_session, get_session_factory
@@ -90,9 +95,11 @@ async def performance_analysis(
         trades, page, total, total_pages = await paginate(
             session, stmt, count_stmt, page, per_page,
         )
+        names = await symbol_names(session, [t.symbol for t in trades if t.symbol])
         context = {
             **base_ctx,
             "trades": trades,
+            "names": names,
             "total": total,
             "page": page,
             "total_pages": total_pages,

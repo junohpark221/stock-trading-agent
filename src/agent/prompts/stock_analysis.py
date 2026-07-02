@@ -62,7 +62,10 @@ SYSTEM_PROMPT = """\
 def build_user_prompt(data: dict[str, Any]) -> str:
     """기술/펀더멘털/감성/시장 데이터를 유저 프롬프트로 변환."""
     symbol = data.get("symbol", "UNKNOWN")
-    sections: list[str] = [f"## 종목 분석 요청: {symbol}\n"]
+    name = data.get("name")
+    # F-19: 종목명이 있으면 "종목명 (코드)"로 노출, 없으면 코드만.
+    symbol_line = f"{name} ({symbol})" if name else symbol
+    sections: list[str] = [f"## 종목 분석 요청: {symbol_line}\n"]
 
     # 현재가
     price_data = data.get("current_price")
@@ -128,7 +131,7 @@ def build_user_prompt(data: dict[str, Any]) -> str:
         sections.append(f"```json\n{json.dumps(mc_summary, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     sections.append(
-        f"위 데이터를 종합 분석하여 종목 {symbol}에 대한 StockAnalysis JSON을 출력하세요.\n"
+        f"위 데이터를 종합 분석하여 종목 {symbol_line}에 대한 StockAnalysis JSON을 출력하세요.\n"
         "**sentiment 필드는 반드시 null로 출력하세요.**"
     )
 

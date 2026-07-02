@@ -243,15 +243,7 @@ class OrderExecutor:
 
         try:
             # 0. 회사명 조회 (웹 검증 프롬프트 정확도 향상)
-            company_name: str | None = None
-            try:
-                async with self._session_factory() as _sess:
-                    _row = await _sess.execute(
-                        select(StockMaster.name).where(StockMaster.symbol == symbol)
-                    )
-                    company_name = _row.scalar()
-            except Exception:
-                logger.warning("executor.company_name_lookup_failed", symbol=symbol)
+            company_name = await self._lookup_company_name(symbol)
 
             # 1. 주문 생성 (PENDING)
             order = await self._create_order(
@@ -1136,12 +1128,15 @@ class OrderExecutor:
                     summary="수동 청산: 웹검증 생략",
                 )
             else:
+                # 진입 경로와 동일하게 종목명을 넘겨 웹검색 정확도 확보(F-19).
+                company_name = await self._lookup_company_name(symbol)
                 verification = await self._web_verifier.verify(
                     symbol=symbol,
                     side=side,
                     session_id=session_id,
                     parent_decision_id=parent_decision_id,
                     is_stop_loss=is_stop_loss,
+                    company_name=company_name,
                 )
             await self._update_order(
                 order.id,
@@ -1589,6 +1584,18 @@ class OrderExecutor:
         )
 
     # ── Private: DB Helpers ───────────────────────────────────────────────
+
+    async def _lookup_company_name(self, symbol: str) -> str | None:
+        """웹 검증 프롬프트 정확도용 종목명(StockMaster.name) 조회. 실패 시 None."""
+        try:
+            async with self._session_factory() as _sess:
+                _row = await _sess.execute(
+                    select(StockMaster.name).where(StockMaster.symbol == symbol)
+                )
+                return _row.scalar()
+        except Exception:
+            logger.warning("executor.company_name_lookup_failed", symbol=symbol)
+            return None
 
     async def _create_order(
         self,

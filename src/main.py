@@ -224,6 +224,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────
+    if _scheduler_runtime is not None and _scheduler_runtime.naver_provider is not None:
+        try:
+            await _scheduler_runtime.naver_provider.shutdown()
+            log.info("naver_provider_stopped")
+        except Exception:
+            log.exception("naver_provider_stop_failed")
     _scheduler_runtime = None
     if _scheduler_engine is not None:
         await _scheduler_engine.stop()

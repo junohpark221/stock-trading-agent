@@ -1,7 +1,7 @@
 {% import "partials/_macros.html" as ui %}
 <dl>
     <dt>종목 / 액션</dt>
-    <dd>{{ item.symbol }} · {{ item.action }} · {{ "{:,}".format(item.quantity) }}주</dd>
+    <dd>{{ names.get(item.symbol, item.symbol) }} ({{ item.symbol }}) · {{ item.action }} · {{ "{:,}".format(item.quantity) }}주</dd>
     <dt>상태</dt>
     <dd>{{ ui.status_badge(item.status) }} {% if item.gate_reason %}<small>({{ item.gate_reason }})</small>{% endif %}</dd>
     <dt>기준가 / 전략</dt>

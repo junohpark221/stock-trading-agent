@@ -90,7 +90,14 @@ def _mock_position(**kwargs):
 @pytest.fixture
 def mock_session():
     s = AsyncMock()
-    s.execute = AsyncMock()
+    # 기본 execute 결과: 빈 all()/scalars().all()/scalar_one=0.
+    # symbol_names(종목명 병기)처럼 결과를 소비하는 쿼리도 안전하게 동작.
+    # 특정 결과가 필요한 테스트는 execute.side_effect를 지정해 덮어쓴다.
+    _default = MagicMock()
+    _default.all.return_value = []
+    _default.scalars.return_value.all.return_value = []
+    _default.scalar_one.return_value = 0
+    s.execute = AsyncMock(return_value=_default)
     s.get = AsyncMock(return_value=None)
     s.add = MagicMock()
     s.commit = AsyncMock()

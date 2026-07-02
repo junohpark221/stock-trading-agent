@@ -11,6 +11,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
+from src.api.routes.admin_web._common import symbol_names
 from src.api.templates import templates
 from src.db.models.execution import Order
 from src.db.session import get_db_session
@@ -63,10 +64,12 @@ async def exec_monitor(
     """GET /admin/exec-monitor — WS 손절 상태 + 거부주문 경보."""
     ws = await _ws_status()
     alerts = await _disapproved_orders(session)
+    names = await symbol_names(session, [o.symbol for o in alerts if o.symbol])
     return templates.TemplateResponse("exec_monitor.html", {
         "request": request,
         "ws": ws,
         "alerts": alerts,
+        "names": names,
     })
 
 
@@ -78,8 +81,10 @@ async def exec_monitor_status(
     """GET /admin/exec-monitor/status — 실시간 상태 partial (HTMX 폴링)."""
     ws = await _ws_status()
     alerts = await _disapproved_orders(session)
+    names = await symbol_names(session, [o.symbol for o in alerts if o.symbol])
     return templates.TemplateResponse("partials/exec_monitor_status.html", {
         "request": request,
         "ws": ws,
         "alerts": alerts,
+        "names": names,
     })

@@ -99,7 +99,7 @@
             <tbody>
                 {% for pos in positions %}
                 <tr>
-                    <td>{{ pos.symbol }}</td>
+                    <td>{{ names.get(pos.symbol, pos.symbol) }} ({{ pos.symbol }})</td>
                     <td>{{ pos.strategy_type }}</td>
                     <td>{{ "{:,}".format(pos.quantity) }}</td>
                     <td>{{ "{:,.0f}".format(pos.entry_price) }}원</td>
@@ -140,7 +140,7 @@
             <tbody>
                 {% for order in pending_orders %}
                 <tr>
-                    <td>{{ order.symbol }}</td>
+                    <td>{{ names.get(order.symbol, order.symbol) }} ({{ order.symbol }})</td>
                     <td>{{ "매수" if order.side == "buy" else "매도" }}</td>
                     <td>{{ "{:,}".format(order.quantity) }}</td>
                     <td>{{ "{:,.0f}".format(order.price) }}원</td>
@@ -198,7 +198,7 @@
             <select name="position_id">
                 <option value="">— 매수 주문은 선택 불필요 —</option>
                 {% for pos in positions %}
-                <option value="{{ pos.id }}">{{ pos.symbol }} · {{ "{:,}".format(pos.quantity) }}주 보유 @ {{ "{:,.0f}".format(pos.avg_cost) }}원</option>
+                <option value="{{ pos.id }}">{{ names.get(pos.symbol, pos.symbol) }} ({{ pos.symbol }}) · {{ "{:,}".format(pos.quantity) }}주 보유 @ {{ "{:,.0f}".format(pos.avg_cost) }}원</option>
                 {% endfor %}
             </select>
         </label>

@@ -1,7 +1,7 @@
 {% import "partials/_macros.html" as ui %}
 <dl>
     <dt>에이전트 / 유형 / 종목</dt>
-    <dd>{{ item.agent_type }} · {{ item.memory_type }} · {{ item.symbol or "범용" }}</dd>
+    <dd>{{ item.agent_type }} · {{ item.memory_type }} · {% if item.symbol %}{{ names.get(item.symbol, item.symbol) }} ({{ item.symbol }}){% else %}범용{% endif %}</dd>
     <dt>관련도 / 활성</dt>
     <dd>{{ "{:.2f}".format(item.relevance_score) }} ·
         {% if item.is_active %}{{ ui.status_badge('활성', 'active') }}{% else %}{{ ui.status_badge('비활성', 'inactive') }}{% endif %}</dd>

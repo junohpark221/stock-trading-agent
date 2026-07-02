@@ -22,7 +22,7 @@
             <tr>
                 <td>{{ q.created_at | kst('%m-%d %H:%M') }}</td>
                 <td>{{ q.account_id }}</td>
-                <td>{{ q.symbol }}</td>
+                <td>{{ names.get(q.symbol, q.symbol) }} ({{ q.symbol }})</td>
                 <td>{{ q.action }}</td>
                 <td>{{ "{:,}".format(q.quantity) }}</td>
                 <td>{{ "{:,.0f}".format(q.reference_price) }}원</td>

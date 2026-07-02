@@ -16,7 +16,7 @@
                 {% else %}
                 <span class="badge">{{ d.stage }}</span>
                 {% endif %}
-                {% if d.symbol %}<strong>{{ d.symbol }}</strong>{% endif %}
+                {% if d.symbol %}<strong>{{ names.get(d.symbol, d.symbol) }} ({{ d.symbol }})</strong>{% endif %}
             </div>
             <div>
                 {% if d.decision in ('BUY', 'approve') %}

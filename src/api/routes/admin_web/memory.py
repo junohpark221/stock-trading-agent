@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
-from src.api.routes.admin_web._common import redirect_with, render
+from src.api.routes.admin_web._common import redirect_with, render, symbol_names
 from src.api.templates import templates
 from src.db.models.strategy import AgentMemory
 from src.db.session import get_db_session, get_session_factory
@@ -33,6 +33,7 @@ async def memory_page(
     cleanup_msg: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """GET /admin/memory — 학습 메모리 목록 (비활성·만료 포함)."""
     active_filter = None
@@ -52,10 +53,12 @@ async def memory_page(
     )
     total_pages = max(1, math.ceil(total / per_page)) if total else 1
     page = min(page, total_pages)
+    names = await symbol_names(session, [m.symbol for m in rows if m.symbol])
 
     context = {
         "request": request,
         "rows": rows,
+        "names": names,
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -79,9 +82,11 @@ async def memory_detail(
     item = await session.get(AgentMemory, memory_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Memory not found")
+    names = await symbol_names(session, [item.symbol] if item.symbol else [])
     return templates.TemplateResponse("partials/memory_detail.html", {
         "request": request,
         "item": item,
+        "names": names,
     })
 
 

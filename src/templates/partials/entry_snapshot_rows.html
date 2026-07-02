@@ -21,7 +21,7 @@
             {% for p in rows %}
             {% set snap = p.entry_analysis_snapshot or {} %}
             <tr>
-                <td>{{ p.symbol }}</td>
+                <td>{{ names.get(p.symbol, p.symbol) }} ({{ p.symbol }})</td>
                 <td>{{ p.account_id }}</td>
                 <td>{{ p.entry_date }}</td>
                 <td>{{ snap.get('action') or "-" }}</td>

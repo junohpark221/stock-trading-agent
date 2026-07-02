@@ -11,7 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
-from src.api.routes.admin_web._common import active_accounts, paginate, render
+from src.api.routes.admin_web._common import (
+    active_accounts,
+    paginate,
+    render,
+    symbol_names,
+)
 from src.db.models.strategy import PositionRecord
 from src.db.session import get_db_session
 
@@ -54,10 +59,12 @@ async def entry_snapshots(
     rows, page, total, total_pages = await paginate(
         session, stmt, count_stmt, page, per_page,
     )
+    names = await symbol_names(session, [r.symbol for r in rows if r.symbol])
 
     context = {
         "request": request,
         "rows": rows,
+        "names": names,
         "accounts": accounts,
         "total": total,
         "page": page,

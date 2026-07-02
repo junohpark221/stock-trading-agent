@@ -60,7 +60,7 @@ _SYSTEM_PROMPT = (
 
 _USER_PROMPT_TEMPLATE = (
     "다음 종목의 최신 뉴스/이슈를 웹검색으로 확인해주세요.\n\n"
-    "종목코드: {symbol_line}\n"
+    "종목: {symbol_line}\n"
     "주문방향: {side}\n\n"
     "## 확인 항목\n"
     "1. 긴급 공시 (상장폐지, 관리종목 지정, 투자주의 환기종목 등)\n"

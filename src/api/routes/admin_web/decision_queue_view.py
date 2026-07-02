@@ -14,7 +14,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
-from src.api.routes.admin_web._common import active_accounts, paginate, render
+from src.api.routes.admin_web._common import (
+    active_accounts,
+    paginate,
+    render,
+    symbol_names,
+)
 from src.api.templates import templates
 from src.core.time import KST
 from src.db.models.execution import TradeDecisionQueue
@@ -79,10 +84,12 @@ async def decision_queue(
     rows, page, total, total_pages = await paginate(
         session, stmt, count_stmt, page, per_page,
     )
+    names = await symbol_names(session, [r.symbol for r in rows if r.symbol])
 
     context = {
         "request": request,
         "rows": rows,
+        "names": names,
         "counts": counts,
         "statuses": _STATUSES,
         "accounts": accounts,
@@ -114,7 +121,10 @@ async def decision_queue_detail(
     if item is None:
         raise HTTPException(status_code=404, detail="Decision queue item not found")
 
+    names = await symbol_names(session, [item.symbol] if item.symbol else [])
+
     return templates.TemplateResponse("partials/decision_queue_detail.html", {
         "request": request,
         "item": item,
+        "names": names,
     })

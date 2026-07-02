@@ -60,7 +60,10 @@ Stock Analyst의 분석과 Risk Manager의 승인을 바탕으로
 def build_user_prompt(data: dict[str, Any]) -> str:
     """분석 결과 + 리스크 평가 + 시장 상황을 유저 프롬프트로 변환."""
     symbol = data.get("symbol", "UNKNOWN")
-    sections: list[str] = [f"## 최종 매매 결정 요청: {symbol}\n"]
+    name = data.get("name")
+    # F-19: 종목명이 있으면 "종목명 (코드)"로 노출, 없으면 코드만.
+    symbol_line = f"{name} ({symbol})" if name else symbol
+    sections: list[str] = [f"## 최종 매매 결정 요청: {symbol_line}\n"]
 
     # Stock Analysis 요약
     stock_analysis = data.get("stock_analysis")
@@ -117,7 +120,7 @@ def build_user_prompt(data: dict[str, Any]) -> str:
         sections.append(f"```json\n{json.dumps(current_price, ensure_ascii=False, indent=2)}\n```\n")
 
     sections.append(
-        f"위 데이터를 기반으로 종목 {symbol}의 최종 매매 결정을 내리고 "
+        f"위 데이터를 기반으로 종목 {symbol_line}의 최종 매매 결정을 내리고 "
         "TradeDecision JSON을 출력하세요."
     )
 

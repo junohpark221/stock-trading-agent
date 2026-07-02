@@ -325,6 +325,9 @@ async def test_create_scheduler_no_accounts_no_key():
         USE_MOCK_BROKER=True,
         SCHEDULER_ENABLED=True,
         KIS_APP_KEY="",
+        # NAVER 키 없음 → news_collect 미등록(env .env 유입 차단, 결정론적).
+        NAVER_CLIENT_ID="",
+        NAVER_CLIENT_SECRET="",
     )
     session_factory, _ = _mock_session_factory()
 

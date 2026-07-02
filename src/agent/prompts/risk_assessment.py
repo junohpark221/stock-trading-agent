@@ -93,8 +93,11 @@ Stock Analyst의 매매 시그널을 **정성적으로** 검증하여, 승인 �
 def build_user_prompt(data: dict[str, Any]) -> str:
     """주식 분석 결과 + 시장 상황 + 포트폴리오를 유저 프롬프트로 변환."""
     symbol = data.get("symbol", "UNKNOWN")
+    name = data.get("name")
+    # F-19: 종목명이 있으면 "종목명 (코드)"로 노출, 없으면 코드만.
+    symbol_line = f"{name} ({symbol})" if name else symbol
     risk_tolerance = data.get("risk_tolerance", "moderate")
-    sections: list[str] = [f"## 리스크 검증 요청: {symbol}\n"]
+    sections: list[str] = [f"## 리스크 검증 요청: {symbol_line}\n"]
 
     # 리스크 허용 수준
     tolerance_labels = {
@@ -159,7 +162,7 @@ def build_user_prompt(data: dict[str, Any]) -> str:
         sections.append("### 현재 포트폴리오\n신규 포트폴리오 — 기존 보유 종목이 없어 집중도 리스크 없음. 첫 진입에 유리한 상태.\n")
 
     sections.append(
-        f"위 데이터를 기반으로 종목 {symbol}의 매매 리스크를 검증하고 "
+        f"위 데이터를 기반으로 종목 {symbol_line}의 매매 리스크를 검증하고 "
         "RiskAssessment JSON을 출력하세요."
     )
 

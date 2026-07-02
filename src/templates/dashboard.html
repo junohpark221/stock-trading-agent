@@ -125,7 +125,7 @@
                 <tr>
                     <td>{{ order.created_at | kst("%H:%M:%S") }}</td>
                     <td>{{ order.account_id }}</td>
-                    <td>{{ order.symbol }}</td>
+                    <td>{{ names.get(order.symbol, order.symbol) }} ({{ order.symbol }})</td>
                     <td>{{ "매수" if order.side == "buy" else "매도" }}</td>
                     <td>{{ "{:,}".format(order.quantity) }}</td>
                     <td>{{ "{:,.0f}".format(order.price) }}원</td>

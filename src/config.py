@@ -151,6 +151,9 @@ class Settings(BaseSettings):
 
     # 작업 스케줄. 신규 잡(prep/decision/execution_drain)은 KST(Asia/Seoul) 트리거.
     MARKET_DATA_COLLECTION_TIME: str = "15:40"
+    # 뉴스 수집(네이버) — UTC, mon-fri. 16:00 UTC = 01:00 KST. OHLCV 야간 수집 직후,
+    # 08:30 결정 전에 밤사이 뉴스를 종목명 검색어로 적재(F-19). NAVER 키 없으면 미등록.
+    NEWS_COLLECTION_TIME: str = "16:00"
 
     # 배치 재구성(2026-06-29): "분석=발주" 결합을 끊어 (개장 전 준비 게이트 →
     # 개장 전 결정 → 개장 후 실행)의 3단계 파이프라인으로 분리. 모두 KST.

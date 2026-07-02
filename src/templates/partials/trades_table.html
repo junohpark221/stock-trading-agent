@@ -19,7 +19,7 @@
         <tbody>
             {% for t in trades %}
             <tr>
-                <td>{{ t.symbol }}</td>
+                <td>{{ names.get(t.symbol, t.symbol) }} ({{ t.symbol }})</td>
                 <td>{{ t.strategy_type }}</td>
                 <td>{{ t.entry_date }}</td>
                 <td>{{ t.exit_date }}</td>

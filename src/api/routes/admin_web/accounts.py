@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.auth import require_admin
 from src.api.portfolio_live import fetch_portfolio_view
 from src.api.routes.accounts import _mask_account_no, _slugify
+from src.api.routes.admin_web._common import symbol_names
 from src.api.templates import templates
 from src.core.enums import StrategyType
 from src.core.time import to_kst, today_kst
@@ -283,6 +284,11 @@ async def account_detail(
     fetcher = ReportDataFetcher(get_session_factory())
     positions = await fetcher.get_open_positions(account_id=account_id)
     pending_orders = await fetcher.get_pending_orders(account_id=account_id)
+    names = await symbol_names(
+        session,
+        [p.symbol for p in positions if p.symbol]
+        + [o.symbol for o in pending_orders if o.symbol],
+    )
 
     return templates.TemplateResponse("account_detail.html", {
         "request": request,
@@ -290,6 +296,7 @@ async def account_detail(
         "snapshot": view,
         "positions": positions,
         "pending_orders": pending_orders,
+        "names": names,
         "manual_order_success": order_success,
         "manual_order_error": order_error,
         "sync_msg": sync_msg,

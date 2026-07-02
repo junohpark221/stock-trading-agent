@@ -63,7 +63,7 @@
                 <tr>
                     <td>{{ o.created_at | kst('%m-%d %H:%M') }}</td>
                     <td>{{ o.account_id }}</td>
-                    <td>{{ o.symbol }}</td>
+                    <td>{{ names.get(o.symbol, o.symbol) }} ({{ o.symbol }})</td>
                     <td>{{ "매수" if o.side == "buy" else "매도" }}</td>
                     <td>{{ "{:,}".format(o.quantity) }}</td>
                     <td>{{ ui.status_badge(o.approval_status, 'failed') }}</td>

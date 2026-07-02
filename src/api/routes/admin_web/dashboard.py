@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth import require_admin
 from src.api.portfolio_live import fetch_portfolio_view
+from src.api.routes.admin_web._common import symbol_names
 from src.api.templates import templates
 from src.db.models.account import Account
 from src.db.models.execution import Order, TradeDecisionQueue
@@ -78,6 +79,9 @@ async def dashboard(
     fetcher = ReportDataFetcher(get_session_factory())
     todays_orders = await fetcher.get_todays_orders(account_id=None)
     recent_orders = todays_orders[-20:][::-1]  # 최근 20건, 최신순
+    order_names = await symbol_names(
+        session, [o.symbol for o in recent_orders if o.symbol]
+    )
 
     order_summary = {
         "total": len(todays_orders),
@@ -126,6 +130,7 @@ async def dashboard(
         "scheduler": scheduler_status,
         "accounts": account_cards,
         "recent_orders": recent_orders,
+        "names": order_names,
         "order_summary": order_summary,
         "cleanup_msg": cleanup_msg,
         "disapproved_count": disapproved_count,

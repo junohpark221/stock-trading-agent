@@ -21,7 +21,7 @@
                 <td>{{ m.created_at | kst('%m-%d %H:%M') }}</td>
                 <td>{{ m.agent_type }}</td>
                 <td>{{ m.memory_type }}</td>
-                <td>{{ m.symbol or "범용" }}</td>
+                <td>{% if m.symbol %}{{ names.get(m.symbol, m.symbol) }} ({{ m.symbol }}){% else %}범용{% endif %}</td>
                 <td><small>{{ m.content[:80] }}{% if m.content|length > 80 %}…{% endif %}</small></td>
                 <td>{{ "{:.2f}".format(m.relevance_score) }}</td>
                 <td><small>{% if m.expires_at %}{{ m.expires_at | kst('%Y-%m-%d') }}{% else %}-{% endif %}</small></td>

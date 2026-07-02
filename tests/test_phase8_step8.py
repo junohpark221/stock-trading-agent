@@ -269,6 +269,22 @@ class TestRegisterAccountJobs:
 # ── job 함수 계좌별 파라미터 전달 ──────────────────────────────────────────
 
 
+def _empty_session_factory():
+    """resolve_symbol_names(종목명 조회)용 세션 팩토리 mock — execute().all()=[].
+
+    결정 잡이 종목명 매핑을 조회하므로(F-19), execute 결과가 빈 리스트를 반환하는
+    async 컨텍스트 세션을 yield한다 → names={} (프롬프트는 코드 폴백).
+    """
+    result = MagicMock()
+    result.all.return_value = []
+    sess = MagicMock()
+    sess.execute = AsyncMock(return_value=result)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=sess)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm)
+
+
 class TestJobAccountParams:
     @pytest.mark.asyncio
     async def test_swing_decision_passes_investment_prompt(self, monkeypatch):
@@ -286,7 +302,7 @@ class TestJobAccountParams:
             orchestrator=orchestrator,
             symbols=["005930"],
             queue=AsyncMock(),
-            session_factory=MagicMock(),
+            session_factory=_empty_session_factory(),
             settings=make_settings(),
             account_id="acct-1",
             investment_prompt="aggressive growth",
@@ -297,6 +313,7 @@ class TestJobAccountParams:
             investment_prompt="aggressive growth",
             risk_tolerance="moderate",
             account_id="acct-1",
+            names={},
         )
 
     @pytest.mark.asyncio
@@ -321,7 +338,7 @@ class TestJobAccountParams:
             orchestrator=orchestrator,
             position_manager=position_manager,
             queue=AsyncMock(),
-            session_factory=MagicMock(),
+            session_factory=_empty_session_factory(),
             settings=make_settings(),
             account_id="acct-2",
             investment_prompt="value investing",
@@ -333,6 +350,7 @@ class TestJobAccountParams:
             investment_prompt="value investing",
             risk_tolerance="moderate",
             account_id="acct-2",
+            names={},
         )
 
     @pytest.mark.asyncio
@@ -380,7 +398,7 @@ class TestJobAccountParams:
             orchestrator=orchestrator,
             position_manager=position_manager,
             queue=AsyncMock(),
-            session_factory=MagicMock(),
+            session_factory=_empty_session_factory(),
             settings=make_settings(),
             strategy=strategy,
             account_id="acct-2",

@@ -17,7 +17,8 @@ from sqlalchemy import func, select
 
 from src.core.enums import DecisionAction, ExitReason, StrategyType
 from src.core.time import KST as _KST
-from src.data.collector import collect_daily_ohlcv
+from src.data.collector import collect_daily_ohlcv, collect_news
+from src.data.stock_names import resolve_symbol_names
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.execution.exit_coordinator import exit_phase
 from src.notification.templates import MessageTemplates
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from src.config import Settings
     from src.core.models import PipelineResult, TradeDecision
     from src.data.providers.base import DataProvider
+    from src.data.providers.naver_provider import NaverProvider
     from src.db.models.strategy import PositionRecord
     from src.execution.decision_queue import TradeDecisionQueueManager
     from src.execution.executor import OrderExecutor
@@ -115,6 +117,31 @@ async def job_market_data_collect(
         succeeded=summary.succeeded,
         failed=summary.failed,
         rows=summary.total_rows,
+    )
+
+
+async def job_news_collect(
+    *,
+    provider: NaverProvider,
+    symbols: list[str],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """네이버 뉴스 수집(종목명 검색어). 야간 1회.
+
+    검색어를 종목코드가 아닌 종목명(StockMaster.name)으로 구성해 기사 커버리지를
+    높인다(F-19). 종목명 미존재 종목은 코드로 폴백. 적재된 뉴스는 개장 전 결정
+    시점에 감성분석기/뉴스 툴이 소비한다.
+    """
+    async with session_factory() as session:
+        query_map = await resolve_symbol_names(session, symbols)
+    summary = await collect_news(provider, symbols, query_map=query_map)
+    logger.info(
+        "job.news_collect.done",
+        total=summary.total_symbols,
+        succeeded=summary.succeeded,
+        failed=summary.failed,
+        rows=summary.total_rows,
+        named=len(query_map),
     )
 
 
@@ -446,11 +473,16 @@ async def job_swing_decision(
         logger.info("job.swing_decision.skip", reason="no_target_symbols", account_id=account_id)
         return
 
+    # F-19: 분석/리스크 프롬프트에 종목명 노출용 매핑(누락 종목은 코드 폴백).
+    async with session_factory() as _sess:
+        names = await resolve_symbol_names(_sess, target_symbols)
+
     result = await orchestrator.execute(
         target_symbols,
         investment_prompt=investment_prompt,
         risk_tolerance=risk_tolerance,
         account_id=account_id,
+        names=names,
     )
     enqueued = await _enqueue_buy_decisions(
         result,
@@ -520,11 +552,16 @@ async def job_position_decision(
         )
         return
 
+    # F-19: 분석/리스크 프롬프트에 종목명 노출용 매핑(누락 종목은 코드 폴백).
+    async with session_factory() as _sess:
+        names = await resolve_symbol_names(_sess, symbols)
+
     result = await orchestrator.execute(
         symbols,
         investment_prompt=investment_prompt,
         risk_tolerance=risk_tolerance,
         account_id=account_id,
+        names=names,
     )
     enqueued = await _enqueue_buy_decisions(
         result,

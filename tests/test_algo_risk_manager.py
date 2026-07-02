@@ -273,6 +273,24 @@ async def test_sector_concentration_violation():
     assert result.adjusted_quantity <= 28
 
 
+@pytest.mark.asyncio
+async def test_sector_concentration_per_sector_isolated():
+    """다중 섹터 분포에서 거래 대상 섹터 버킷만 게이트되고 타 섹터는 무관 (F-15).
+
+    실제 sector가 적재되면 게이트가 총량 캡이 아닌 업종별로 동작해야 함을 가드한다.
+    화학이 이미 28%지만, 화학과 무관한 전기전자(0%) 매수는 차단되지 않는다.
+    """
+    state = _make_state(
+        sector_allocations={"화학": Decimal("28.0")},
+    )
+    mgr = _make_manager(state=state)
+    # 전기전자(현재 0%) 5% 매수 → 5% < 30% → 통과
+    result = await mgr.check(
+        "005930", SignalAction.BUY, 71, Decimal("70000"), Decimal("66000"), "전기전자"
+    )
+    assert "SECTOR_CONCENTRATION" not in result.violations
+
+
 # ---------------------------------------------------------------------------
 # Rule 5: Max Drawdown (최대 낙폭)
 # ---------------------------------------------------------------------------

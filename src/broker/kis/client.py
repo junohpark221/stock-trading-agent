@@ -78,6 +78,13 @@ _KIS_PROD_BASE_URL = "https://openapi.koreainvestment.com:9443"
 # .mst download URLs (no auth required)
 _MST_KOSPI_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
 _MST_KOSDAQ_URL = "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip"
+# 업종코드 마스터 (지수업종 코드 → 업종명 매핑)
+_MST_IDXCODE_URL = "https://new.real.download.dws.co.kr/common/master/idxcode.mst.zip"
+
+# 종목 .mst part2 내 지수업종중분류 코드 위치 (그룹코드2 + 시총규모1 + 지수업종대분류4 = 오프셋 7).
+# KOSPI(part2=228)·KOSDAQ(part2=222) 모두 선두 필드 배치가 같아 오프셋 동일.
+_SECTOR_MID_OFFSET = 7
+_SECTOR_MID_LEN = 4
 
 _CODE_PATTERN = re.compile(r"^\d{6}$")
 
@@ -429,15 +436,77 @@ class KISClient(BrokerInterface):
         return all_bars
 
     async def get_stock_master(self) -> list[StockInfo]:
-        """Download and parse KOSPI + KOSDAQ .mst.zip master files."""
+        """Download and parse KOSPI + KOSDAQ .mst.zip master files.
+
+        지수업종 코드→업종명 매핑(``idxcode.mst.zip``)을 1회 받아 각 종목의
+        지수업종중분류(``part2[7:11]``)를 업종명으로 해석해 ``StockInfo.sector``에 채운다.
+        """
+        sector_map = await self.get_industry_code_map()
         stocks: list[StockInfo] = []
-        stocks.extend(await self._parse_mst(_MST_KOSPI_URL, MarketType.KOSPI, 228))
-        stocks.extend(await self._parse_mst(_MST_KOSDAQ_URL, MarketType.KOSDAQ, 222))
-        logger.info("kis_stock_master_loaded", total=len(stocks))
+        stocks.extend(
+            await self._parse_mst(
+                _MST_KOSPI_URL, MarketType.KOSPI, 228, sector_map=sector_map
+            )
+        )
+        stocks.extend(
+            await self._parse_mst(
+                _MST_KOSDAQ_URL, MarketType.KOSDAQ, 222, sector_map=sector_map
+            )
+        )
+        logger.info(
+            "kis_stock_master_loaded", total=len(stocks), sectors=len(sector_map)
+        )
         return stocks
 
+    async def get_industry_code_map(self) -> dict[str, str]:
+        """Download ``idxcode.mst.zip`` and return ``{지수업종코드: 업종명}``.
+
+        실패(미연결/non-200/네트워크/파싱)는 빈 dict로 graceful 폴백 — 매핑이 없으면
+        호출측(``_parse_mst``)이 원시 코드를 그대로 sector로 저장한다.
+        """
+        if not self._session:
+            raise BrokerError("KISClient not connected. Call connect() first.")
+
+        try:
+            async with self._session.get(_MST_IDXCODE_URL, ssl=False) as resp:
+                if resp.status != 200:
+                    logger.error(
+                        "kis_idxcode_download_failed",
+                        url=_MST_IDXCODE_URL,
+                        status=resp.status,
+                    )
+                    return {}
+                raw_bytes = await resp.read()
+        except aiohttp.ClientError as exc:
+            logger.error("kis_idxcode_download_error", error=str(exc))
+            return {}
+
+        code_map: dict[str, str] = {}
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+                for name in zf.namelist():
+                    content = zf.read(name).decode("cp949", errors="replace")
+                    for line in content.splitlines():
+                        # 레코드: idx_div(1) + idx_code(4) + idx_name(...)
+                        if len(line) < 5:
+                            continue
+                        code = line[1:5].strip()
+                        idx_name = line[5:].strip()
+                        if code and idx_name:
+                            code_map[code] = idx_name
+        except (zipfile.BadZipFile, UnicodeDecodeError) as exc:
+            logger.error("kis_idxcode_parse_error", error=str(exc))
+            return {}
+
+        return code_map
+
     async def _parse_mst(
-        self, url: str, market_type: MarketType, part2_len: int
+        self,
+        url: str,
+        market_type: MarketType,
+        part2_len: int,
+        *,
+        sector_map: dict[str, str] | None = None,
     ) -> list[StockInfo]:
         """Download a .mst.zip and parse fixed-width records."""
         if not self._session:
@@ -470,11 +539,21 @@ class KISClient(BrokerInterface):
                         # Only keep 6-digit numeric codes
                         if not _CODE_PATTERN.match(short_code):
                             continue
+                        # part2: 고정폭 구간 — 지수업종중분류 코드 → 업종명 해석
+                        part2 = line[-part2_len:]
+                        mid_code = part2[
+                            _SECTOR_MID_OFFSET : _SECTOR_MID_OFFSET + _SECTOR_MID_LEN
+                        ].strip()
+                        sector = ""
+                        if mid_code:
+                            # 명칭 매핑 우선, 미스/맵부재 시 원시 코드 폴백("기타" collapse 방지)
+                            sector = (sector_map or {}).get(mid_code) or mid_code
                         stocks.append(
                             StockInfo(
                                 symbol=short_code,
                                 name=korean_name,
                                 market_type=market_type,
+                                sector=sector,
                             )
                         )
         except (zipfile.BadZipFile, UnicodeDecodeError) as exc:

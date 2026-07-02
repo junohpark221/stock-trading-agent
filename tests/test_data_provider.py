@@ -225,7 +225,40 @@ class TestSyncStockMaster:
         p = _make_provider(client=client, cache=cache, session_factory=sf)
 
         await p.sync_stock_master()
-        cache.clear_namespace.assert_awaited_once_with("kis:master")
+        # 종목 마스터 + 종목→섹터 매핑 캐시 모두 무효화
+        cache.clear_namespace.assert_any_await("kis:master")
+        cache.clear_namespace.assert_any_await("sector")
+        assert cache.clear_namespace.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_upsert_includes_sector(self):
+        client = AsyncMock(spec=KISClient)
+        stocks = [
+            StockInfo(
+                symbol="005930",
+                name="삼성전자",
+                market_type=MarketType.KOSPI,
+                sector="반도체",
+            )
+        ]
+        client.get_stock_master = AsyncMock(return_value=stocks)
+
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(
+            side_effect=[_make_db_result(rowcount=1), _make_db_result(rowcount=0)]
+        )
+        session.commit = AsyncMock()
+
+        cache = AsyncMock(spec=RedisCache)
+        p = _make_provider(client=client, cache=cache, session_factory=sf)
+
+        await p.sync_stock_master()
+
+        # 첫 execute 호출 = upsert. 바인딩 파라미터에 sector 값이 실려야 한다.
+        upsert_stmt = session.execute.call_args_list[0].args[0]
+        params = upsert_stmt.compile().params
+        assert any(k.startswith("sector") for k in params)
+        assert "반도체" in params.values()
 
     @pytest.mark.asyncio
     async def test_cache_error_logged(self):

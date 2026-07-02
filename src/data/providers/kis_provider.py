@@ -35,6 +35,9 @@ logger = structlog.get_logger(__name__)
 _UPSERT_BATCH_SIZE = 500
 _MASTER_CACHE_NS = "kis:master"
 _OHLCV_CACHE_NS = "kis:ohlcv"
+# portfolio_state가 종목→섹터를 캐시하는 네임스페이스. 재sync로 sector가 갱신되면
+# stale "기타"(NULL 폴백) 항목이 남지 않도록 함께 무효화한다.
+_SECTOR_CACHE_NS = "sector"
 _MASTER_CACHE_TTL = 86400  # 24 hours
 
 
@@ -112,6 +115,7 @@ class KISDataProvider(DataProvider):
                             "symbol": s.symbol,
                             "name": s.name,
                             "market_type": s.market_type.value,
+                            "sector": s.sector or None,
                             "is_active": True,
                         }
                         for s in batch
@@ -124,6 +128,7 @@ class KISDataProvider(DataProvider):
                         set_={
                             "name": stmt.excluded.name,
                             "market_type": stmt.excluded.market_type,
+                            "sector": stmt.excluded.sector,
                             "is_active": stmt.excluded.is_active,
                             "updated_at": func.now(),
                         },
@@ -154,9 +159,10 @@ class KISDataProvider(DataProvider):
                 f"sync_stock_master DB error: {exc}"
             ) from exc
 
-        # Invalidate cache (best-effort)
+        # Invalidate cache (best-effort) — 종목 마스터 + 종목→섹터 매핑 캐시
         try:
             await self._cache.clear_namespace(_MASTER_CACHE_NS)
+            await self._cache.clear_namespace(_SECTOR_CACHE_NS)
         except CacheError:
             logger.warning("kis_sync_master_cache_invalidate_failed")
 

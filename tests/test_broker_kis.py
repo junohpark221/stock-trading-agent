@@ -650,7 +650,10 @@ class TestKISClientGetStockMaster:
         kospi = [StockInfo(symbol="005930", name="삼성전자", market_type=MarketType.KOSPI)]
         kosdaq = [StockInfo(symbol="035720", name="카카오", market_type=MarketType.KOSDAQ)]
 
-        with patch.object(client, "_parse_mst", new_callable=AsyncMock, side_effect=[kospi, kosdaq]):
+        with (
+            patch.object(client, "get_industry_code_map", new_callable=AsyncMock, return_value={}),
+            patch.object(client, "_parse_mst", new_callable=AsyncMock, side_effect=[kospi, kosdaq]),
+        ):
             result = await client.get_stock_master()
 
         assert len(result) == 2
@@ -658,14 +661,20 @@ class TestKISClientGetStockMaster:
     @pytest.mark.asyncio
     async def test_empty_on_failure(self):
         client = _make_kis_client()
-        with patch.object(client, "_parse_mst", new_callable=AsyncMock, return_value=[]):
+        with (
+            patch.object(client, "get_industry_code_map", new_callable=AsyncMock, return_value={}),
+            patch.object(client, "_parse_mst", new_callable=AsyncMock, return_value=[]),
+        ):
             result = await client.get_stock_master()
         assert result == []
 
     @pytest.mark.asyncio
     async def test_correct_params(self):
         client = _make_kis_client()
-        with patch.object(client, "_parse_mst", new_callable=AsyncMock, return_value=[]) as mock:
+        with (
+            patch.object(client, "get_industry_code_map", new_callable=AsyncMock, return_value={}),
+            patch.object(client, "_parse_mst", new_callable=AsyncMock, return_value=[]) as mock,
+        ):
             await client.get_stock_master()
             calls = mock.call_args_list
             # KOSPI part2_len=228, KOSDAQ part2_len=222
@@ -756,6 +765,100 @@ class TestKISClientParseMst:
 
         result = await client._parse_mst("http://test.zip", MarketType.KOSPI, part2_len)
         assert result == []
+
+    @staticmethod
+    def _build_line(mid_code: str, part2_len: int = 228) -> str:
+        """part1 + part2, where part2[7:11] holds the 지수업종중분류 code."""
+        part1 = "005930   " + "KR7005930003" + "삼성전자"
+        # offset 7 = 그룹코드2 + 시총규모1 + 지수업종대분류4
+        part2 = "Z" * 7 + mid_code + "X" * (part2_len - 7 - len(mid_code))
+        return part1 + part2
+
+    @pytest.mark.asyncio
+    async def test_sector_resolved_to_name(self):
+        """지수업종중분류 코드가 sector_map으로 업종명 해석된다."""
+        client = _make_kis_client()
+        line = self._build_line("0002")
+        zip_bytes = _build_mst_zip([line])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst(
+            "http://test.zip", MarketType.KOSPI, 228, sector_map={"0002": "반도체"}
+        )
+        assert len(result) == 1
+        assert result[0].sector == "반도체"
+
+    @pytest.mark.asyncio
+    async def test_sector_falls_back_to_code_on_miss(self):
+        """매핑 미스/맵부재 시 원시 코드를 sector로 저장한다('기타' collapse 방지)."""
+        client = _make_kis_client()
+        line = self._build_line("0002")
+        zip_bytes = _build_mst_zip([line])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        # sector_map 없음 → 원시 코드
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        assert result[0].sector == "0002"
+
+    @pytest.mark.asyncio
+    async def test_sector_empty_when_code_blank(self):
+        """중분류 코드가 공백이면 sector는 빈 문자열."""
+        client = _make_kis_client()
+        line = self._build_line("    ")  # 4 spaces
+        zip_bytes = _build_mst_zip([line])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst(
+            "http://test.zip", MarketType.KOSPI, 228, sector_map={"0002": "반도체"}
+        )
+        assert result[0].sector == ""
+
+
+class TestKISClientGetIndustryCodeMap:
+    @pytest.mark.asyncio
+    async def test_parses_code_to_name(self):
+        client = _make_kis_client()
+        # idx_div(1) + idx_code(4) + idx_name
+        lines = ["00002반도체", "10003화학"]
+        zip_bytes = _build_mst_zip(lines)
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client.get_industry_code_map()
+        assert result == {"0002": "반도체", "0003": "화학"}
+
+    @pytest.mark.asyncio
+    async def test_not_connected(self):
+        client = _make_kis_client()
+        client._session = None
+        with pytest.raises(BrokerError, match="not connected"):
+            await client.get_industry_code_map()
+
+    @pytest.mark.asyncio
+    async def test_non_200_returns_empty(self):
+        client = _make_kis_client()
+        resp = MagicMock()
+        resp.status = 500
+        resp.read = AsyncMock(return_value=b"")
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+        assert await client.get_industry_code_map() == {}
+
+    @pytest.mark.asyncio
+    async def test_network_error_returns_empty(self):
+        client = _make_kis_client()
+        client._session.get = MagicMock(side_effect=aiohttp.ClientError("fail"))
+        assert await client.get_industry_code_map() == {}
 
 
 class TestKISClientPlaceOrder:

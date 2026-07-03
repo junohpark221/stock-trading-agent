@@ -16,6 +16,7 @@ from uuid import UUID
 from src.core.models import (
     BacktestReport,
     BacktestResult,
+    BacktestTradeRecord,
     ComparisonReport,
     OOSSplitResult,
     PerformanceMetrics,
@@ -37,6 +38,67 @@ class BacktestReporter:
     IS/OOS 분리, 월별 수익률 분석을 추가한다.
     Stateless — 모든 메서드가 @staticmethod.
     """
+
+    @staticmethod
+    def breakdown_by_exit_reason(
+        trades: list[BacktestTradeRecord],
+    ) -> dict[str, dict]:
+        """청산 사유별 성과 분석 — F-13 게이트 측정용.
+
+        청산(pnl/exit_reason이 있는) 거래를 ``exit_reason`` 별로 묶어 각 사유의
+        비중·기대값(평균 pnl)·승률·총 pnl을 집계한다. 고정% vs ATR clamp 두 런을
+        비교해 **손절(stop_loss) 비중↓ + 기대값↑** 를 확인하는 것이 go/no-go 신호다.
+
+        Returns: {
+            "stop_loss": {"trade_count": int, "share_pct": Decimal,
+                          "avg_pnl": Decimal, "win_rate_pct": Decimal,
+                          "total_pnl": Decimal},
+            "take_profit": {...}, "trailing_stop": {...}, ...
+        }
+
+        Note
+        ----
+        진입 ATR% 버킷별 세분은 진입 시점 ATR을 거래 레코드에 태깅해야 가능하다
+        (현재 BacktestTradeRecord에 미보유). 필요 시 진입 시 ATR 캡처를 후속으로.
+        """
+        closed = [t for t in trades if t.exit_reason is not None and t.pnl is not None]
+        total = len(closed)
+        groups: dict[str, list[BacktestTradeRecord]] = defaultdict(list)
+        for t in closed:
+            groups[t.exit_reason.value].append(t)
+
+        result: dict[str, dict] = {}
+        for reason in sorted(groups):
+            bucket = groups[reason]
+            count = len(bucket)
+            pnls = [t.pnl for t in bucket if t.pnl is not None]
+            total_pnl = sum(pnls, _ZERO)
+            wins = sum(1 for p in pnls if p > _ZERO)
+
+            avg_pnl = _ZERO
+            win_rate = _ZERO
+            share = _ZERO
+            if count:
+                avg_pnl = (total_pnl / Decimal(count)).quantize(
+                    _Q2, rounding=ROUND_HALF_UP,
+                )
+                win_rate = (Decimal(wins) / Decimal(count) * _HUNDRED).quantize(
+                    _Q2, rounding=ROUND_HALF_UP,
+                )
+            if total:
+                share = (Decimal(count) / Decimal(total) * _HUNDRED).quantize(
+                    _Q2, rounding=ROUND_HALF_UP,
+                )
+
+            result[reason] = {
+                "trade_count": count,
+                "share_pct": share,
+                "avg_pnl": avg_pnl,
+                "win_rate_pct": win_rate,
+                "total_pnl": total_pnl,
+            }
+
+        return result
 
     @staticmethod
     def generate_report(

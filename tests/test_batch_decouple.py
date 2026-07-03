@@ -17,6 +17,7 @@ from src.core.enums import DecisionAction, OrderType
 from src.core.models import TradeDecision
 from src.execution.decision_queue import PendingDecision
 from src.scheduler.jobs import (
+    _enqueue_buy_decisions,
     _previous_trading_day,
     job_execution_drain,
 )
@@ -265,3 +266,96 @@ async def test_ws_take_profit_with_trailing_does_not_sell():
 
     exit_checker.check_trailing_stop.assert_called_once()
     exit_service.process_exit_signals.assert_not_awaited()
+
+
+# ── _enqueue_buy_decisions: F-13 ATR 청산가 주입 ──────────────────────────
+
+
+def _buy_td(symbol="005930", price="70000", sl=None):
+    return TradeDecision(
+        symbol=symbol,
+        action=DecisionAction.BUY,
+        confidence=Decimal("0.8"),
+        order_type=OrderType.LIMIT,
+        quantity=10,
+        price=Decimal(price),
+        stop_loss_price=Decimal(sl) if sl else None,
+    )
+
+
+def _enqueue_result(td):
+    result = MagicMock()
+    result.trade_decisions = [td]
+    result.stock_analyses = []
+    result.session_id = None
+    return result
+
+
+@pytest.mark.asyncio
+async def test_enqueue_injects_atr_exit_prices():
+    """플래그 on 전략: compute_exit_prices 결과가 결정에 주입되어 적재된다."""
+    td = _buy_td()
+    queue = AsyncMock()
+    strategy = AsyncMock()
+    strategy.compute_entry_trigger.return_value = None
+    strategy.compute_exit_prices.return_value = (Decimal("66000"), Decimal("76000"))
+
+    n = await _enqueue_buy_decisions(
+        _enqueue_result(td),
+        queue=queue,
+        account_id="a",
+        strategy_type="swing",
+        market_close="15:30",
+        strategy=strategy,
+    )
+
+    assert n == 1
+    strategy.compute_exit_prices.assert_awaited_once_with("005930", Decimal("70000"))
+    injected = queue.enqueue.await_args.kwargs["decision"]
+    assert injected.stop_loss_price == Decimal("66000")
+    assert injected.take_profit_price == Decimal("76000")
+
+
+@pytest.mark.asyncio
+async def test_enqueue_none_exit_prices_leaves_null():
+    """compute_exit_prices None(플래그 off/ATR결측) → 손절가 null 유지(executor 폴백)."""
+    td = _buy_td()
+    queue = AsyncMock()
+    strategy = AsyncMock()
+    strategy.compute_entry_trigger.return_value = None
+    strategy.compute_exit_prices.return_value = None
+
+    await _enqueue_buy_decisions(
+        _enqueue_result(td),
+        queue=queue,
+        account_id="a",
+        strategy_type="swing",
+        market_close="15:30",
+        strategy=strategy,
+    )
+
+    injected = queue.enqueue.await_args.kwargs["decision"]
+    assert injected.stop_loss_price is None
+    assert injected.take_profit_price is None
+
+
+@pytest.mark.asyncio
+async def test_enqueue_does_not_overwrite_existing_sl():
+    """이미 손절가가 있으면(LLM/수동 지정) compute_exit_prices 미호출·미덮어씀."""
+    td = _buy_td(sl="65000")
+    queue = AsyncMock()
+    strategy = AsyncMock()
+    strategy.compute_entry_trigger.return_value = None
+
+    await _enqueue_buy_decisions(
+        _enqueue_result(td),
+        queue=queue,
+        account_id="a",
+        strategy_type="swing",
+        market_close="15:30",
+        strategy=strategy,
+    )
+
+    strategy.compute_exit_prices.assert_not_awaited()
+    injected = queue.enqueue.await_args.kwargs["decision"]
+    assert injected.stop_loss_price == Decimal("65000")

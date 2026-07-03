@@ -13,11 +13,18 @@ from uuid import UUID, uuid4
 import pytest
 
 from src.backtest.reporter import BacktestReporter
-from src.core.enums import BacktestMode, BacktestStatus, StrategyType
+from src.core.enums import (
+    BacktestMode,
+    BacktestStatus,
+    ExitReason,
+    OrderSide,
+    StrategyType,
+)
 from src.core.models import (
     BacktestConfig,
     BacktestReport,
     BacktestResult,
+    BacktestTradeRecord,
     ComparisonReport,
     PerformanceMetrics,
 )
@@ -559,3 +566,61 @@ class TestCompareRuns:
         assert comparison.best_return_run_id == run_b
         assert comparison.lowest_mdd_run_id == run_c
         assert comparison.generated_at is not None
+
+
+# ---------------------------------------------------------------------------
+# breakdown_by_exit_reason (F-13 게이트 측정)
+# ---------------------------------------------------------------------------
+
+
+def _make_trade(
+    *,
+    exit_reason: ExitReason | None,
+    pnl: Decimal | None,
+    symbol: str = "005930",
+) -> BacktestTradeRecord:
+    return BacktestTradeRecord(
+        symbol=symbol,
+        side=OrderSide.SELL,
+        quantity=10,
+        price=_D("50000"),
+        commission=_ZERO,
+        slippage=_ZERO,
+        trade_date=date(2026, 1, 5),
+        pnl=pnl,
+        exit_reason=exit_reason,
+    )
+
+
+class TestBreakdownByExitReason:
+    def test_empty(self):
+        assert BacktestReporter.breakdown_by_exit_reason([]) == {}
+
+    def test_skips_open_trades(self):
+        """exit_reason/pnl 없는(미청산·진입) 거래는 제외."""
+        trades = [
+            _make_trade(exit_reason=None, pnl=None),
+            _make_trade(exit_reason=ExitReason.STOP_LOSS, pnl=_D("-1000")),
+        ]
+        result = BacktestReporter.breakdown_by_exit_reason(trades)
+        assert set(result) == {"stop_loss"}
+        assert result["stop_loss"]["trade_count"] == 1
+
+    def test_shares_and_expectancy(self):
+        """비중·기대값(평균 pnl)·승률 집계 검증."""
+        trades = [
+            _make_trade(exit_reason=ExitReason.STOP_LOSS, pnl=_D("-1000")),
+            _make_trade(exit_reason=ExitReason.STOP_LOSS, pnl=_D("-2000")),
+            _make_trade(exit_reason=ExitReason.TAKE_PROFIT, pnl=_D("3000")),
+            _make_trade(exit_reason=ExitReason.TRAILING_STOP, pnl=_D("1000")),
+        ]
+        result = BacktestReporter.breakdown_by_exit_reason(trades)
+        # stop_loss: 2/4 = 50%, 기대값 -1500, 승률 0
+        assert result["stop_loss"]["trade_count"] == 2
+        assert result["stop_loss"]["share_pct"] == _D("50.00")
+        assert result["stop_loss"]["avg_pnl"] == _D("-1500.00")
+        assert result["stop_loss"]["win_rate_pct"] == _D("0.00")
+        assert result["stop_loss"]["total_pnl"] == _D("-3000")
+        # take_profit: 1/4 = 25%, 승률 100%
+        assert result["take_profit"]["share_pct"] == _D("25.00")
+        assert result["take_profit"]["win_rate_pct"] == _D("100.00")

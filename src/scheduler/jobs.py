@@ -426,6 +426,25 @@ async def _enqueue_buy_decisions(
                 tags = None
             if tags:
                 snapshot = {**(snapshot or {}), "entry_trigger": tags}
+            # F-13: 변동성 연동 청산 전략(스윙)은 결정 시점에 손절/익절가를 산출해
+            # 주입한다. 값이 실리면 executor가 체결가 기준으로 재적용(F-16)하고,
+            # 없으면(플래그 off·ATR결측·비스윙) executor 폴백(고정 3%)이 그대로 적용된다.
+            # 이미 손절가가 있으면(LLM/수동 지정) 덮지 않는다.
+            if not td.stop_loss_price:
+                try:
+                    exit_prices = await strategy.compute_exit_prices(td.symbol, td.price)
+                except Exception:
+                    logger.warning(
+                        "job.decision.exit_prices_error",
+                        symbol=td.symbol,
+                        account_id=account_id,
+                    )
+                    exit_prices = None
+                if exit_prices is not None:
+                    sl, tp = exit_prices
+                    td = td.model_copy(
+                        update={"stop_loss_price": sl, "take_profit_price": tp}
+                    )
         try:
             await queue.enqueue(
                 account_id=account_id,

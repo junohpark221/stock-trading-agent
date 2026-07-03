@@ -82,6 +82,57 @@ class ExitPriceCalculator:
         return stop_loss, take_profit
 
     @staticmethod
+    def atr_clamped(
+        entry_price: Decimal,
+        atr: Decimal,
+        stop_mult: Decimal = Decimal("1.5"),
+        floor_pct: Decimal = Decimal("2.5"),
+        cap_pct: Decimal = Decimal("6.0"),
+        rr_ratio: Decimal = Decimal("1.67"),
+    ) -> tuple[Decimal, Decimal]:
+        """ATR 연동 손절폭(clamp) + R:R 보존 익절 계산 (F-13).
+
+        변동성으로 선별한 종목의 청산을 변동성에 맞춘다. 손절 *폭(%)* 을
+        ``clamp(stop_mult × ATR%, floor_pct, cap_pct)`` 로 산출해 저변동은 하한
+        근처, 고변동은 상한까지 완충을 넓힌다(고변동 노이즈 손절 완화). 익절은
+        실제 손절폭에 ``rr_ratio`` 를 곱해 산출하므로 clamp가 걸려도 R:R이 종목
+        변동성과 무관하게 일정하게 보존된다. 리스크%는 사이저가 수량을 조정해
+        일정하게 유지한다(사이저 무변경).
+
+        Parameters
+        ----------
+        entry_price: 진입가 (> 0)
+        atr: Average True Range 값 (> 0)
+        stop_mult: 손절 ATR 배수 (기본 1.5)
+        floor_pct: 손절폭 하한 % (기본 2.5)
+        cap_pct: 손절폭 상한 % (기본 6.0)
+        rr_ratio: 익절/손절 비 (기본 1.67 = 기존 5%/3% 계승)
+
+        Returns
+        -------
+        (stop_loss, take_profit) — 모두 Decimal
+        """
+        if entry_price <= _ZERO:
+            msg = "entry_price must be positive"
+            raise ValueError(msg)
+        if atr <= _ZERO:
+            msg = "atr must be positive"
+            raise ValueError(msg)
+
+        atr_pct = atr / entry_price * _HUNDRED
+        width_pct = stop_mult * atr_pct
+        # clamp(width_pct, floor, cap) — 저변동 과소·고변동 과대 방지
+        if width_pct < floor_pct:
+            width_pct = floor_pct
+        elif width_pct > cap_pct:
+            width_pct = cap_pct
+
+        stop_loss = entry_price * (_ONE - width_pct / _HUNDRED)
+        # R:R 보존: 익절폭 = 실제 손절폭 × rr_ratio
+        take_profit = entry_price + rr_ratio * (entry_price - stop_loss)
+        return stop_loss, take_profit
+
+    @staticmethod
     def trailing_stop_price(
         highest_since_entry: Decimal,
         trailing_pct: Decimal,

@@ -96,6 +96,62 @@ class TestAtrBased:
 
 
 # ---------------------------------------------------------------------------
+# atr_clamped (F-13)
+# ---------------------------------------------------------------------------
+
+
+class TestAtrClamped:
+    def test_midrange_no_clamp(self):
+        """ATR% 3% × 1.5 = 4.5% (∈ [2.5,6]) → clamp 미적용, R:R 보존."""
+        stop, tp = ExitPriceCalculator.atr_clamped(
+            Decimal("50000"), Decimal("1500")
+        )
+        assert stop == Decimal("47750")  # 50000 × (1 - 0.045)
+        # tp = 50000 + 1.67 × (50000 - 47750) = 50000 + 3757.5
+        assert tp == Decimal("53757.5")
+        # R:R = reward/risk = 3757.5 / 2250 = 1.67
+        assert (tp - Decimal("50000")) / (Decimal("50000") - stop) == Decimal("1.67")
+
+    def test_high_vol_clamped_at_cap(self):
+        """ATR% 8% × 1.5 = 12% → cap 6%. 고변동이 상한에 걸려도 R:R 보존."""
+        stop, tp = ExitPriceCalculator.atr_clamped(
+            Decimal("50000"), Decimal("4000")
+        )
+        assert stop == Decimal("47000")  # cap 6% → 50000 × 0.94
+        assert tp == Decimal("55010")    # 50000 + 1.67 × 3000
+        assert (tp - Decimal("50000")) / (Decimal("50000") - stop) == Decimal("1.67")
+
+    def test_low_vol_clamped_at_floor(self):
+        """ATR% 1% × 1.5 = 1.5% → floor 2.5%. 저변동이 하한으로 보정."""
+        stop, tp = ExitPriceCalculator.atr_clamped(
+            Decimal("50000"), Decimal("500")
+        )
+        assert stop == Decimal("48750")  # floor 2.5% → 50000 × 0.975
+        assert tp == Decimal("52087.5")  # 50000 + 1.67 × 1250
+
+    def test_custom_params(self):
+        stop, tp = ExitPriceCalculator.atr_clamped(
+            Decimal("50000"), Decimal("1500"),
+            stop_mult=Decimal("2.0"),
+            floor_pct=Decimal("2.0"),
+            cap_pct=Decimal("10.0"),
+            rr_ratio=Decimal("2.0"),
+        )
+        # width = 2.0 × 3% = 6% (∈ [2,10]) → stop = 47000
+        assert stop == Decimal("47000")
+        # tp = 50000 + 2.0 × 3000 = 56000
+        assert tp == Decimal("56000")
+
+    def test_zero_atr_raises(self):
+        with pytest.raises(ValueError, match="atr must be positive"):
+            ExitPriceCalculator.atr_clamped(Decimal("50000"), Decimal("0"))
+
+    def test_invalid_entry_raises(self):
+        with pytest.raises(ValueError, match="entry_price must be positive"):
+            ExitPriceCalculator.atr_clamped(Decimal("0"), Decimal("1500"))
+
+
+# ---------------------------------------------------------------------------
 # trailing_stop_price
 # ---------------------------------------------------------------------------
 

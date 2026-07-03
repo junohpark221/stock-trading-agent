@@ -102,6 +102,20 @@ class Strategy(ABC):
         """
         return None
 
+    async def compute_exit_prices(
+        self, symbol: str, entry_price: Decimal
+    ) -> tuple[Decimal, Decimal] | None:
+        """진입 결정 시점의 손절/익절가를 계산해 반환한다(라이브 주입용, F-13).
+
+        기본 구현은 None — 결정 시점에 손절/익절가를 산출하지 않는 전략용(이 경우
+        executor 폴백이 적용된다). 스윙 등 변동성 연동 청산이 필요한 전략이 override
+        하여 ``(stop_loss, take_profit)`` 을 반환하면, 결정 큐 적재 시점에
+        TradeDecision에 실려 executor가 체결가 기준으로 재적용(F-16)한다.
+
+        None을 반환하면 호출자는 기존 폴백 경로(고정 %)를 유지한다.
+        """
+        return None
+
     async def analyze(self, symbols: list[str]) -> PipelineResult:
         """PipelineOrchestrator에 분석을 위임한다."""
         logger.info(

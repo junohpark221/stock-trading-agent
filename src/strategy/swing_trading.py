@@ -44,6 +44,7 @@ from src.strategy.base import Strategy
 from src.strategy.exit_calculator import ExitPriceCalculator
 from src.strategy.registry import register_strategy
 from src.strategy.sizing import PositionSizer
+from src.strategy.trailing import calculate_atr as calculate_atr_scalar
 
 if TYPE_CHECKING:
     from src.db.models.strategy import PositionRecord
@@ -83,9 +84,17 @@ class SwingTradingStrategy(Strategy):
     MIN_CONFIDENCE: Decimal = Decimal("0.50")  # LLM confidence 최소 0.50
     MIN_TECHNICAL_CONDITIONS: int = 2  # 기술 조건 최소 2개 충족
 
-    # 손절/익절 (고정 비율)
+    # 손절/익절 (고정 비율) — SWING_ATR_EXIT_ENABLED off 또는 ATR 결측 시 폴백
     STOP_LOSS_PCT: Decimal = Decimal("3.0")  # 고정 3% 손절
     TAKE_PROFIT_PCT: Decimal = Decimal("5.0")  # 고정 5% 익절
+
+    # 손절/익절 (ATR 연동, F-13) — SWING_ATR_EXIT_ENABLED on 시 사용
+    # 손절폭% = clamp(ATR_STOP_MULT × ATR%, ATR_STOP_FLOOR_PCT, ATR_STOP_CAP_PCT)
+    # 익절폭 = 손절폭 × ATR_RR_RATIO (R:R 보존). 변동성 게이트(2~8%)와 청산을 정합.
+    ATR_STOP_MULT: Decimal = Decimal("1.5")  # 손절 ATR 배수
+    ATR_STOP_FLOOR_PCT: Decimal = Decimal("2.5")  # 손절폭 하한 %
+    ATR_STOP_CAP_PCT: Decimal = Decimal("6.0")  # 손절폭 상한 %
+    ATR_RR_RATIO: Decimal = Decimal("1.67")  # 익절/손절 비 (기존 5%/3% 계승)
 
     # 트레일링 스톱 설정
     # 수익률이 3% 이상일 때 트레일링 스톱 활성화
@@ -337,15 +346,10 @@ class SwingTradingStrategy(Strategy):
                 )
                 continue
 
-            # Step 5: 고정 비율 손절/익절 계산
-            # 스윙 전략은 단기 매매이므로 ATR 동적 비율 대신 고정 비율 사용
-            # 손절 3%: 단기 변동 내에서 손실 제한
-            # 익절 5%: Risk:Reward ≈ 1:1.67
-            stop_loss, take_profit = ExitPriceCalculator.fixed_percentage(
-                entry_price=entry_price,
-                stop_pct=self.STOP_LOSS_PCT,
-                tp_pct=self.TAKE_PROFIT_PCT,
-            )
+            # Step 5: 손절/익절 계산 (F-13)
+            # SWING_ATR_EXIT_ENABLED on + ATR>0 이면 변동성 연동 clamp(손절폭)+R:R 보존,
+            # 아니면 고정 3%/5% 폴백. 라이브·수동·백테스트가 동일 산식을 공유한다.
+            stop_loss, take_profit = self._compute_exit_prices(entry_price, ohlcv_list)
 
             # Step 6: 포지션 사이징 — 리스크 기반 수량 계산
             sizing = sizer.calculate(
@@ -526,6 +530,72 @@ class SwingTradingStrategy(Strategy):
 
         _, condition_names = self._check_technical_conditions(ohlcv_list)
         return condition_names or None
+
+    # ── 청산가 계산 (F-13) ────────────────────────────────────────────
+
+    async def compute_exit_prices(
+        self, symbol: str, entry_price: Decimal
+    ) -> tuple[Decimal, Decimal] | None:
+        """진입 결정 시점의 손절/익절가를 산출한다(라이브 주입용, F-13).
+
+        라이브 스윙 진입은 LLM 파이프라인이 결정하므로 generate_signals()가
+        호출되지 않는다(F-14). 그 결과 손절가는 executor 폴백(고정 3%)에, 익절은
+        아예 없는 상태였다. 변동성 게이트로 선별한 종목의 청산을 변동성에 맞추기
+        위해, 결정 시점에 심볼별 ATR로 손절/익절가를 계산해 반환한다. 결정 큐
+        적재 시점에 TradeDecision에 실려 executor가 체결가 기준으로 재적용(F-16)한다.
+
+        플래그(SWING_ATR_EXIT_ENABLED)가 off이거나 데이터 부족·ATR 결측이면 None을
+        반환해 호출자가 기존 폴백(고정 %)을 유지하게 한다.
+        """
+        if not self._settings.SWING_ATR_EXIT_ENABLED:
+            return None
+        if entry_price is None or entry_price <= Decimal("0"):
+            return None
+        try:
+            ohlcv_list = await self._broker.get_daily_ohlcv(
+                symbol, period_days=self.OHLCV_LOOKBACK_DAYS
+            )
+        except Exception:
+            logger.warning("compute_exit_prices.ohlcv_error", symbol=symbol)
+            return None
+        if len(ohlcv_list) < self.ATR_PERIOD + 1:
+            return None
+        return self._compute_exit_prices(entry_price, ohlcv_list)
+
+    def _compute_exit_prices(
+        self, entry_price: Decimal, ohlcv_list: list[OHLCV]
+    ) -> tuple[Decimal, Decimal]:
+        """손절/익절가 산출 — ATR 연동(clamp+R:R) 우선, 고정% 폴백 (F-13).
+
+        SWING_ATR_EXIT_ENABLED on + ATR>0 이면 ``ExitPriceCalculator.atr_clamped``
+        (손절폭 clamp + R:R 보존 익절), 아니면 ``fixed_percentage``(고정 3%/5%).
+        라이브(compute_exit_prices)·수동(generate_signals)이 공유한다.
+        """
+        if self._settings.SWING_ATR_EXIT_ENABLED:
+            atr = self._calculate_atr(ohlcv_list, period=self.ATR_PERIOD)
+            if atr > Decimal("0"):
+                return ExitPriceCalculator.atr_clamped(
+                    entry_price=entry_price,
+                    atr=atr,
+                    stop_mult=self.ATR_STOP_MULT,
+                    floor_pct=self.ATR_STOP_FLOOR_PCT,
+                    cap_pct=self.ATR_STOP_CAP_PCT,
+                    rr_ratio=self.ATR_RR_RATIO,
+                )
+        return ExitPriceCalculator.fixed_percentage(
+            entry_price=entry_price,
+            stop_pct=self.STOP_LOSS_PCT,
+            tp_pct=self.TAKE_PROFIT_PCT,
+        )
+
+    @staticmethod
+    def _calculate_atr(ohlcv_list: list[OHLCV], period: int = 14) -> Decimal:
+        """ATR(Average True Range) 계산 — 단일 출처 위임 (POSITION와 동일, F-10).
+
+        ``src.strategy.trailing.calculate_atr`` 에 위임해 라이브·백테스트 계산
+        드리프트를 차단한다(scan_universe의 pandas-Series ATR과는 별개 스칼라 산출).
+        """
+        return calculate_atr_scalar(ohlcv_list, period=period)
 
     # ── Private 헬퍼 ─────────────────────────────────────────────────
 

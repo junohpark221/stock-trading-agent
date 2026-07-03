@@ -675,3 +675,42 @@ async def test_no_signals_period() -> None:
 
 # ── 모듈 상수 ──
 _ZERO = Decimal("0")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# F-13: Swing ATR 연동 청산 (파라미터 구동)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestSwingExitPrices:
+    """_swing_exit_prices — 고정% vs ATR clamp 파라미터 분기."""
+
+    def test_fixed_when_no_atr_param(self) -> None:
+        engine = _make_engine(MagicMock())
+        sl, tp = engine._swing_exit_prices(
+            "005930", date(2024, 6, 1), Decimal("50000"),
+            {}, Decimal("3"), Decimal("5"),
+        )
+        assert sl == Decimal("48500")  # 고정 3%
+        assert tp == Decimal("52500")  # 고정 5%
+
+    def test_atr_clamp_when_param(self, monkeypatch) -> None:
+        engine = _make_engine(MagicMock())
+        # ATR 4000 / 50000 = 8% × 1.5 = 12% → cap 6%
+        monkeypatch.setattr(engine, "_compute_atr", lambda s, d: Decimal("4000"))
+        sl, tp = engine._swing_exit_prices(
+            "005930", date(2024, 6, 1), Decimal("50000"),
+            {"swing_atr_exit": True}, Decimal("3"), Decimal("5"),
+        )
+        assert sl == Decimal("47000")  # cap 6%
+        assert tp == Decimal("55010")  # 50000 + 1.67 × 3000
+
+    def test_atr_missing_falls_back_to_fixed(self, monkeypatch) -> None:
+        engine = _make_engine(MagicMock())
+        monkeypatch.setattr(engine, "_compute_atr", lambda s, d: None)
+        sl, tp = engine._swing_exit_prices(
+            "005930", date(2024, 6, 1), Decimal("50000"),
+            {"swing_atr_exit": True}, Decimal("3"), Decimal("5"),
+        )
+        assert sl == Decimal("48500")
+        assert tp == Decimal("52500")

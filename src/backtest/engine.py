@@ -87,6 +87,12 @@ _SWING_DEFAULTS: dict[str, int | float] = {
     "max_holding_days": 10,
     # F-10: 라이브 SWING 트레일링(고정 5%)과 정합. 이전엔 백테스트만 트레일링 부재.
     "trailing_stop_pct": 5.0,
+    # F-13: ATR 연동 청산(clamp+R:R). params["swing_atr_exit"]=True 일 때만 적용
+    # (게이트 측정용 처리군). 라이브 SwingTradingStrategy 상수와 동일 기본값.
+    "atr_stop_mult": 1.5,
+    "stop_floor_pct": 2.5,
+    "stop_cap_pct": 6.0,
+    "rr_ratio": 1.67,
 }
 
 
@@ -709,7 +715,10 @@ class BacktestEngine:
         if entry_price is None:
             return
 
-        sl, tp = ExitPriceCalculator.fixed_percentage(entry_price, stop_pct, tp_pct)
+        sl, tp = self._swing_exit_prices(
+            symbol, trading_date, entry_price,
+            config.parameters or {}, stop_pct, tp_pct,
+        )
 
         sizing = self._sizer.calculate(
             symbol=symbol,
@@ -824,8 +833,8 @@ class BacktestEngine:
             tp_pct = Decimal(
                 str(params.get("tp_pct", _SWING_DEFAULTS["tp_pct"]))
             )
-            sl, tp = ExitPriceCalculator.fixed_percentage(
-                current_price, stop_pct, tp_pct,
+            sl, tp = self._swing_exit_prices(
+                symbol, trading_date, current_price, params, stop_pct, tp_pct,
             )
 
         # 포지션 사이징
@@ -855,6 +864,43 @@ class BacktestEngine:
     # ══════════════════════════════════════════════════════════════════════
     # 공용 헬퍼
     # ══════════════════════════════════════════════════════════════════════
+
+    def _swing_exit_prices(
+        self,
+        symbol: str,
+        trading_date: date,
+        entry_price: Decimal,
+        params: dict,
+        stop_pct: Decimal,
+        tp_pct: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        """Swing 손절/익절가 산출 — 파라미터 구동 ATR clamp(F-13) 또는 고정%.
+
+        ``params["swing_atr_exit"]`` 가 참이고 ATR>0 이면 라이브와 동일한
+        ``ExitPriceCalculator.atr_clamped``(손절폭 clamp + R:R 보존), 아니면 기존
+        ``fixed_percentage``. 동일 기간·심볼로 대조군(고정 3/5)과 처리군(ATR)을 모두
+        실행해 게이트를 측정하기 위한 분기다(라이브 플래그와 무관, params로 제어).
+        """
+        if params.get("swing_atr_exit"):
+            atr_val = self._compute_atr(symbol, trading_date)
+            if atr_val is not None and atr_val > _ZERO:
+                return ExitPriceCalculator.atr_clamped(
+                    entry_price,
+                    atr_val,
+                    stop_mult=Decimal(
+                        str(params.get("atr_stop_mult", _SWING_DEFAULTS["atr_stop_mult"]))
+                    ),
+                    floor_pct=Decimal(
+                        str(params.get("stop_floor_pct", _SWING_DEFAULTS["stop_floor_pct"]))
+                    ),
+                    cap_pct=Decimal(
+                        str(params.get("stop_cap_pct", _SWING_DEFAULTS["stop_cap_pct"]))
+                    ),
+                    rr_ratio=Decimal(
+                        str(params.get("rr_ratio", _SWING_DEFAULTS["rr_ratio"]))
+                    ),
+                )
+        return ExitPriceCalculator.fixed_percentage(entry_price, stop_pct, tp_pct)
 
     def _compute_atr(self, symbol: str, trading_date: date) -> Decimal | None:
         """ATR(14) 계산 — Position 전략 및 Mode 2에서 재사용."""

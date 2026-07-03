@@ -807,3 +807,85 @@ class TestConstants:
         sl, tp = ExitPriceCalculator.fixed_percentage(entry, Decimal("3.0"), Decimal("5.0"))
         assert sl == Decimal("67900.0")  # 70000 × 0.97
         assert tp == Decimal("73500.0")  # 70000 × 1.05
+
+    def test_atr_exit_constants(self):
+        """F-13 ATR 연동 청산 상수값 확인."""
+        assert Decimal("1.5") == SwingTradingStrategy.ATR_STOP_MULT
+        assert Decimal("2.5") == SwingTradingStrategy.ATR_STOP_FLOOR_PCT
+        assert Decimal("6.0") == SwingTradingStrategy.ATR_STOP_CAP_PCT
+        assert Decimal("1.67") == SwingTradingStrategy.ATR_RR_RATIO
+
+
+class TestComputeExitPrices:
+    """F-13: 스윙 ATR 연동 청산가 산출 (플래그·폴백)."""
+
+    def test_flag_off_returns_fixed(self):
+        """플래그 off → 고정 3%/5% 폴백(_compute_exit_prices)."""
+        strat = _make_strategy(settings=make_settings(SWING_ATR_EXIT_ENABLED=False))
+        ohlcv = _make_ohlcv(days=60)
+        sl, tp = strat._compute_exit_prices(Decimal("70000"), ohlcv)
+        assert sl == Decimal("67900.0")  # 70000 × 0.97
+        assert tp == Decimal("73500.0")  # 70000 × 1.05
+
+    def test_flag_on_uses_atr_clamp(self):
+        """플래그 on + ATR>0 → atr_clamped 결과와 일치(배선 검증)."""
+        from src.strategy.exit_calculator import ExitPriceCalculator
+
+        strat = _make_strategy(settings=make_settings(SWING_ATR_EXIT_ENABLED=True))
+        ohlcv = _make_ohlcv(days=60, volatility=0.03)
+        entry = Decimal("70000")
+        atr = strat._calculate_atr(ohlcv, period=strat.ATR_PERIOD)
+        assert atr > Decimal("0")
+        expected = ExitPriceCalculator.atr_clamped(
+            entry_price=entry,
+            atr=atr,
+            stop_mult=strat.ATR_STOP_MULT,
+            floor_pct=strat.ATR_STOP_FLOOR_PCT,
+            cap_pct=strat.ATR_STOP_CAP_PCT,
+            rr_ratio=strat.ATR_RR_RATIO,
+        )
+        assert strat._compute_exit_prices(entry, ohlcv) == expected
+
+    def test_flag_on_zero_atr_falls_back_to_fixed(self):
+        """플래그 on 이나 ATR=0(무변동) → 고정 폴백."""
+        strat = _make_strategy(settings=make_settings(SWING_ATR_EXIT_ENABLED=True))
+        # 완전 무변동(고=저=종가) → true range 0 → ATR 0
+        flat = _make_ohlcv(days=60, daily_return=0.0, volatility=0.0)
+        assert strat._calculate_atr(flat, period=strat.ATR_PERIOD) == Decimal("0")
+        sl, tp = strat._compute_exit_prices(Decimal("70000"), flat)
+        assert sl == Decimal("67900.0")
+        assert tp == Decimal("73500.0")
+
+    @pytest.mark.asyncio
+    async def test_compute_exit_prices_flag_off_returns_none(self):
+        """라이브 진입점: 플래그 off → None(호출자가 executor 폴백 유지)."""
+        strat = _make_strategy(settings=make_settings(SWING_ATR_EXIT_ENABLED=False))
+        assert await strat.compute_exit_prices("005930", Decimal("70000")) is None
+
+    @pytest.mark.asyncio
+    async def test_compute_exit_prices_flag_on_returns_prices(self):
+        """라이브 진입점: 플래그 on → (손절, 익절) 반환."""
+        broker = AsyncMock()
+        broker.get_daily_ohlcv.return_value = _make_ohlcv(days=60, volatility=0.03)
+        strat = _make_strategy(
+            broker=broker, settings=make_settings(SWING_ATR_EXIT_ENABLED=True)
+        )
+        result = await strat.compute_exit_prices("005930", Decimal("70000"))
+        assert result is not None
+        sl, tp = result
+        assert Decimal("0") < sl < Decimal("70000") < tp
+
+    @pytest.mark.asyncio
+    async def test_compute_exit_prices_insufficient_data_returns_none(self):
+        """데이터 부족(ATR 계산 불가) → None."""
+        broker = AsyncMock()
+        broker.get_daily_ohlcv.return_value = _make_ohlcv(days=5)
+        strat = _make_strategy(
+            broker=broker, settings=make_settings(SWING_ATR_EXIT_ENABLED=True)
+        )
+        assert await strat.compute_exit_prices("005930", Decimal("70000")) is None
+
+    @pytest.mark.asyncio
+    async def test_compute_exit_prices_nonpositive_entry_returns_none(self):
+        strat = _make_strategy(settings=make_settings(SWING_ATR_EXIT_ENABLED=True))
+        assert await strat.compute_exit_prices("005930", Decimal("0")) is None

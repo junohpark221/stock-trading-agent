@@ -453,6 +453,7 @@ def _make_runtime(engine, contexts):
         web_verifier=MagicMock(),
         cost_tracker=MagicMock(),
         memory_manager=MagicMock(),
+        thesis_monitor=MagicMock(),
         generator=MagicMock(),
         execution_stream=MagicMock(),
         decision_queue=MagicMock(),

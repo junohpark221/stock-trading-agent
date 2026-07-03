@@ -74,6 +74,7 @@ class DecisionStage(StrEnum):
     APPROVAL = "approval"
     EXECUTION = "execution"
     EXIT = "exit"
+    HYPOTHESIS_ALERT = "hypothesis_alert"  # F-11: 가설훼손 경보(경보형 1차, 자동청산 아님)
 
 
 class AgentType(StrEnum):
@@ -86,6 +87,7 @@ class AgentType(StrEnum):
     SENTIMENT_ANALYZER = "sentiment_analyzer"
     REPORT_GENERATOR = "report_generator"
     WEB_VERIFIER = "web_verifier"
+    THESIS_MONITOR = "thesis_monitor"  # F-11: 가설훼손 판단 에이전트(경보형)
 
 
 class LLMProviderType(StrEnum):

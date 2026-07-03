@@ -15,10 +15,11 @@ from src.api.portfolio_live import fetch_portfolio_view
 from src.api.routes.accounts import _mask_account_no, _slugify
 from src.api.routes.admin_web._common import symbol_names
 from src.api.templates import templates
-from src.core.enums import StrategyType
+from src.core.enums import DecisionStage, StrategyType
 from src.core.time import to_kst, today_kst
 from src.db.models.account import Account, AccountCrypto
 from src.db.models.execution import Order
+from src.db.models.llm import DecisionLog
 from src.db.models.strategy import PositionRecord
 from src.db.session import get_db_session, get_session_factory
 from src.report.data_fetcher import ReportDataFetcher
@@ -265,6 +266,34 @@ async def accounts_toggle(
     })
 
 
+async def _latest_hypothesis_alerts(
+    session: AsyncSession, account_id: str, symbols: list[str]
+) -> dict[str, DecisionLog]:
+    """종목별 최신 가설훼손 점검 결과(decision_log)를 {symbol: DecisionLog}로 반환 (F-11).
+
+    각 종목의 가장 최근 HYPOTHESIS_ALERT 1건만 담는다. 훼손/유효 여부는
+    ``decision`` 필드('hypothesis_broken'/'thesis_intact')로 구분한다.
+    """
+    if not symbols:
+        return {}
+    rows = (
+        await session.execute(
+            select(DecisionLog)
+            .where(
+                DecisionLog.account_id == account_id,
+                DecisionLog.stage == DecisionStage.HYPOTHESIS_ALERT.value,
+                DecisionLog.symbol.in_(symbols),
+            )
+            .order_by(DecisionLog.created_at.desc())
+        )
+    ).scalars().all()
+    latest: dict[str, DecisionLog] = {}
+    for row in rows:
+        if row.symbol and row.symbol not in latest:
+            latest[row.symbol] = row
+    return latest
+
+
 @router.get("/accounts/{account_id}", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def account_detail(
     request: Request,
@@ -290,6 +319,11 @@ async def account_detail(
         + [o.symbol for o in pending_orders if o.symbol],
     )
 
+    # F-11: 포지션별 최신 가설훼손 점검 결과(경보형). 종목당 가장 최근 1건만 표시.
+    hypothesis_alerts = await _latest_hypothesis_alerts(
+        session, account_id, [p.symbol for p in positions if p.symbol]
+    )
+
     return templates.TemplateResponse("account_detail.html", {
         "request": request,
         "account": account,
@@ -297,6 +331,7 @@ async def account_detail(
         "positions": positions,
         "pending_orders": pending_orders,
         "names": names,
+        "hypothesis_alerts": hypothesis_alerts,
         "manual_order_success": order_success,
         "manual_order_error": order_error,
         "sync_msg": sync_msg,

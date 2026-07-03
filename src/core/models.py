@@ -453,6 +453,23 @@ class StockAnalysis(BaseModel):
     reasoning: str = ""
 
 
+class ThesisMonitorResult(BaseModel):
+    """Thesis Monitor 출력 (F-11) — 진입 가설 훼손 여부 판단(경보형).
+
+    자동 청산을 만들지 않는다. 훼손 판단 시 텔레그램 경보 + decision_log 영속만
+    하고, 실제 매도는 사용자가 어드민에서 수동 실행한다.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    thesis_broken: bool
+    confidence: Decimal  # 훼손 판단의 확신도(0.0~1.0). 보수 게이트·에스컬레이션에 사용.
+    severity: str = "low"  # "low" | "medium" | "high" — 훼손 심각도(참고용)
+    key_changes: list[str] = []  # 진입 가설 대비 바뀐 핵심 사실(2~4개)
+    reasoning: str = ""
+
+
 class RiskAssessment(BaseModel):
     """Risk Manager 출력."""
 

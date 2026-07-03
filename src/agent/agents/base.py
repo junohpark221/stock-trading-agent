@@ -84,6 +84,16 @@ class BaseAgent(ABC):
         """후처리. 기본: result 그대로 반환."""
         return result
 
+    def _build_data_snapshot(
+        self, result: BaseModel, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """감사 로그(decision_log.data_snapshot)에 남길 스냅샷. 기본: None.
+
+        서브클래스에서 오버라이드하면 analyze()가 그 반환값을 record()에
+        전달해 JSONB로 영속한다(예: 가설훼손 판단의 진입가설↔현재상태 비교).
+        """
+        return None
+
     def _inject_investment_prompt(
         self,
         messages: list[LLMMessage],
@@ -217,6 +227,7 @@ class BaseAgent(ABC):
             llm_tokens_in=resp.tokens_in,
             llm_tokens_out=resp.tokens_out,
             llm_cost_usd=Decimal(str(resp.cost_usd)) if resp.cost_usd else None,
+            data_snapshot=self._build_data_snapshot(result, prepared),
         )
 
         return result, decision_id

@@ -25,6 +25,7 @@ from src.scheduler.jobs import (
     job_cleanup_expired_memories,
     job_daily_report,
     job_execution_drain,
+    job_hypothesis_invalidation_check,
     job_llm_cost_report,
     job_market_data_collect,
     job_monthly_report,
@@ -128,6 +129,7 @@ class SchedulerRuntime:
     web_verifier: object
     cost_tracker: object
     memory_manager: AgentMemoryManager
+    thesis_monitor: object  # F-11: 가설훼손 판단 에이전트(reload 재등록에 재사용)
     generator: ReportGenerator
     execution_stream: ExecutionStreamManager
     decision_queue: TradeDecisionQueueManager
@@ -210,6 +212,8 @@ class SchedulerRuntime:
                 decision_queue=self.decision_queue,
                 account_index=idx,
                 coordinator=self.exit_coordinator,
+                thesis_monitor=self.thesis_monitor,
+                cache=self.cache,
             )
 
             # F-05 실시간 손절 청산 의존성도 새 컨텍스트로 갱신(재등록=덮어쓰기).
@@ -273,6 +277,7 @@ class SchedulerFactory:
         from src.agent.agents.market_analyst import MarketAnalyst
         from src.agent.agents.risk_manager import RiskManager
         from src.agent.agents.stock_analyst import StockAnalyst
+        from src.agent.agents.thesis_monitor import ThesisMonitorAgent
         from src.agent.agents.trader import Trader
         from src.agent.decision_recorder import DecisionRecorder
         from src.agent.tools.context import ToolContext
@@ -360,6 +365,11 @@ class SchedulerFactory:
             ),
             trader=Trader(llm_router, recorder, tool_registry, memory_manager),
             recorder=recorder,
+        )
+
+        # F-11: 가설훼손 판단 에이전트(경보형). 공유 라우터/레코더/툴레지스트리 재사용.
+        thesis_monitor = ThesisMonitorAgent(
+            llm_router, recorder, tool_registry, memory_manager
         )
 
         web_verifier = WebSearchVerifier(
@@ -535,6 +545,8 @@ class SchedulerFactory:
                 decision_queue=decision_queue,
                 account_index=account_index,
                 coordinator=exit_coordinator,
+                thesis_monitor=thesis_monitor,
+                cache=cache,
             )
 
         # Attach credentials to the WS managers so main.py's lifespan can start
@@ -565,6 +577,7 @@ class SchedulerFactory:
             web_verifier=web_verifier,
             cost_tracker=cost_tracker,
             memory_manager=memory_manager,
+            thesis_monitor=thesis_monitor,
             generator=generator,
             execution_stream=execution_stream,
             decision_queue=decision_queue,
@@ -973,6 +986,8 @@ class SchedulerFactory:
         decision_queue: TradeDecisionQueueManager,
         account_index: int = 0,
         coordinator: ExitCoordinator | None = None,
+        thesis_monitor: object | None = None,
+        cache: RedisCache | None = None,
     ) -> None:
         """계좌별 작업 등록. 작업 이름: ``{job_type}:{account_id}``.
 
@@ -1060,6 +1075,40 @@ class SchedulerFactory:
                     day_of_week=pa_days,
                     hour=dc_h_offset,
                     minute=dc_m_offset,
+                    timezone="Asia/Seoul",
+                ),
+            )
+
+        # hypothesis_check:{account_id} — F-11 가설훼손 경보(경보형). position 전략만,
+        # 분석 사이클 직후(DECISION_TIME 이후) 일 1회. 자동 청산 없음(텔레그램 경보만).
+        if (
+            ctx.strategy_type == StrategyType.POSITION
+            and s.HYPOTHESIS_CHECK_ENABLED
+            and thesis_monitor is not None
+            and cache is not None
+        ):
+            hc_h, hc_m = SchedulerEngine._parse_time(s.HYPOTHESIS_CHECK_TIME)
+            hc_m_offset = (hc_m + account_index) % 60
+            hc_h_offset = hc_h + (hc_m + account_index) // 60
+            hc_days = SchedulerEngine._parse_day_of_week(s.POSITION_ANALYSIS_DAYS)
+            engine.register_job(
+                f"hypothesis_check:{aid}",
+                partial(
+                    job_hypothesis_invalidation_check,
+                    agent=thesis_monitor,
+                    position_manager=ctx.position_manager,
+                    cache=cache,
+                    telegram_bot=telegram_bot,
+                    session_factory=session_factory,
+                    settings=s,
+                    account_id=aid,
+                    account_label=ctx.account_label,
+                    investment_prompt=ctx.investment_prompt,
+                ),
+                CronTrigger(
+                    day_of_week=hc_days,
+                    hour=hc_h_offset,
+                    minute=hc_m_offset,
                     timezone="Asia/Seoul",
                 ),
             )

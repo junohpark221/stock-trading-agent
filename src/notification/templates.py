@@ -681,6 +681,60 @@ class MessageTemplates:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def hypothesis_alert(
+        *,
+        account_label: str = "",
+        symbol: str,
+        name: str = "",
+        entry_thesis: dict | None,
+        key_changes: list[str],
+        reasoning: str,
+        confidence: Decimal,
+        severity: str = "low",
+    ) -> str:
+        """가설훼손 경보 메시지 (F-11, 경보형 — 자동 매도 아님).
+
+        진입 근거(entry_thesis: action/confidence/key_factors) 대비 무엇이 바뀌어
+        가설이 훼손됐는지 요약한다. 실제 매도는 어드민에서 수동 실행하도록 안내한다.
+        """
+        fmt = MessageTemplates
+        esc = fmt._escape
+
+        sev_icon = {"high": "🔴", "medium": "🟠", "low": "🟡"}.get(severity, "🟡")
+        symbol_line = f"{esc(name)} ({esc(symbol)})" if name and name != symbol else esc(symbol)
+
+        lines = fmt._account_header(account_label)
+        lines.extend([
+            f"{sev_icon} <b>가설훼손 경보</b>",
+            _DIVIDER,
+            f"• 종목: {symbol_line}",
+            f"• 확신도: {fmt._fmt_pct(confidence * 100)} · 심각도: {esc(severity)}",
+        ])
+
+        if entry_thesis:
+            factors = entry_thesis.get("key_factors") or []
+            if factors:
+                lines.append("")
+                lines.append("<b>진입 근거</b>")
+                for f in factors[:5]:
+                    lines.append(f"• {esc(str(f))}")
+
+        if key_changes:
+            lines.append("")
+            lines.append("<b>바뀐 사실</b>")
+            for c in key_changes[:4]:
+                lines.append(f"• {esc(str(c))}")
+
+        lines.extend([
+            "",
+            "<b>판단</b>",
+            esc(fmt._truncate(reasoning)),
+            "",
+            "<i>※ 경보만 발송됩니다. 매도는 백오피스에서 직접 실행하세요.</i>",
+        ])
+        return "\n".join(lines)
+
     # -- telegram command templates ------------------------------------------
 
     @staticmethod

@@ -11,6 +11,7 @@ from src.scheduler.factory import SchedulerFactory
 from src.scheduler.jobs import (
     job_daily_report,
     job_execution_drain,
+    job_hypothesis_invalidation_check,
     job_llm_cost_report,
     job_market_data_collect,
     job_monthly_report,
@@ -30,6 +31,7 @@ __all__ = [
     "TradingMonitor",
     "job_daily_report",
     "job_execution_drain",
+    "job_hypothesis_invalidation_check",
     "job_llm_cost_report",
     "job_market_data_collect",
     "job_monthly_report",

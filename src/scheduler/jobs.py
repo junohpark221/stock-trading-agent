@@ -33,7 +33,9 @@ from src.strategy.trailing import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.agent.agents.thesis_monitor import ThesisMonitorAgent
     from src.agent.orchestrator import PipelineOrchestrator
+    from src.data.cache import RedisCache
     from src.broker.base import BrokerInterface
     from src.broker.kis.auth import KISAuth
     from src.config import Settings
@@ -926,6 +928,141 @@ async def job_stop_loss_check(
             alert_count=len(alerts),
             account_id=account_id,
         )
+
+
+# ── Hypothesis Invalidation (F-11) ──────────────────────────────────────
+
+_HYP_ALERT_NS = "hypothesis_alert"
+_HYP_ALERT_TTL = 86_400  # 24h — 날짜를 키에 포함해 하루 1회 경보 보장
+
+
+async def _hyp_alert_sent_today(cache: RedisCache, dedup_key: str) -> bool:
+    """오늘 이미 동일 경보를 보냈는지 확인. Redis 장애 시 False(fail-open)."""
+    try:
+        return await cache.get(_HYP_ALERT_NS, dedup_key) is not None
+    except Exception:
+        logger.warning("job.hypothesis_check.dedup_check_failed", key=dedup_key)
+        return False
+
+
+async def _hyp_alert_mark_sent(cache: RedisCache, dedup_key: str) -> None:
+    """경보 발송 완료를 Redis에 기록(TTL 24h). 예외는 삼킨다."""
+    try:
+        await cache.set(_HYP_ALERT_NS, dedup_key, "1", ttl=_HYP_ALERT_TTL)
+    except Exception:
+        logger.warning("job.hypothesis_check.dedup_mark_failed", key=dedup_key)
+
+
+async def job_hypothesis_invalidation_check(
+    *,
+    agent: ThesisMonitorAgent,
+    position_manager: PositionManager,
+    cache: RedisCache,
+    telegram_bot: TelegramBot,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    account_id: str = "default",
+    account_label: str = "",
+    investment_prompt: str = "",
+) -> None:
+    """가설훼손 경보(F-11, 경보형) — position 전략 오픈 포지션만. 분석 사이클당 1회.
+
+    각 오픈 포지션의 진입 가설(entry_analysis_snapshot)을 현재 뉴스·공시·펀더멘털과
+    LLM으로 대조한다. 판단은 항상 decision_log(stage=HYPOTHESIS_ALERT)에 영속되고,
+    **보수 게이트**(thesis_broken + confidence ≥ HYPOTHESIS_ALERT_CONFIDENCE_MIN)를
+    통과한 경우에만 텔레그램 경보를 발송한다(하루 1회 dedup). 실제 매도는 사용자가
+    어드민에서 수동 실행한다(Human-in-the-Loop — 자동 청산 아님).
+    """
+    if not settings.HYPOTHESIS_CHECK_ENABLED:
+        logger.debug("job.hypothesis_check.skip", reason="disabled", account_id=account_id)
+        return
+
+    positions = await position_manager.get_open(
+        StrategyType.POSITION, account_id=account_id
+    )
+    if not positions:
+        logger.debug(
+            "job.hypothesis_check.skip", reason="no_open_positions", account_id=account_id
+        )
+        return
+
+    async with session_factory() as session:
+        names = await resolve_symbol_names(session, [p.symbol for p in positions])
+
+    threshold = Decimal(str(settings.HYPOTHESIS_ALERT_CONFIDENCE_MIN))
+    today = date.today()
+    alert_count = 0
+
+    for position in positions:
+        snapshot = position.entry_analysis_snapshot
+        if not snapshot:
+            # 진입 가설이 없는 포지션(수동/레거시)은 대조 기준이 없어 스킵.
+            continue
+        name = names.get(position.symbol, position.symbol)
+        try:
+            result, _ = await agent.analyze(
+                {
+                    "symbol": position.symbol,
+                    "name": name,
+                    "entry_snapshot": snapshot,
+                    "entry_date": str(position.entry_date),
+                },
+                session_id=uuid.uuid4(),
+                symbol=position.symbol,
+                investment_prompt=investment_prompt or None,
+                account_id=account_id,
+            )
+        except Exception:
+            logger.warning(
+                "job.hypothesis_check.position_error",
+                symbol=position.symbol,
+                account_id=account_id,
+                exc_info=True,
+            )
+            continue
+
+        if not getattr(result, "thesis_broken", False):
+            continue
+        if result.confidence < threshold:
+            logger.info(
+                "job.hypothesis_check.below_threshold",
+                symbol=position.symbol,
+                confidence=str(result.confidence),
+                account_id=account_id,
+            )
+            continue
+
+        dedup_key = f"{account_id}:{position.symbol}:{today.isoformat()}"
+        if await _hyp_alert_sent_today(cache, dedup_key):
+            continue
+
+        html = MessageTemplates.hypothesis_alert(
+            account_label=account_label,
+            symbol=position.symbol,
+            name=name,
+            entry_thesis=snapshot,
+            key_changes=list(result.key_changes or []),
+            reasoning=result.reasoning,
+            confidence=result.confidence,
+            severity=result.severity,
+        )
+        await telegram_bot.send_message(html)
+        await _hyp_alert_mark_sent(cache, dedup_key)
+        alert_count += 1
+        logger.info(
+            "job.hypothesis_check.alert_sent",
+            symbol=position.symbol,
+            confidence=str(result.confidence),
+            severity=result.severity,
+            account_id=account_id,
+        )
+
+    logger.info(
+        "job.hypothesis_check.done",
+        account_id=account_id,
+        positions=len(positions),
+        alerts=alert_count,
+    )
 
 
 # ── Reports ─────────────────────────────────────────────────────────────

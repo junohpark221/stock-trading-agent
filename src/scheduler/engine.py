@@ -343,7 +343,7 @@ class SchedulerEngine:
                     logger.warning("scheduler.job_failed_telegram_send_failed", job_name=job_name)
 
         # 텔레그램 성공 알림 (5분·시간단위 고빈도 배치는 스킵 — 완료 핑 노이즈 방지)
-        _silent_success_jobs = {"stop_loss_check", "execution_drain", "sync_positions_intraday"}
+        _silent_success_jobs = {"stop_loss_check", "execution_drain", "sync_positions_intraday", "hypothesis_check"}
         job_base = job_name.split(":")[0]
         if status == JobStatus.SUCCESS and self._telegram_bot is not None and job_base not in _silent_success_jobs:
             try:

@@ -181,6 +181,11 @@ class Settings(BaseSettings):
     LLM_COST_REPORT_TIME: str = "09:00"
     MEMORY_CLEANUP_TIME: str = "16:10"  # 만료 메모리 정리 (KST, 매일 1회)
 
+    # F-11 가설훼손 경보(경보형 1차) — position 전략 오픈 포지션만. 자동 청산 아님.
+    HYPOTHESIS_CHECK_ENABLED: bool = True
+    HYPOTHESIS_CHECK_TIME: str = "08:45"  # KST, DECISION_TIME(08:30) 직후. 계좌별 시차 오프셋.
+    HYPOTHESIS_ALERT_CONFIDENCE_MIN: float = 0.75  # 보수 게이트: 이 확신도 이상일 때만 경보
+
     # 모니터링 임계치
     MONITOR_STOP_LOSS_PROXIMITY_PCT: float = 2.0     # 손절 근접 경고 (%)
     MONITOR_SECTOR_WEIGHT_WARN_PCT: float = 25.0     # 섹터 비중 경고 (%)

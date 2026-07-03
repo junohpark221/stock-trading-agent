@@ -68,7 +68,8 @@ class TestAgentTypeWebVerifier:
         assert AgentType.WEB_VERIFIER == "web_verifier"
 
     def test_all_members(self):
-        assert len(AgentType) == 7
+        # F-11: THESIS_MONITOR 추가로 8개.
+        assert len(AgentType) == 8
 
 
 # ---------------------------------------------------------------------------

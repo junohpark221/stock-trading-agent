@@ -115,8 +115,13 @@ class KISClient(BrokerInterface):
         self._credentials: AccountCredentials | None = None
         self._token_ttl: int = settings.KIS_TOKEN_REDIS_TTL
 
-        # Rate limiting — update global interval from settings
-        KISClient._global_rate_interval = settings.KIS_RATE_LIMIT_INTERVAL
+        # Rate limiting — take the slowest (max) interval across all instances so
+        # a shared App Key/IP limit is never overrun. Last-writer-wins would be
+        # instance-creation-order dependent and could pick a too-fast value (F-20).
+        KISClient._global_rate_interval = max(
+            KISClient._global_rate_interval, settings.KIS_RATE_LIMIT_INTERVAL
+        )
+        self._ledger_rate_interval = settings.KIS_LEDGER_RATE_LIMIT_INTERVAL
         self._max_rate_limit_retries = settings.KIS_RATE_LIMIT_MAX_RETRIES
         self._rate_limit_backoff_base = settings.KIS_RATE_LIMIT_BACKOFF_BASE
 
@@ -166,8 +171,12 @@ class KISClient(BrokerInterface):
             resolved_interval = rate_limit_interval
         else:
             resolved_interval = 0.5 if credentials.is_paper else 0.05
-        # Update global rate interval (paper trading needs slower pace)
-        KISClient._global_rate_interval = resolved_interval
+        # Take the slowest (max) interval across instances (see __init__, F-20).
+        KISClient._global_rate_interval = max(
+            KISClient._global_rate_interval, resolved_interval
+        )
+        # 원장 TR 전용 최소 간격 (paper는 느린 페이스, prod는 보수적 5건/초)
+        instance._ledger_rate_interval = 0.5 if credentials.is_paper else 0.2
         instance._max_rate_limit_retries = 3
         instance._rate_limit_backoff_base = 1.0
 
@@ -330,15 +339,19 @@ class KISClient(BrokerInterface):
                 is_retry=True, rate_limit_retry=rate_limit_retry,
             )
 
-        # Rate limit — exponential backoff retry
-        if msg_cd == "EGW00201":
+        # Rate limit — exponential backoff retry.
+        # EGW00201 = API gateway per-second limit, EGW00215 = ledger server
+        # (원장) per-second limit. The ledger limit is separate and tighter but
+        # recovers the same way, so both share the backoff retry path (F-20).
+        if msg_cd in ("EGW00201", "EGW00215"):
             if rate_limit_retry >= self._max_rate_limit_retries:
                 raise RateLimitError(
-                    f"KIS rate limit after {rate_limit_retry} retries: {msg1}"
+                    f"KIS rate limit [{msg_cd}] after {rate_limit_retry} retries: {msg1}"
                 )
             wait = self._rate_limit_backoff_base * (2 ** rate_limit_retry)
             logger.warning(
                 "kis_rate_limit_retry",
+                msg_cd=msg_cd,
                 retry=rate_limit_retry + 1,
                 max_retries=self._max_rate_limit_retries,
                 wait_seconds=wait,
@@ -995,6 +1008,15 @@ class KISClient(BrokerInterface):
 
         return balance, positions
 
+    async def _ledger_pace(self) -> None:
+        """원장(잔고·실현손익) TR 사이에 원장 전용 최소 간격을 둔다.
+
+        게이트웨이 초당한도(``_global_rate_interval``, ``_do_request`` 내 sleep)와 별개로,
+        원장 서버 초당한도(EGW00215)는 더 빡빡하다. 잔고 페이지 연사·잔고→실현손익 연사가
+        원장 한도를 넘지 않도록 원장 TR burst에만 추가 간격을 둔다. (F-20)
+        """
+        await asyncio.sleep(self._ledger_rate_interval)
+
     async def _fetch_daily_realized_pnl(self) -> tuple[Decimal, Decimal]:
         """당일 실현손익·실현수익률을 조회한다.
 
@@ -1011,6 +1033,9 @@ class KISClient(BrokerInterface):
             조회에 실패하면 ``(0, 0)`` — 실현손익 조회 실패가 잔고 조회 전체를
             깨지 않게 하고, 한도 미발동(과차단보다 안전)으로 폴백한다.
         """
+        # 잔고 페이지 burst 직후 원장 TR을 연사하지 않도록 원장 전용 간격을 둔다.
+        await self._ledger_pace()
+
         is_paper = self._is_paper()
         tr_id = "VTTC8494R" if is_paper else "TTTC8494R"
 
@@ -1111,6 +1136,8 @@ class KISClient(BrokerInterface):
                 tr_cont_req = "N"
                 ctx_fk = data.get("ctx_area_fk100", "")
                 ctx_nk = data.get("ctx_area_nk100", "")
+                # 원장 페이지 연사가 원장 초당한도를 넘지 않도록 다음 페이지 전 간격을 둔다.
+                await self._ledger_pace()
             else:
                 break
 

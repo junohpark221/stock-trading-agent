@@ -48,6 +48,7 @@ def make_settings(**overrides: object) -> Settings:
         "KIS_TOKEN_REDIS_TTL": 82800,
         "KIS_ACCOUNT_NO": "1234567801",
         "KIS_RATE_LIMIT_INTERVAL": 0.0,
+        "KIS_LEDGER_RATE_LIMIT_INTERVAL": 0.0,
     }
     defaults.update(overrides)
     return Settings(**defaults)  # type: ignore[arg-type]
@@ -80,6 +81,18 @@ def _clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_kis_global_rate_interval():
+    """KISClient._global_rate_interval은 ClassVar이며 이제 max()로 누적(F-20)되므로,
+    테스트 간 오염을 막기 위해 각 테스트 전 0.0으로 리셋한다."""
+    from src.broker.kis.client import KISClient
+
+    original = KISClient._global_rate_interval
+    KISClient._global_rate_interval = 0.0
+    yield
+    KISClient._global_rate_interval = original
 
 
 @pytest.fixture

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
+from src.broker.credentials import AccountCredentials
 from src.broker.kis.auth import KISAuth
 from src.broker.kis.client import KISClient
 from src.broker.kis.models import (
@@ -496,6 +497,35 @@ class TestKISClientHandleError:
         assert 1.0 in backoff_calls
         assert 2.0 in backoff_calls
         assert 4.0 in backoff_calls
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_egw00215_retry_then_success(self):
+        """원장 초당한도(EGW00215)도 게이트웨이 한도처럼 백오프 재시도 후 성공 (F-20)."""
+        client = _make_kis_client()
+        err_resp = mock_aiohttp_response(
+            json_data={"rt_cd": "1", "msg_cd": "EGW00215", "msg1": "ledger rate limit"},
+            headers={"tr_cont": ""},
+        )
+        ok_resp = _make_ok_response(output={"result": "ok"})
+        client._session.get = AsyncMock(side_effect=[err_resp, ok_resp])
+        with patch("src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock):
+            data = await client._request("GET", "/test", "TEST")
+        assert data["output"]["result"] == "ok"
+        assert client._session.get.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_egw00215_exhausts_retries(self):
+        """EGW00215도 재시도 소진 시 RateLimitError(현행 실패 의미론 유지) (F-20)."""
+        client = _make_kis_client()
+        resp = mock_aiohttp_response(
+            json_data={"rt_cd": "1", "msg_cd": "EGW00215", "msg1": "ledger rate limit"},
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+        with patch("src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(RateLimitError, match=r"EGW00215.*after 3 retries"):
+                await client._request("GET", "/test", "TEST")
+        assert client._session.get.await_count == 4
 
     @pytest.mark.asyncio
     async def test_insufficient_funds_apbk0013(self):
@@ -1521,6 +1551,103 @@ class TestKISClientFetchBalancePages:
         positions, summary = await client._fetch_balance_pages()
         assert isinstance(summary, KISBalanceOutput2)
         assert summary.dnca_tot_amt == ""
+
+    @pytest.mark.asyncio
+    async def test_ledger_pace_between_pages(self):
+        """페이지 연사 사이에 원장 전용 간격(_ledger_pace)이 적용된다 (F-20)."""
+        client = _make_kis_client(
+            settings=make_settings(KIS_LEDGER_RATE_LIMIT_INTERVAL=0.2)
+        )
+        resp1 = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output1": [{"pdno": "005930", "hldg_qty": "10"}],
+                "output2": [{"dnca_tot_amt": "50000000"}],
+                "ctx_area_fk100": "FK", "ctx_area_nk100": "NK",
+            },
+            headers={"tr_cont": "M"},
+        )
+        resp2 = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output1": [{"pdno": "000660", "hldg_qty": "5"}], "output2": [],
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(side_effect=[resp1, resp2])
+        with patch(
+            "src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            await client._fetch_balance_pages()
+        sleeps = [c.args[0] for c in mock_sleep.await_args_list]
+        assert 0.2 in sleeps  # 다음 페이지 전 원장 간격 적용
+
+    @pytest.mark.asyncio
+    async def test_no_ledger_pace_single_page(self):
+        """단일 페이지면 페이지 간 원장 간격을 두지 않는다 (F-20)."""
+        client = _make_kis_client(
+            settings=make_settings(KIS_LEDGER_RATE_LIMIT_INTERVAL=0.2)
+        )
+        resp = mock_aiohttp_response(
+            json_data={
+                "rt_cd": "0", "msg_cd": "0000", "msg1": "ok",
+                "output1": [], "output2": [{"dnca_tot_amt": "0"}],
+            },
+            headers={"tr_cont": ""},
+        )
+        client._session.get = AsyncMock(return_value=resp)
+        with patch(
+            "src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            await client._fetch_balance_pages()
+        sleeps = [c.args[0] for c in mock_sleep.await_args_list]
+        assert 0.2 not in sleeps
+
+
+class TestKISClientRateInterval:
+    @pytest.mark.asyncio
+    async def test_ledger_pace_before_realized_pnl(self):
+        """실현손익 조회 직전 원장 전용 간격(_ledger_pace)이 적용된다 (F-20)."""
+        client = _make_kis_client(
+            settings=make_settings(KIS_LEDGER_RATE_LIMIT_INTERVAL=0.3)
+        )
+        resp = _make_ok_response(
+            output2=[{"rlzt_pfls": "1000", "rlzt_erng_rt": "1.5"}]
+        )
+        client._session.get = AsyncMock(return_value=resp)
+        with patch(
+            "src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep:
+            pnl, rate = await client._fetch_daily_realized_pnl()
+        assert pnl == Decimal("1000")
+        sleeps = [c.args[0] for c in mock_sleep.await_args_list]
+        assert 0.3 in sleeps
+
+    def test_global_rate_interval_takes_max(self):
+        """_global_rate_interval은 인스턴스 생성 순서와 무관하게 최댓값을 채택한다 (F-20)."""
+        cache = MagicMock(spec=RedisCache)
+        KISClient(settings=make_settings(KIS_RATE_LIMIT_INTERVAL=0.05), cache=cache)
+        KISClient(settings=make_settings(KIS_RATE_LIMIT_INTERVAL=0.5), cache=cache)
+        assert KISClient._global_rate_interval == 0.5
+        # 더 빠른 인터벌로 생성해도 낮아지지 않는다(last-writer-wins 아님).
+        KISClient(settings=make_settings(KIS_RATE_LIMIT_INTERVAL=0.05), cache=cache)
+        assert KISClient._global_rate_interval == 0.5
+
+    def test_from_credentials_ledger_interval_prod(self):
+        creds = AccountCredentials(
+            account_id="a", app_key="k", app_secret="s",
+            account_no="12345678-01", is_paper=False,
+        )
+        client = KISClient.from_credentials(creds, MagicMock(spec=RedisCache))
+        assert client._ledger_rate_interval == 0.2
+
+    def test_from_credentials_ledger_interval_paper(self):
+        creds = AccountCredentials(
+            account_id="a", app_key="k", app_secret="s",
+            account_no="12345678-01", is_paper=True,
+        )
+        client = KISClient.from_credentials(creds, MagicMock(spec=RedisCache))
+        assert client._ledger_rate_interval == 0.5
 
 
 # ═══════════════════════════════════════════════════════════════════════

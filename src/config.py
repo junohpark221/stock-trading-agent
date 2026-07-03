@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     KIS_HTS_ID: str = ""
     KIS_BASE_URL: str = ""                 # 빈 값이면 KIS_IS_PAPER로 자동 결정
     KIS_RATE_LIMIT_INTERVAL: float = 0.5   # paper=0.5s, prod=0.05s
+    # 원장(잔고·실현손익 등) TR 전용 최소 간격. 원장 초당한도(EGW00215)는 게이트웨이
+    # 한도보다 빡빡하나 KIS 공식 수치 미공개 → 보수적 5건/초(0.2s prod), 실측 후 튜닝. (F-20)
+    KIS_LEDGER_RATE_LIMIT_INTERVAL: float = 0.2
     KIS_RATE_LIMIT_MAX_RETRIES: int = 3        # rate limit 최대 재시도 횟수
     KIS_RATE_LIMIT_BACKOFF_BASE: float = 1.0   # 백오프 기본 대기 시간(초)
     KIS_TOKEN_REDIS_TTL: int = 82800       # 23시간 (토큰 유효 24시간, 1시간 여유)

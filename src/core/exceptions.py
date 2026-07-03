@@ -80,7 +80,10 @@ class APIError(BrokerError):
 
 
 class RateLimitError(APIError):
-    """KIS API rate limit exceeded (msg_cd: EGW00201)."""
+    """KIS API rate limit exceeded.
+
+    msg_cd: EGW00201 (API 게이트웨이 초당한도) 또는 EGW00215 (원장 서버 초당한도).
+    """
 
 
 class KISResponseError(APIError):

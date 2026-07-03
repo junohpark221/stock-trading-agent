@@ -308,6 +308,7 @@ class OrderExecutor:
                     order=order, symbol=symbol, side=side, quantity=quantity,
                     web_verify_result=verification.result, decision_ids=decision_ids,
                     error=f"Web 검증 차단: {verification.summary}",
+                    terminal=True,
                 )
 
             if verification.result == WebVerifyResult.WARNING:
@@ -367,6 +368,7 @@ class OrderExecutor:
                         order=order, symbol=symbol, side=side, quantity=quantity,
                         web_verify_result=verification.result, decision_ids=decision_ids,
                         error=reason,
+                        terminal=True,
                     )
 
                 # 섹터 한도 등으로 수량이 축소된 경우 반영 후 진행
@@ -442,6 +444,9 @@ class OrderExecutor:
                         approval_status=approval_status,
                         web_verify_result=verification.result, decision_ids=decision_ids,
                         error=f"승인 {approval_status.value}",
+                        # REJECTED(사용자 명시 거부)만 영구 차단. TIMEOUT은 다음 드레인에
+                        # 사용자가 승인할 수 있어 재시도 유지(F-21).
+                        terminal=approval_status == ApprovalStatus.REJECTED,
                     )
 
                 # 5. 수량 변경 확인 (DB에서 재조회)
@@ -499,6 +504,7 @@ class OrderExecutor:
                             approval_status=approval_status,
                             web_verify_result=verification.result, decision_ids=decision_ids,
                             error=f"리스크 재검증 실패: {risk_result.violations}",
+                            terminal=True,
                         )
 
                     effective_quantity = risk_result.adjusted_quantity or modified_qty
@@ -1826,6 +1832,7 @@ class OrderExecutor:
         web_verify_result: WebVerifyResult | None = None,
         decision_ids: list[UUID] | None = None,
         error: str = "",
+        terminal: bool = False,
     ) -> ExecutionResult:
         """실패 ExecutionResult 생성 헬퍼."""
         return ExecutionResult(
@@ -1838,4 +1845,5 @@ class OrderExecutor:
             web_verify_result=web_verify_result,
             decision_ids=decision_ids or [],
             error=error,
+            terminal=terminal,
         )

@@ -700,6 +700,9 @@ class ExecutionResult(BaseModel):
     error: str = ""
     # True = 브로커 접수 완료 · 체결 미확정 (WS/reconciler가 추후 FILLED 확정)
     pending: bool = False
+    # True = 당일 재시도 무의미한 영구 차단(web_verify BLOCKED·배치 리스크·승인 거부).
+    # 드레인이 해당 결정 큐 항목을 즉시 expired 처리해 재시도·중복 알림을 끊는다(F-21).
+    terminal: bool = False
 
 
 class ExecutionEvent(BaseModel):

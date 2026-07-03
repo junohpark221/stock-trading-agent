@@ -305,7 +305,7 @@ async def _execute_buy_decisions(
     account_label: str,
     allocator: BatchBudgetAllocator | None = None,
     alloc_session_id: uuid.UUID | None = None,
-) -> list[tuple[str, bool, int | None]]:
+) -> list[tuple[str, bool, int | None, bool]]:
     """BUY 결정 리스트를 배분→발주하는 공유 실행 코어.
 
     결정/실행 분리 후 ``job_execution_drain``이 호출한다. 각 결정은
@@ -313,7 +313,8 @@ async def _execute_buy_decisions(
     가드는 호출자(드레인)가 담당한다.
 
     Returns:
-        (symbol, success, order_id) 튜플 리스트.
+        (symbol, success, order_id, terminal) 튜플 리스트. ``terminal``은 당일
+        재시도 무의미한 영구 차단(F-21) 여부 — 드레인이 해당 pending을 즉시 만료.
     """
     if not buy_decisions:
         return []
@@ -338,7 +339,7 @@ async def _execute_buy_decisions(
     # 배치 누적 한도 게이트용 in-flight 예약 (F-04). 이 배치에서 접수한 진입을
     # 누적해 후속 후보의 MAX_HOLDINGS/MAX_DAILY_TRADES/섹터 한도 검증에 반영한다.
     reservation = BatchReservation()
-    results: list[tuple[str, bool, int | None]] = []
+    results: list[tuple[str, bool, int | None, bool]] = []
     for td in buy_decisions:
         meta = meta_by_symbol.get(td.symbol, {})
         try:
@@ -353,7 +354,9 @@ async def _execute_buy_decisions(
                 reference_price=meta.get("reference_price"),
             )
             order_id = getattr(exec_result, "order_id", None)
-            results.append((td.symbol, exec_result.success, order_id))
+            results.append(
+                (td.symbol, exec_result.success, order_id, exec_result.terminal)
+            )
             if exec_result.success:
                 logger.info(
                     "job.buy_execution.success",
@@ -375,7 +378,8 @@ async def _execute_buy_decisions(
                 symbol=td.symbol,
                 account_id=account_id,
             )
-            results.append((td.symbol, False, None))
+            # 예외는 일시 실패로 간주 → terminal=False, 계속 재시도(F-21).
+            results.append((td.symbol, False, None, False))
     return results
 
 
@@ -677,12 +681,19 @@ async def job_execution_drain(
     )
 
     executed = 0
-    for symbol, success, order_id in results:
+    terminal_ids: list[int] = []
+    for symbol, success, order_id, terminal in results:
+        pid = meta_by_symbol.get(symbol, {}).get("pending_id")
         if success:
-            pid = meta_by_symbol.get(symbol, {}).get("pending_id")
             if pid is not None:
                 await queue.mark_executed(pid, order_id)
             executed += 1
+        elif terminal and pid is not None:
+            # 영구 차단(web_verify BLOCKED·배치 리스크·승인 거부) → 즉시 만료해
+            # 5분마다 재시도·중복 알림 방지(F-21). 일시 실패는 pending 유지.
+            terminal_ids.append(pid)
+    if terminal_ids:
+        await queue.mark_expired(terminal_ids, "terminal_block")
     logger.info(
         "job.execution_drain.done",
         account_id=account_id,
@@ -690,6 +701,7 @@ async def job_execution_drain(
         passed=len(passed),
         gap_skipped=len(gap_failed_ids),
         executed=executed,
+        terminal_expired=len(terminal_ids),
     )
 
 

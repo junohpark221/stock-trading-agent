@@ -141,6 +141,51 @@ async def test_drain_expires_stale_pending(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_drain_terminal_block_expires(monkeypatch):
+    """F-21: 영구 차단(terminal=True) 실패는 즉시 terminal_block으로 만료 — 재시도 안 함."""
+    monkeypatch.setattr("src.scheduler.jobs._is_market_open", lambda *a, **k: True)
+    queue = AsyncMock()
+    queue.get_pending = AsyncMock(return_value=[_pending(ref="70000", pid=5)])
+    broker = AsyncMock()
+    broker.get_price = AsyncMock(
+        return_value=MagicMock(current_price=Decimal("70200"))  # 갭 내
+    )
+    order_executor = AsyncMock()
+    order_executor.execute_entry = AsyncMock(
+        return_value=MagicMock(success=False, order_id=None, terminal=True)
+    )
+
+    await job_execution_drain(**_drain_kwargs(queue, broker, order_executor))
+
+    order_executor.execute_entry.assert_awaited_once()
+    queue.mark_expired.assert_awaited_once_with([5], "terminal_block")
+    queue.mark_executed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drain_transient_failure_keeps_pending(monkeypatch):
+    """F-21: 일시 실패(terminal=False)는 pending 유지 — 다음 드레인에 재시도."""
+    monkeypatch.setattr("src.scheduler.jobs._is_market_open", lambda *a, **k: True)
+    queue = AsyncMock()
+    queue.get_pending = AsyncMock(return_value=[_pending(ref="70000", pid=6)])
+    broker = AsyncMock()
+    broker.get_price = AsyncMock(
+        return_value=MagicMock(current_price=Decimal("70200"))  # 갭 내
+    )
+    order_executor = AsyncMock()
+    order_executor.execute_entry = AsyncMock(
+        return_value=MagicMock(success=False, order_id=None, terminal=False)
+    )
+
+    await job_execution_drain(**_drain_kwargs(queue, broker, order_executor))
+
+    order_executor.execute_entry.assert_awaited_once()
+    # 일시 실패는 만료도 실행 전이도 하지 않음(pending 유지)
+    queue.mark_expired.assert_not_awaited()
+    queue.mark_executed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_drain_skips_when_market_closed(monkeypatch):
     """장 마감 시 아무것도 하지 않음."""
     monkeypatch.setattr("src.scheduler.jobs._is_market_open", lambda *a, **k: False)

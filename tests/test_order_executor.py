@@ -361,6 +361,7 @@ async def test_execute_entry_full_success(executor, mock_broker, mock_position_m
     )
 
     assert result.success is True
+    assert result.terminal is False  # F-21: 성공 경로는 영구 차단 아님
     assert result.symbol == "005930"
     assert result.side == OrderSide.BUY
     assert result.fill_price == Decimal("72000")
@@ -448,6 +449,7 @@ async def test_execute_entry_web_blocked(executor, mock_web_verifier, mock_broke
     )
 
     assert result.success is False
+    assert result.terminal is True  # F-21: 영구 차단 → 드레인이 즉시 만료
     assert result.web_verify_result == WebVerifyResult.BLOCKED
     assert "Web 검증 차단" in result.error
     mock_broker.place_order.assert_not_awaited()
@@ -487,6 +489,7 @@ async def test_execute_entry_approval_rejected(executor, mock_approval_manager, 
     )
 
     assert result.success is False
+    assert result.terminal is True  # F-21: 사용자 명시 거부 → 영구 차단
     assert result.approval_status == ApprovalStatus.REJECTED
     assert "승인 rejected" in result.error
     mock_broker.place_order.assert_not_awaited()
@@ -504,6 +507,7 @@ async def test_execute_entry_approval_timeout(executor, mock_approval_manager, m
     )
 
     assert result.success is False
+    assert result.terminal is False  # F-21: TIMEOUT은 재시도 유지(다음 드레인에 승인 가능)
     assert result.approval_status == ApprovalStatus.TIMEOUT
     mock_broker.place_order.assert_not_awaited()
 
@@ -610,6 +614,7 @@ async def test_execute_entry_modified_quantity_risk_fails(
     )
 
     assert result.success is False
+    assert result.terminal is True  # F-21: 승인 후 재검증 실패 → 영구 차단
     assert "리스크 재검증 실패" in result.error
     mock_broker.place_order.assert_not_awaited()
     mock_bot.send_message.assert_awaited()  # rejection notification
@@ -1557,6 +1562,7 @@ async def test_batch_gate_blocks_before_approval(
     )
 
     assert result.success is False
+    assert result.terminal is True  # F-21: 배치 리스크 게이트 차단 → 영구 차단
     # 승인 요청·브로커 주문 모두 미발생 (헛 승인 방지)
     mock_approval_manager.request_approval.assert_not_awaited()
     mock_broker.place_order.assert_not_awaited()

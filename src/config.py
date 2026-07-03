@@ -82,8 +82,9 @@ class Settings(BaseSettings):
     DAILY_LOSS_LIMIT_KRW: int = 500_000
     # F-13: 스윙 청산을 변동성(ATR) 연동으로. on이면 스윙 진입 결정 시 심볼별 ATR로
     # 손절폭 clamp(k×ATR%, floor, cap) + R:R 보존 익절을 계산해 결정에 주입한다.
-    # off(기본)면 executor 폴백(고정 3%)·고정% 유지. opt-in. 페이퍼 검증 후 env로 활성화.
-    SWING_ATR_EXIT_ENABLED: bool = False
+    # off면 executor 폴백(고정 3%)·고정% 유지. 신규 진입에만 적용(보유 포지션 불변).
+    # 2026-07-03 라이브 활성화(사용자 확정, 모의계좌 검증 중). env로 off 가능.
+    SWING_ATR_EXIT_ENABLED: bool = True
 
     # 수수료/세금 추정율 (%). WS 체결통보에는 수수료 필드가 없어(F-01) 거래대금 기반
     # 추정치를 적용한다. 매수=증권사 수수료, 매도=수수료+거래세(0.18%) 포함.

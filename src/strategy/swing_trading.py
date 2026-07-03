@@ -393,6 +393,9 @@ class SwingTradingStrategy(Strategy):
             final_value = entry_price * final_quantity
 
             # Step 8: Signal 생성 — 모든 조건 통과
+            # 손절/익절 폭(%)은 실제 산출가 기준(고정·ATR clamp 모두 정확히 표기)
+            sl_pct = (entry_price - stop_loss) / entry_price * Decimal("100")
+            tp_pct = (take_profit - entry_price) / entry_price * Decimal("100")
             signal = Signal(
                 symbol=decision.symbol,
                 action=SignalAction.BUY,
@@ -404,8 +407,8 @@ class SwingTradingStrategy(Strategy):
                 reasoning=(
                     f"Swing 전략 진입: confidence={analysis.confidence}, "
                     f"기술조건={'/'.join(condition_names)}({conditions_met}개), "
-                    f"SL={stop_loss:.0f}(-{self.STOP_LOSS_PCT}%), "
-                    f"TP={take_profit:.0f}(+{self.TAKE_PROFIT_PCT}%), "
+                    f"SL={stop_loss:.0f}(-{sl_pct:.1f}%), "
+                    f"TP={take_profit:.0f}(+{tp_pct:.1f}%), "
                     f"qty={final_quantity}"
                 ),
                 source_agent=AgentType.TRADER,

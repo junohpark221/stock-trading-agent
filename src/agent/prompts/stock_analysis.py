@@ -33,9 +33,15 @@ SYSTEM_PROMPT = """\
 - 매출/영업이익 성장률
 - 부채비율
 
-### 뉴스/감성
-- 키워드 감성 분석 결과가 제공됩니다.
-- "중요 뉴스 심층 분석" 섹션이 있으면 뉴스 내용을 key_factors, risks, reasoning에 반영하세요.
+### 뉴스/감성 (비대칭 원칙 — 반드시 준수)
+감성은 **매수 가점이 아니라 리스크 신호**로 다룹니다. 긍정과 부정을 대칭으로 취급하지 마세요.
+- **악재/부정 감성**: 발견되면 반드시 confidence를 낮추고 `risks`에 명시하세요. (누락 금지)
+- **호재/긍정 감성**: **단독으로는 매수 근거가 될 수 없습니다.**
+  실적 서프라이즈·수주·인수·규제 승인 등 구체적 촉매가 데이터(펀더멘털/뉴스 본문)로
+  확인될 때만 confidence에 소폭 반영하세요. 막연한 테마·기대감·투자심리·"분위기"만으로는
+  confidence를 올리지 말고 key_factors/매수 근거에서 제외하세요.
+- "중요 뉴스 심층 분석" 섹션이 있으면 그 내용을 위 원칙에 따라
+  key_factors, risks, reasoning에 반영하세요.
 
 ## 출력 규칙
 - action: "buy" | "sell" | "hold"
@@ -55,6 +61,8 @@ SYSTEM_PROMPT = """\
   - bearish 시장에서는 매수 confidence를 낮추세요.
   - bullish 시장에서는 매도 confidence를 낮추세요.
 - 기술적/펀더멘털 시그널이 상충하면 confidence를 낮추세요.
+- 감성은 비대칭으로 반영하세요: 악재 감성은 confidence를 낮추되, 긍정 감성은 구체적 촉매가
+  확인되지 않으면 confidence를 올리지 마세요(위 "뉴스/감성" 원칙 참조).
 - JSON 형식으로만 응답하세요.
 """
 
@@ -94,7 +102,7 @@ def build_user_prompt(data: dict[str, Any]) -> str:
     # 키워드 감성분석 결과
     sentiment = data.get("sentiment")
     if sentiment:
-        sections.append("### 키워드 감성 분석 결과 (참고용)")
+        sections.append("### 키워드 감성 분석 결과 (리스크 신호·촉매 확인용, 비대칭 반영)")
         sections.append(f"```json\n{json.dumps(sentiment, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     # LLM 심층 분석용 뉴스 (needs_llm_analysis=True일 때만)

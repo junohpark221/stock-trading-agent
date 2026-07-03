@@ -614,6 +614,23 @@ class TestPromptModules:
         assert "심층 분석" in prompt
         assert "삼성 실적 서프라이즈" in prompt
 
+    def test_stock_analysis_sentiment_asymmetry_in_system_prompt(self):
+        """F-17: 시스템 프롬프트가 감성을 비대칭(악재→confidence↓, 긍정→촉매 보강 요구)으로 명세."""
+        sp = stock_analysis.SYSTEM_PROMPT
+        # 비대칭 원칙 자체
+        assert "비대칭" in sp
+        # 악재 감성은 confidence를 낮추고 risks에 반영 (저후회 코어)
+        assert "악재" in sp
+        # 긍정 감성은 단독 매수 근거 불가 + 구체적 촉매 보강 요구 (옵션 B)
+        assert "단독" in sp and "촉매" in sp
+
+    def test_stock_analysis_sentiment_label_is_asymmetric(self):
+        """F-17: 감성 섹션 라벨이 '참고용' 방임이 아니라 비대칭 반영임을 드러냄."""
+        data = {"symbol": "005930", "sentiment": {"score": 0.8, "label": "positive"}}
+        prompt = stock_analysis.build_user_prompt(data)
+        assert "비대칭" in prompt
+        assert "(참고용)" not in prompt
+
     def test_risk_assessment_prompt(self):
         data = {
             "symbol": "005930",

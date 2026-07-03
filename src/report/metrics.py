@@ -383,6 +383,58 @@ class PerformanceCalculator:
         return result
 
     @staticmethod
+    def breakdown_by_trigger(
+        closed_positions: list[PositionRecord],
+    ) -> dict[str, dict]:
+        """진입 트리거 태그별 성과 분석 (F-14, 스윙 기술 셋업).
+
+        한 포지션이 복수 태그(예: RSI과매도반전+MACD골든크로스)를 가지면 각 태그
+        버킷에 **중복 집계**된다(태그 단독 효과가 아니라 "해당 셋업이 존재한 진입"의
+        성과). entry_trigger가 비어 있는 포지션은 스킵한다. LLM이 실제 진입을 결정하므로
+        인과가 아닌 상관 관측이다.
+
+        Returns: {
+            "RSI과매도반전": {"trade_count": int, "win_rate_pct": Decimal,
+                            "avg_pnl_pct": Decimal, "total_pnl": Decimal},
+            "MACD골든크로스": {...},
+        }
+        """
+        groups: dict[str, list[PositionRecord]] = defaultdict(list)
+        for p in closed_positions:
+            for tag in p.entry_trigger or []:
+                groups[tag].append(p)
+
+        result: dict[str, dict] = {}
+        for tag in sorted(groups):
+            positions = groups[tag]
+            win_rate, _, _ = PerformanceCalculator.calculate_win_rate(positions)
+            total_pnl = sum(
+                p.realized_pnl for p in positions if p.realized_pnl is not None
+            )
+
+            pnl_pcts: list[Decimal] = []
+            for p in positions:
+                if p.entry_price and p.entry_price != _ZERO and p.exit_price is not None:
+                    pnl_pcts.append(
+                        (p.exit_price - p.entry_price) / p.entry_price * _HUNDRED,
+                    )
+
+            avg_pnl = _ZERO
+            if pnl_pcts:
+                avg_pnl = (sum(pnl_pcts) / Decimal(len(pnl_pcts))).quantize(
+                    _Q2, rounding=ROUND_HALF_UP,
+                )
+
+            result[tag] = {
+                "trade_count": len(positions),
+                "win_rate_pct": win_rate,
+                "avg_pnl_pct": avg_pnl,
+                "total_pnl": total_pnl,
+            }
+
+        return result
+
+    @staticmethod
     def breakdown_by_month(
         closed_positions: list[PositionRecord],
     ) -> dict[str, dict]:

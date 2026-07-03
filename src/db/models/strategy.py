@@ -17,7 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base, TimestampMixin
@@ -36,6 +36,8 @@ class PositionRecord(TimestampMixin, Base):
         Index("ix_positions_strategy_status", "strategy_type", "status"),
         Index("ix_positions_entry_date", "entry_date"),
         Index("ix_positions_account_id", "account_id"),
+        # F-14: 진입 트리거 태그(text[]) 멤버십 조회(= ANY)용 GIN 인덱스.
+        Index("ix_positions_entry_trigger", "entry_trigger", postgresql_using="gin"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -66,6 +68,11 @@ class PositionRecord(TimestampMixin, Base):
     # 진입 분석 스냅샷 (메모리 학습용) — 진입 시 LLM 분석 요약(action/confidence/key_factors).
     # 체결 시 Order로부터 복사되며, 청산 후 record_trade_outcome이 교훈 생성에 사용한다.
     entry_analysis_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # F-14: 진입 트리거 태그 (스윙 기술 셋업: RSI과매도반전/MACD골든크로스/BB하단반등).
+    # 라이브 결정 시점에 계산해 스냅샷 배관으로 전달, 포지션 생성 시 이 전용 컬럼으로 승격.
+    # 관측/성과귀인용 주석이며 매매 게이트가 아니다. 청산 시 realized_pnl과 조인해 성과 산출.
+    entry_trigger: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
 
 
 class PortfolioSnapshot(TimestampMixin, Base):

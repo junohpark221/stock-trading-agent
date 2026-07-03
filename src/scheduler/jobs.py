@@ -391,6 +391,7 @@ async def _enqueue_buy_decisions(
     strategy_type: str,
     market_close: str,
     holidays: str = "",
+    strategy: Strategy | None = None,
 ) -> int:
     """PipelineResult의 BUY 결정을 결정 큐에 적재(발주 안 함). 적재 수 반환.
 
@@ -409,6 +410,20 @@ async def _enqueue_buy_decisions(
     enqueued = 0
     for td in buy_decisions:
         snapshot = build_entry_snapshot(td.symbol, result)
+        # F-14: 진입 트리거 태그(스윙 기술 셋업)를 스냅샷에 실어 전달 → 포지션 생성 시
+        # PositionRecord.entry_trigger 전용 컬럼으로 승격(관측/성과귀인용, 게이트 아님).
+        if strategy is not None:
+            try:
+                tags = await strategy.compute_entry_trigger(td.symbol)
+            except Exception:
+                logger.warning(
+                    "job.decision.entry_trigger_error",
+                    symbol=td.symbol,
+                    account_id=account_id,
+                )
+                tags = None
+            if tags:
+                snapshot = {**(snapshot or {}), "entry_trigger": tags}
         try:
             await queue.enqueue(
                 account_id=account_id,
@@ -495,6 +510,7 @@ async def job_swing_decision(
         strategy_type="swing",
         market_close=market_close,
         holidays=holidays,
+        strategy=strategy,
     )
     logger.info(
         "job.swing_decision.enqueued",
@@ -574,6 +590,7 @@ async def job_position_decision(
         strategy_type="position",
         market_close=market_close,
         holidays=holidays,
+        strategy=strategy,
     )
     logger.info(
         "job.position_decision.enqueued",

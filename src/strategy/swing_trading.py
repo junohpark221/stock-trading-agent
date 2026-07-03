@@ -500,6 +500,33 @@ class SwingTradingStrategy(Strategy):
         # 5. 모든 청산 조건 미해당 → 포지션 유지
         return None
 
+    # ── 진입 트리거 (관측/성과귀인용) ──────────────────────────────────
+
+    async def compute_entry_trigger(self, symbol: str) -> list[str] | None:
+        """진입 시점의 스윙 기술 셋업 태그를 계산한다 (F-14).
+
+        라이브 진입 결정은 LLM 파이프라인이 내리므로 generate_signals()가 호출되지
+        않는다. 성과 귀인을 위해 진입 시점의 기술 셋업(RSI과매도반전/MACD골든크로스/
+        BB하단반등)을 여기서 별도로 계산해, 스냅샷 배관을 타고 PositionRecord.entry_trigger
+        로 승격시킨다. 매매를 막지 않는 관측용 주석이다.
+
+        30봉 미만이거나 조회 실패 시 None을 반환한다(태그 없음).
+        """
+        try:
+            ohlcv_list = await self._broker.get_daily_ohlcv(
+                symbol, period_days=self.OHLCV_LOOKBACK_DAYS
+            )
+        except Exception:
+            logger.warning("compute_entry_trigger.ohlcv_error", symbol=symbol)
+            return None
+
+        # RSI(14) + MACD(26) + BB(20) 계산에 최소 30일 데이터 필요 (generate_signals와 동일 기준)
+        if len(ohlcv_list) < 30:
+            return None
+
+        _, condition_names = self._check_technical_conditions(ohlcv_list)
+        return condition_names or None
+
     # ── Private 헬퍼 ─────────────────────────────────────────────────
 
     @staticmethod

@@ -121,12 +121,14 @@ async def performance_analysis(
         period_end=_to,
     )
     strategy_breakdown = PerformanceCalculator.breakdown_by_strategy(closed_positions)
+    trigger_breakdown = PerformanceCalculator.breakdown_by_trigger(closed_positions)
     monthly_breakdown = PerformanceCalculator.breakdown_by_month(closed_positions)
 
     context = {
         **base_ctx,
         "metrics": metrics,
         "strategy_breakdown": strategy_breakdown,
+        "trigger_breakdown": trigger_breakdown,
         "monthly_breakdown": monthly_breakdown,
     }
     return render(request, "performance.html", "partials/performance_content.html", context)

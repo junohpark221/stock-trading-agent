@@ -79,6 +79,10 @@ class PositionManager:
         entry_session_id: decision_log 연결 세션 ID (선택)
         entry_analysis_snapshot: 진입 분석 스냅샷(메모리 학습용, 선택)
         """
+        # F-14: 진입 트리거 태그(스윙 기술 셋업)를 스냅샷 전송 배관에서 꺼내 전용
+        # 컬럼으로 승격. realized_pnl과 조인한 트리거별 성과 귀인용(관측용 주석, 게이트 아님).
+        entry_trigger = (entry_analysis_snapshot or {}).get("entry_trigger") or None
+
         record = PositionRecord(
             symbol=symbol,
             strategy_type=strategy_type,
@@ -94,6 +98,7 @@ class PositionManager:
             entry_session_id=entry_session_id,
             account_id=account_id,
             entry_analysis_snapshot=entry_analysis_snapshot,
+            entry_trigger=entry_trigger,
         )
 
         try:

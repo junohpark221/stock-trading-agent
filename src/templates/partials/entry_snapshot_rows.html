@@ -10,6 +10,7 @@
                 <th>진입 action</th>
                 <th>신뢰도</th>
                 <th>핵심 요인</th>
+                <th>진입 트리거</th>
                 <th>진입가</th>
                 <th>상태</th>
                 <th>실현손익</th>
@@ -27,6 +28,7 @@
                 <td>{{ snap.get('action') or "-" }}</td>
                 <td>{{ snap.get('confidence') or "-" }}</td>
                 <td><small>{{ (snap.get('key_factors') or [])[:3] | join(', ') or "-" }}</small></td>
+                <td><small>{{ (p.entry_trigger or []) | join(', ') or "-" }}</small></td>
                 <td>{{ "{:,.0f}".format(p.entry_price) }}원</td>
                 <td>
                     {% if p.status == 'open' %}{{ ui.status_badge('open', 'running') }}

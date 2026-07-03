@@ -92,6 +92,16 @@ class Strategy(ABC):
 
     # ── Concrete (공통 구현) ─────────────────────────────────────────────
 
+    async def compute_entry_trigger(self, symbol: str) -> list[str] | None:
+        """진입 시점의 구조화 트리거 태그(관측/성과귀인용)를 반환한다.
+
+        기본 구현은 None — 트리거 개념이 없는 전략(예: 포지션)용. 스윙 등
+        고정 택소노미 셋업을 갖는 전략이 override 한다. 반환값은 라이브 결정
+        시점에 계산되어 진입 스냅샷 배관을 타고 PositionRecord.entry_trigger로
+        승격된다. 매매를 막는 게이트가 아니라 관측용 주석이다.
+        """
+        return None
+
     async def analyze(self, symbols: list[str]) -> PipelineResult:
         """PipelineOrchestrator에 분석을 위임한다."""
         logger.info(

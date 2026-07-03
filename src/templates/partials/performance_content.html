@@ -108,6 +108,44 @@
     {% endif %}
 </section>
 
+<!-- 진입 트리거별 성과 (F-14, 스윙 기술 셋업) -->
+<section>
+    <h3>진입 트리거별 성과</h3>
+    <p class="muted">스윙 진입 시점의 기술 셋업 태그별 성과. 한 포지션이 복수 태그를 가지면 각 버킷에 중복 집계됩니다(상관 관측이며 인과가 아님).</p>
+    {% if trigger_breakdown %}
+    <figure>
+        <table>
+            <thead>
+                <tr>
+                    <th>트리거</th>
+                    <th>거래수</th>
+                    <th>승률</th>
+                    <th>평균 손익률</th>
+                    <th>총 손익</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for trigger, data in trigger_breakdown.items() %}
+                <tr>
+                    <td>{{ trigger }}</td>
+                    <td>{{ data.trade_count }}건</td>
+                    <td>{{ "{:.1f}".format(data.win_rate_pct) }}%</td>
+                    <td class="{{ 'pnl-positive' if data.avg_pnl_pct >= 0 else 'pnl-negative' }}">
+                        {{ "{:+.2f}".format(data.avg_pnl_pct) }}%
+                    </td>
+                    <td class="{{ 'pnl-positive' if data.total_pnl >= 0 else 'pnl-negative' }}">
+                        {{ "{:+,.0f}".format(data.total_pnl) }}원
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </figure>
+    {% else %}
+    <p>진입 트리거 데이터가 없습니다. (스윙 계좌에서 트리거 태깅 이후 진입한 청산 포지션이 집계됩니다.)</p>
+    {% endif %}
+</section>
+
 <!-- 월별 성과 -->
 <section>
     <h3>월별 성과</h3>

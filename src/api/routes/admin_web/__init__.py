@@ -17,6 +17,7 @@ from . import (
     entry_snapshots,
     exec_monitor,
     memory,
+    news,
     performance,
     scheduler,
     stock_master,
@@ -38,6 +39,7 @@ for _mod in (
     decision_queue_view,
     entry_snapshots,
     memory,
+    news,
     exec_monitor,
 ):
     router.include_router(_mod.router)

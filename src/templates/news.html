@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}뉴스 조회 - Trading Agent{% endblock %}
+
+{% block content %}
+<h2>뉴스 조회</h2>
+
+<!-- 필터 -->
+<form hx-get="/admin/news" hx-target="#news-table" hx-trigger="change" hx-push-url="true">
+    <div class="grid">
+        <label>
+            종목
+            <input type="search" name="symbol" value="{{ symbol or '' }}" placeholder="종목코드">
+        </label>
+        <label>
+            시작일
+            <input type="date" name="from_date" value="{{ from_date or '' }}">
+        </label>
+        <label>
+            종료일
+            <input type="date" name="to_date" value="{{ to_date or '' }}">
+        </label>
+    </div>
+    <input type="hidden" name="page" value="1">
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+</form>
+
+<!-- 뉴스 테이블 -->
+<div id="news-table">
+    {% include "partials/news_rows.html" %}
+</div>
+{% endblock %}

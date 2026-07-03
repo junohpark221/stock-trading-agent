@@ -1,0 +1,64 @@
+{% if articles %}
+<figure>
+    <table>
+        <thead>
+            <tr>
+                <th>발행일시</th>
+                <th>종목</th>
+                <th>소스</th>
+                <th>제목</th>
+                <th>감성</th>
+                <th>점수</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in articles %}
+            <tr>
+                <td>{{ a.published_at | kst('%m-%d %H:%M') }}</td>
+                <td>{% if a.symbol %}{{ names.get(a.symbol, a.symbol) }} ({{ a.symbol }}){% else %}-{% endif %}</td>
+                <td><small>{{ a.source }}</small></td>
+                <td>
+                    <a href="{{ a.link }}" target="_blank" rel="noopener noreferrer">{{ a.title }}</a>
+                </td>
+                <td>
+                    {% if a.sentiment_label == 'positive' %}
+                    <span class="badge badge-completed">긍정</span>
+                    {% elif a.sentiment_label == 'negative' %}
+                    <span class="badge badge-failed">부정</span>
+                    {% elif a.sentiment_label == 'neutral' %}
+                    <span class="badge badge-pending">중립</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td>
+                    {% if a.sentiment_score is not none %}
+                    {{ "{:+.3f}".format(a.sentiment_score) }}
+                    {% else %}-{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</figure>
+
+<!-- 페이지네이션 -->
+{% if total_pages > 1 %}
+<nav>
+    <ul>
+        {% if page > 1 %}
+        <li><a href="#"
+               hx-get="/admin/news?page={{ page - 1 }}&per_page={{ per_page }}{% if symbol %}&symbol={{ symbol }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}"
+               hx-target="#news-table">&laquo; 이전</a></li>
+        {% endif %}
+        <li><small>{{ page }} / {{ total_pages }} ({{ total }}건)</small></li>
+        {% if page < total_pages %}
+        <li><a href="#"
+               hx-get="/admin/news?page={{ page + 1 }}&per_page={{ per_page }}{% if symbol %}&symbol={{ symbol }}{% endif %}{% if from_date %}&from_date={{ from_date }}{% endif %}{% if to_date %}&to_date={{ to_date }}{% endif %}"
+               hx-target="#news-table">다음 &raquo;</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<p>수집된 뉴스 기사가 없습니다.</p>
+{% endif %}

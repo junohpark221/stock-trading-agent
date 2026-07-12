@@ -30,7 +30,6 @@ import argparse
 import asyncio
 import json
 import sys
-from datetime import date, datetime
 from datetime import time as dtime
 from pathlib import Path
 from typing import Any
@@ -40,6 +39,7 @@ from probe_common import (
     close_kis_client,
     fetch_investor_daily,
     fetch_market_investor_daily,
+    now_kst,
     prev_business_day,
     recent_business_day,
     setup_probe_logging,
@@ -51,21 +51,24 @@ DEFAULT_OUT = "/tmp/flow_watch.jsonl"
 
 
 def _log(msg: str) -> None:
-    print(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}", flush=True)
+    print(f"[{now_kst().isoformat(timespec='seconds')}] {msg}", flush=True)
 
 
 def _default_target_date() -> str:
-    """15:30 이후면 오늘(T일 저녁 관찰), 이전이면 직전 영업일(T+1 새벽 검증)."""
-    now = datetime.now()
+    """KST 15:30 이후면 오늘(T일 저녁 관찰), 이전이면 직전 영업일(T+1 새벽 검증).
+
+    컨테이너는 UTC — 시각·요일 판단은 전부 KST로 명시한다.
+    """
+    now = now_kst()
     if now.time() >= dtime(15, 30):
         return yyyymmdd(recent_business_day())
-    return yyyymmdd(prev_business_day(date.today()))
+    return yyyymmdd(prev_business_day(now.date()))
 
 
 async def take_snapshot(client, symbols: list[str], target: str) -> dict[str, Any]:
     """target 일자(YYYYMMDD)의 종목별·시장단위 수급 행을 1회 샘플링."""
     snap: dict[str, Any] = {
-        "ts": datetime.now().isoformat(timespec="seconds"),
+        "ts": now_kst().isoformat(timespec="seconds"),
         "target_date": target,
         "per_symbol": {},
         "market": {},
@@ -194,7 +197,7 @@ async def run_once(client, symbols: list[str], target: str, out: Path) -> None:
 async def run_watch(
     client, symbols: list[str], target: str, out: Path, interval_min: int, until: dtime
 ) -> None:
-    _log(f"watch 시작 — target {target}, {interval_min}분 간격, {until}까지, out={out}")
+    _log(f"watch 시작 — target {target}, {interval_min}분 간격, KST {until}까지, out={out}")
     prev = load_last_snapshot(out, target)
     while True:
         snap = await take_snapshot(client, symbols, target)
@@ -202,7 +205,7 @@ async def run_watch(
         append_snapshot(out, snap)
         _log(f"스냅샷 기록 — 이벤트: {events or '변화 없음'}")
         prev = snap
-        if datetime.now().time() >= until:
+        if now_kst().time() >= until:
             break
         await asyncio.sleep(interval_min * 60)
     summarize(out, target)

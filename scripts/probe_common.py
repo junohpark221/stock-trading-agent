@@ -14,6 +14,7 @@ import json
 import sys
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 from redis.asyncio import Redis
@@ -137,12 +138,18 @@ async def fetch_market_investor_daily(
     )
 
 
-# ── 날짜 유틸 ────────────────────────────────────────────────────────
+# ── 날짜 유틸 (컨테이너는 UTC — 시장 판단은 전부 KST 명시) ──────────
+
+KST = ZoneInfo("Asia/Seoul")
+
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
 
 
 def recent_business_day(base: date | None = None) -> date:
-    """주말만 배제한 최근 영업일(공휴일 미고려 — 프로브 앵커 용도로 충분)."""
-    d = base or date.today()
+    """주말만 배제한 최근 영업일(공휴일 미고려 — 프로브 앵커 용도로 충분). KST 기준."""
+    d = base or now_kst().date()
     while d.weekday() >= 5:
         d -= timedelta(days=1)
     return d
@@ -161,7 +168,7 @@ def yyyymmdd(d: date) -> str:
 
 def report_header(title: str) -> None:
     print(f"# {title}")
-    print(f"\n- 실행 시각: {datetime.now().isoformat(timespec='seconds')}")
+    print(f"\n- 실행 시각: {now_kst().isoformat(timespec='seconds')} (KST)")
 
 
 def section(title: str) -> None:

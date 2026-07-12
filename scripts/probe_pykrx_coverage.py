@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import date, timedelta
 
-from probe_common import kv, report_error, report_header, section, yyyymmdd
+from probe_common import kv, now_kst, report_error, report_header, section, yyyymmdd
 
 SLEEP_SEC = 0.7  # KRX 스크래핑 매너
 
@@ -51,7 +51,7 @@ def _try_window(fn, ticker: str, start: date, end: date, **kwargs):
 def probe_oldest(stock, ticker: str) -> None:
     """5/7/10/15년 전 2주 창을 단계 탐색해 데이터 존재 최고 시점을 판정."""
     section(f"1. 투자자 플로우 최고(最古) 시점 — {ticker}")
-    today = date.today()
+    today = now_kst().date()
     deepest_with_data = None
     for years in (5, 7, 10, 15):
         start = today - timedelta(days=years * 365)
@@ -76,7 +76,7 @@ def probe_oldest(stock, ticker: str) -> None:
 
 def probe_columns(stock, ticker: str) -> None:
     section(f"2. 컬럼 인벤토리 (KIS 매핑표 원자료) — {ticker}")
-    today = date.today()
+    today = now_kst().date()
     start = today - timedelta(days=21)
     for label, fn in (
         ("get_market_trading_value_by_date", stock.get_market_trading_value_by_date),
@@ -100,7 +100,7 @@ def probe_columns(stock, ticker: str) -> None:
 
 def probe_ohlcv_5y(stock, ticker: str) -> None:
     section(f"3-a. 종목 OHLCV 5년 커버리지 — {ticker} (확정 13)")
-    today = date.today()
+    today = now_kst().date()
     start = today - timedelta(days=5 * 365)
     _progress(f"get_market_ohlcv {ticker} 5년")
     df, err = _try_window(stock.get_market_ohlcv, ticker, start, today)
@@ -114,7 +114,7 @@ def probe_ohlcv_5y(stock, ticker: str) -> None:
 
 def probe_index_5y(stock) -> None:
     section("3-b. 벤치마크 지수 OHLC 5년 커버리지 — KOSPI 1001 / KOSDAQ 2001 (확정 13·16)")
-    today = date.today()
+    today = now_kst().date()
     start = today - timedelta(days=5 * 365)
     for code, name in (("1001", "KOSPI"), ("2001", "KOSDAQ")):
         _progress(f"get_index_ohlcv {code} 5년")
@@ -129,7 +129,7 @@ def probe_index_5y(stock) -> None:
 
 def probe_delisted(stock, n_samples: int) -> None:
     section("4. 상폐 종목 커버리지 — point-in-time 유니버스 (확정 15)")
-    today = date.today()
+    today = now_kst().date()
     past = today - timedelta(days=5 * 365)
     # 주말 회피
     while past.weekday() >= 5:

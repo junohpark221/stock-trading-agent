@@ -469,16 +469,17 @@ class TestJobStopLossCheck:
         monitor = AsyncMock()
         monitor.check_all = AsyncMock(return_value=[])
 
-        await job_stop_loss_check(
-            exit_checker=exit_checker,
-            exit_service=exit_service,
-            position_manager=position_manager,
-            portfolio_service=portfolio_service,
-            broker=broker,
-            monitor=monitor,
-            market_open="00:00",
-            market_close="23:59",
-        )
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=exit_checker,
+                exit_service=exit_service,
+                position_manager=position_manager,
+                portfolio_service=portfolio_service,
+                broker=broker,
+                monitor=monitor,
+                market_open="00:00",
+                market_close="23:59",
+            )
 
         exit_service.process_exit_signals.assert_not_awaited()
         monitor.check_all.assert_not_awaited()
@@ -494,18 +495,19 @@ class TestJobStopLossCheck:
         broker = AsyncMock()
         monitor = AsyncMock()
 
-        await job_stop_loss_check(
-            exit_checker=exit_checker,
-            exit_service=exit_service,
-            position_manager=position_manager,
-            portfolio_service=portfolio_service,
-            broker=broker,
-            monitor=monitor,
-            account_id="acct-1",
-            account_label="공격형 (1234)",
-            market_open="00:00",
-            market_close="23:59",
-        )
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=exit_checker,
+                exit_service=exit_service,
+                position_manager=position_manager,
+                portfolio_service=portfolio_service,
+                broker=broker,
+                monitor=monitor,
+                account_id="acct-1",
+                account_label="공격형 (1234)",
+                market_open="00:00",
+                market_close="23:59",
+            )
 
         position_manager.get_open.assert_awaited_once_with(account_id="acct-1")
 
@@ -560,18 +562,19 @@ class TestJobStopLossCheck:
         monitor = AsyncMock()
         monitor.check_all = AsyncMock(return_value=[])
 
-        await job_stop_loss_check(
-            exit_checker=exit_checker,
-            exit_service=exit_service,
-            position_manager=position_manager,
-            portfolio_service=portfolio_service,
-            broker=broker,
-            monitor=monitor,
-            account_id="acct-1",
-            account_label="공격형 (1234)",
-            market_open="00:00",
-            market_close="23:59",
-        )
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=exit_checker,
+                exit_service=exit_service,
+                position_manager=position_manager,
+                portfolio_service=portfolio_service,
+                broker=broker,
+                monitor=monitor,
+                account_id="acct-1",
+                account_label="공격형 (1234)",
+                market_open="00:00",
+                market_close="23:59",
+            )
 
         exit_service.process_exit_signals.assert_awaited_once()
         args = exit_service.process_exit_signals.call_args
@@ -628,12 +631,13 @@ class TestJobStopLossCheck:
         monitor.check_all = AsyncMock(return_value=[])
         coordinator = ExitCoordinator(ttl_sec=120)
 
-        await job_stop_loss_check(
-            exit_checker=exit_checker, exit_service=exit_service,
-            position_manager=position_manager, portfolio_service=portfolio_service,
-            broker=broker, monitor=monitor, account_id="acct-1",
-            market_open="00:00", market_close="23:59", coordinator=coordinator,
-        )
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=exit_checker, exit_service=exit_service,
+                position_manager=position_manager, portfolio_service=portfolio_service,
+                broker=broker, monitor=monitor, account_id="acct-1",
+                market_open="00:00", market_close="23:59", coordinator=coordinator,
+            )
 
         exit_service.process_exit_signals.assert_awaited_once()
         sig = exit_service.process_exit_signals.call_args[0][0][0]

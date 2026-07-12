@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -434,18 +434,19 @@ class TestJobAccountParams:
         position_manager.get_open = AsyncMock(return_value=[])
         monitor = AsyncMock()
 
-        await job_stop_loss_check(
-            exit_checker=MagicMock(),
-            exit_service=AsyncMock(),
-            position_manager=position_manager,
-            portfolio_service=AsyncMock(),
-            broker=AsyncMock(),
-            monitor=monitor,
-            account_id="acct-1",
-            account_label="공격형 (1234)",
-            market_open="00:00",
-            market_close="23:59",
-        )
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=MagicMock(),
+                exit_service=AsyncMock(),
+                position_manager=position_manager,
+                portfolio_service=AsyncMock(),
+                broker=AsyncMock(),
+                monitor=monitor,
+                account_id="acct-1",
+                account_label="공격형 (1234)",
+                market_open="00:00",
+                market_close="23:59",
+            )
 
         position_manager.get_open.assert_awaited_once_with(account_id="acct-1")
 

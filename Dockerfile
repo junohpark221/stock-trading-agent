@@ -42,9 +42,9 @@ COPY --from=builder /app/alembic /app/alembic
 COPY --from=builder /app/alembic.ini /app/alembic.ini
 COPY --from=builder /app/config /app/config
 
-# entrypoint 스크립트 복사
-COPY scripts/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# scripts 복사 (entrypoint + 운영 프로브/백필 스크립트 — exec app python scripts/... 로 실행)
+COPY scripts/ /app/scripts/
+RUN cp /app/scripts/entrypoint.sh /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # virtualenv의 Python을 PATH에 추가
 ENV PATH="/app/.venv/bin:$PATH"

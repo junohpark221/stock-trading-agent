@@ -252,7 +252,7 @@ class TestBacktestModelExports:
         """Phase 1~7까지 총 18개 모델 export 확인."""
         import src.db.models as models_pkg
 
-        assert len(models_pkg.__all__) == 21
+        assert len(models_pkg.__all__) == 24
 
 
 # ---------------------------------------------------------------------------

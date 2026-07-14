@@ -13,6 +13,11 @@ from src.db.models.execution import (
     Order,
     TradeDecisionQueue,
 )
+from src.db.models.investor_flow import (
+    InvestorFlowDaily,
+    MarketInvestorFlowDaily,
+    ShortInterestDaily,
+)
 from src.db.models.llm import AgentModelConfigDB, DecisionLog, LLMUsage
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.db.models.scheduler import JobExecution
@@ -32,12 +37,15 @@ __all__ = [
     "EconomicIndicator",
     "Execution",
     "FinancialStatement",
+    "InvestorFlowDaily",
     "JobExecution",
     "LLMUsage",
+    "MarketInvestorFlowDaily",
     "NewsArticle",
     "Order",
     "PortfolioSnapshot",
     "PositionRecord",
+    "ShortInterestDaily",
     "StockMaster",
     "TradeDecisionQueue",
 ]

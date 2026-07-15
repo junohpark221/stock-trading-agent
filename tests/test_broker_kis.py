@@ -189,12 +189,13 @@ _SHORT_SALE_ROW = {
 }
 
 # HHPST074500C0 output1 실측 행 — ⚠️ 시장 단위 오호출 실측(스키마 가정용).
+# 종목 모드("3") 실측 행 — prj03_stage2_verify.md (2026-07-15, 005930)
 _LOAN_TRANS_ROW = {
-    "bsop_date": "20260710", "stck_prpr": "7475.94", "prdy_vrss_sign": "2",
-    "prdy_vrss": "184.03", "prdy_ctrt": "2.52", "acml_vol": "453242000",
-    "new_stcn": "29188408", "rdmp_stcn": "36628891",
-    "prdy_rmnd_vrss": "-7440483", "rmnd_stcn": "1549969777",
-    "rmnd_amt": "138671779",
+    "bsop_date": "20260710", "stck_prpr": "279500.00", "prdy_vrss_sign": "2",
+    "prdy_vrss": "16500.00", "prdy_ctrt": "6.27", "acml_vol": "24873414",
+    "new_stcn": "1575049", "rdmp_stcn": "2198394",
+    "prdy_rmnd_vrss": "-623345", "rmnd_stcn": "82414108",
+    "rmnd_amt": "23034743",
 }
 
 
@@ -474,11 +475,11 @@ class TestKISMarketInvestorFlowOutput:
         assert rec.index_change == Decimal("-184.03")
         assert rec.index_change_rate == Decimal("-2.52")
 
-    def test_net_qty_raw_not_scaled(self):
-        """⚠️ 천주 단위 의심(이월 검증 ②) — EC2 확정 전 ×1000 미적용을 고정."""
+    def test_net_qty_thousand_shares_scaled(self):
+        """*_ntby_qty는 천주 단위 실측 확정(2026-07-15 EC2) — ×1000 주 단위 변환 고정."""
         rec = self._domain()
-        assert rec.frgn_net_qty == 32633
-        assert rec.prsn_net_qty == -37060
+        assert rec.frgn_net_qty == 32_633_000
+        assert rec.prsn_net_qty == -37_060_000
 
     def test_net_amt_million_krw(self):
         rec = self._domain()
@@ -487,8 +488,8 @@ class TestKISMarketInvestorFlowOutput:
 
     def test_quirk_fields(self):
         rec = self._domain()
-        assert rec.pe_fund_net_qty == 726          # pe_fund_ntby_vol
-        assert rec.etc_corp_net_qty == -762        # etc_corp_ntby_vol
+        assert rec.pe_fund_net_qty == 726_000      # pe_fund_ntby_vol (천주 ×1000)
+        assert rec.etc_corp_net_qty == -762_000    # etc_corp_ntby_vol (천주 ×1000)
         assert rec.frgn_reg_net_amt == Decimal("-330147000000")  # frgn_reg_ntby_pbmn
 
 
@@ -520,27 +521,28 @@ class TestKISShortSaleOutput:
 
 
 class TestKISLoanTransOutput:
-    """HHPST074500C0 — ⚠️ 스키마는 시장 단위 오호출 실측 기반 가정 (EC2 확정 대기)."""
+    """HHPST074500C0 — 종목 모드 실측 행(2026-07-15 EC2) 기반 매핑·단위 검증."""
 
     def test_field_mapping(self):
         out = KISLoanTransOutput.model_validate(_loan_trans_row())
         rec = out.to_domain("005930")
         assert rec.symbol == "005930"
         assert rec.date == date(2026, 7, 10)
-        assert rec.loan_new_qty == 29188408
-        assert rec.loan_redemption_qty == 36628891
-        assert rec.loan_balance_qty == 1549969777
+        assert rec.loan_new_qty == 1575049
+        assert rec.loan_redemption_qty == 2198394
+        assert rec.loan_balance_qty == 82414108
 
     def test_negative_balance_diff(self):
         out = KISLoanTransOutput.model_validate(_loan_trans_row())
         rec = out.to_domain("005930")
-        assert rec.loan_balance_diff == -7440483
+        assert rec.loan_balance_diff == -623345
 
-    def test_balance_amt_raw(self):
-        """rmnd_amt는 단위 미실측(이월 검증 ①) — 원값 그대로를 고정."""
+    def test_balance_amt_million_krw(self):
+        """rmnd_amt는 백만원 단위 실측 확정 — ×1e6 고정
+        (검산: 잔고 82,414,108주 × 주가 279,500원 ≈ 23.03조원)."""
         out = KISLoanTransOutput.model_validate(_loan_trans_row())
         rec = out.to_domain("005930")
-        assert rec.loan_balance_amt == Decimal("138671779")
+        assert rec.loan_balance_amt == Decimal("23034743000000")
 
 
 class TestKISBalanceOutput1:

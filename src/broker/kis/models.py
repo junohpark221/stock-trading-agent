@@ -456,8 +456,9 @@ class KISMarketInvestorFlowOutput(BaseModel):
     def to_domain(self, market: str) -> MarketInvestorFlowRecord:
         """지수 전일 대비는 ``prdy_vrss_sign`` 4/5 → 음수화 (KISPriceOutput 패턴).
 
-        ⚠️ ``*_ntby_qty``는 천주 단위 의심(dev.md 이월 검증 ②) — EC2 실검증
-        확정 전까지 원값 그대로 두고, 확정 시 이 지점에서만 변환한다.
+        ``*_ntby_qty``는 천주 단위 실측 확정(2026-07-15 EC2 — 시장 총량이
+        단일 종목 순매수보다 작아지는 모순으로 판정) — ×1,000으로 주 단위 변환.
+        원천이 천주 반올림이므로 변환 후에도 ±500주 정밀도 한계가 내재한다.
         """
         index_change = _to_decimal(self.bstp_nmix_prdy_vrss)
         index_change_rate = _to_decimal(self.bstp_nmix_prdy_ctrt)
@@ -474,35 +475,35 @@ class KISMarketInvestorFlowOutput(BaseModel):
             index_prev_close=_to_decimal(self.stck_prdy_clpr),
             index_change=index_change,
             index_change_rate=index_change_rate,
-            frgn_net_qty=_to_int(self.frgn_ntby_qty),
+            frgn_net_qty=_to_int(self.frgn_ntby_qty) * 1000,
             frgn_net_amt=_million_krw(self.frgn_ntby_tr_pbmn),
-            frgn_reg_net_qty=_to_int(self.frgn_reg_ntby_qty),
+            frgn_reg_net_qty=_to_int(self.frgn_reg_ntby_qty) * 1000,
             frgn_reg_net_amt=_million_krw(self.frgn_reg_ntby_pbmn),
-            frgn_nreg_net_qty=_to_int(self.frgn_nreg_ntby_qty),
+            frgn_nreg_net_qty=_to_int(self.frgn_nreg_ntby_qty) * 1000,
             frgn_nreg_net_amt=_million_krw(self.frgn_nreg_ntby_pbmn),
-            prsn_net_qty=_to_int(self.prsn_ntby_qty),
+            prsn_net_qty=_to_int(self.prsn_ntby_qty) * 1000,
             prsn_net_amt=_million_krw(self.prsn_ntby_tr_pbmn),
-            orgn_net_qty=_to_int(self.orgn_ntby_qty),
+            orgn_net_qty=_to_int(self.orgn_ntby_qty) * 1000,
             orgn_net_amt=_million_krw(self.orgn_ntby_tr_pbmn),
-            scrt_net_qty=_to_int(self.scrt_ntby_qty),
+            scrt_net_qty=_to_int(self.scrt_ntby_qty) * 1000,
             scrt_net_amt=_million_krw(self.scrt_ntby_tr_pbmn),
-            ivtr_net_qty=_to_int(self.ivtr_ntby_qty),
+            ivtr_net_qty=_to_int(self.ivtr_ntby_qty) * 1000,
             ivtr_net_amt=_million_krw(self.ivtr_ntby_tr_pbmn),
-            pe_fund_net_qty=_to_int(self.pe_fund_ntby_vol),
+            pe_fund_net_qty=_to_int(self.pe_fund_ntby_vol) * 1000,
             pe_fund_net_amt=_million_krw(self.pe_fund_ntby_tr_pbmn),
-            bank_net_qty=_to_int(self.bank_ntby_qty),
+            bank_net_qty=_to_int(self.bank_ntby_qty) * 1000,
             bank_net_amt=_million_krw(self.bank_ntby_tr_pbmn),
-            insu_net_qty=_to_int(self.insu_ntby_qty),
+            insu_net_qty=_to_int(self.insu_ntby_qty) * 1000,
             insu_net_amt=_million_krw(self.insu_ntby_tr_pbmn),
-            mrbn_net_qty=_to_int(self.mrbn_ntby_qty),
+            mrbn_net_qty=_to_int(self.mrbn_ntby_qty) * 1000,
             mrbn_net_amt=_million_krw(self.mrbn_ntby_tr_pbmn),
-            fund_net_qty=_to_int(self.fund_ntby_qty),
+            fund_net_qty=_to_int(self.fund_ntby_qty) * 1000,
             fund_net_amt=_million_krw(self.fund_ntby_tr_pbmn),
-            etc_net_qty=_to_int(self.etc_ntby_qty),
+            etc_net_qty=_to_int(self.etc_ntby_qty) * 1000,
             etc_net_amt=_million_krw(self.etc_ntby_tr_pbmn),
-            etc_corp_net_qty=_to_int(self.etc_corp_ntby_vol),
+            etc_corp_net_qty=_to_int(self.etc_corp_ntby_vol) * 1000,
             etc_corp_net_amt=_million_krw(self.etc_corp_ntby_tr_pbmn),
-            etc_orgt_net_qty=_to_int(self.etc_orgt_ntby_vol),
+            etc_orgt_net_qty=_to_int(self.etc_orgt_ntby_vol) * 1000,
             etc_orgt_net_amt=_million_krw(self.etc_orgt_ntby_tr_pbmn),
         )
 
@@ -546,9 +547,8 @@ class KISShortSaleOutput(BaseModel):
 class KISLoanTransOutput(BaseModel):
     """종목별 일별 대차거래 — ``HHPST074500C0`` ``output1`` 배열 원소.
 
-    ⚠️ 스키마는 시장 단위 실측(probe1 — ``MRKT_DIV_CLS_CODE="1"`` 오호출)에서
-    가져온 가정이다. 종목 모드(``"3"``) 응답 스키마·``rmnd_amt`` 단위는 미실측 —
-    scripts/verify_kis_investor_flow.py EC2 실행으로 확정 후 필요 시 수정.
+    종목 모드(``MRKT_DIV_CLS_CODE="3"``) 스키마는 2026-07-15 EC2 실측으로 확정
+    (prj03_stage2_verify.md — 실측 11필드 중 시세 5필드는 ``extra="ignore"`` 배제).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -558,11 +558,11 @@ class KISLoanTransOutput(BaseModel):
     rdmp_stcn: str = ""         # 상환 주수
     prdy_rmnd_vrss: str = ""    # 전일 대비 잔고 증감
     rmnd_stcn: str = ""         # 대차잔고 주수
-    rmnd_amt: str = ""          # 대차잔고 금액 — ⚠️ 단위 미실측 (원/천원/백만원?)
+    rmnd_amt: str = ""          # 대차잔고 금액 (백만원 — EC2 실측 확정)
 
     def to_domain(self, symbol: str) -> LoanTransRecord:
-        """``rmnd_amt``는 단위 미실측(dev.md 이월 검증 ①) — 원값 그대로 두고,
-        EC2 확정 후 이 지점에서만 변환한다."""
+        """``rmnd_amt``는 백만원 단위 실측 확정(2026-07-15 EC2 —
+        rmnd_amt/rmnd_stcn ×1e6 ≈ 현재가 검산) — 원 단위로 변환."""
         return LoanTransRecord(
             symbol=symbol,
             date=_to_date(self.bsop_date),
@@ -570,7 +570,7 @@ class KISLoanTransOutput(BaseModel):
             loan_redemption_qty=_to_int(self.rdmp_stcn),
             loan_balance_diff=_to_int(self.prdy_rmnd_vrss),
             loan_balance_qty=_to_int(self.rmnd_stcn),
-            loan_balance_amt=_to_decimal(self.rmnd_amt),
+            loan_balance_amt=_million_krw(self.rmnd_amt),
         )
 
 

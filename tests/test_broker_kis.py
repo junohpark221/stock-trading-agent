@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,7 +23,12 @@ from src.broker.kis.models import (
     KISBalanceRlzPlOutput2,
     KISBaseResponse,
     KISDailyChartOutput,
+    KISInvestorFlowOutput,
+    KISLoanTransOutput,
+    KISMarketInvestorFlowOutput,
     KISPriceOutput,
+    KISShortSaleOutput,
+    _million_krw,
     _to_decimal,
     _to_int,
 )
@@ -75,14 +80,153 @@ def _build_mst_zip(lines: list[str], encoding: str = "cp949") -> bytes:
     return buf.getvalue()
 
 
-def _make_ok_response(output=None, output2=None, tr_cont=""):
+def _make_ok_response(output=None, output1=None, output2=None, tr_cont=""):
     """Build a KIS OK response dict."""
     data = {"rt_cd": "0", "msg_cd": "0000", "msg1": "정상처리"}
     if output is not None:
         data["output"] = output
+    if output1 is not None:
+        data["output1"] = output1
     if output2 is not None:
         data["output2"] = output2
     return mock_aiohttp_response(json_data=data, headers={"tr_cont": tr_cont})
+
+
+# ── PRJ-03 수급 TR 픽스처 (probe1_kis_api.md 실측 응답 원문) ─────────
+
+# FHPTJ04160001 output2 실측 행 (005930, 20260710) — 101필드 전량.
+# 시세 10필드·bold_yn 포함 → extra="ignore" 배제도 함께 검증된다.
+_INVESTOR_FLOW_ROW = {
+    "stck_bsop_date": "20260710", "stck_clpr": "285000", "prdy_vrss": "7000",
+    "prdy_vrss_sign": "2", "prdy_ctrt": "2.52", "acml_vol": "20088811",
+    "acml_tr_pbmn": "5816051148000", "stck_oprc": "291000",
+    "stck_hgpr": "298000", "stck_lwpr": "282000",
+    "frgn_ntby_qty": "625985", "frgn_reg_ntby_qty": "635576",
+    "frgn_nreg_ntby_qty": "-9591", "prsn_ntby_qty": "-2851466",
+    "orgn_ntby_qty": "2313745", "scrt_ntby_qty": "1089735",
+    "ivtr_ntby_qty": "205371", "pe_fund_ntby_vol": "963995",
+    "bank_ntby_qty": "12672", "insu_ntby_qty": "56359",
+    "mrbn_ntby_qty": "4640", "fund_ntby_qty": "-19027",
+    "etc_ntby_qty": "-88264", "etc_corp_ntby_vol": "-88264",
+    "etc_orgt_ntby_vol": "0", "frgn_reg_ntby_pbmn": "193652",
+    "frgn_ntby_tr_pbmn": "190851", "frgn_nreg_ntby_pbmn": "-2801",
+    "prsn_ntby_tr_pbmn": "-832871", "orgn_ntby_tr_pbmn": "667280",
+    "scrt_ntby_tr_pbmn": "316543", "pe_fund_ntby_tr_pbmn": "278494",
+    "ivtr_ntby_tr_pbmn": "58758", "bank_ntby_tr_pbmn": "3637",
+    "insu_ntby_tr_pbmn": "16357", "mrbn_ntby_tr_pbmn": "1353",
+    "fund_ntby_tr_pbmn": "-7863", "etc_ntby_tr_pbmn": "-25260",
+    "etc_corp_ntby_tr_pbmn": "-25260", "etc_orgt_ntby_tr_pbmn": "0",
+    "frgn_seln_vol": "6783626", "frgn_shnu_vol": "7409611",
+    "frgn_seln_tr_pbmn": "1955385", "frgn_shnu_tr_pbmn": "2146237",
+    "frgn_reg_askp_qty": "6754657", "frgn_reg_bidp_qty": "7390233",
+    "frgn_reg_askp_pbmn": "1946964", "frgn_reg_bidp_pbmn": "2140616",
+    "frgn_nreg_askp_qty": "28969", "frgn_nreg_bidp_qty": "19378",
+    "frgn_nreg_askp_pbmn": "8422", "frgn_nreg_bidp_pbmn": "5621",
+    "prsn_seln_vol": "7261142", "prsn_shnu_vol": "4409676",
+    "prsn_seln_tr_pbmn": "2109725", "prsn_shnu_tr_pbmn": "1276854",
+    "orgn_seln_vol": "5796961", "orgn_shnu_vol": "8110706",
+    "orgn_seln_tr_pbmn": "1679520", "orgn_shnu_tr_pbmn": "2346800",
+    "scrt_seln_vol": "813016", "scrt_shnu_vol": "1902751",
+    "scrt_seln_tr_pbmn": "234142", "scrt_shnu_tr_pbmn": "550686",
+    "ivtr_seln_vol": "460568", "ivtr_shnu_vol": "665939",
+    "ivtr_seln_tr_pbmn": "132249", "ivtr_shnu_tr_pbmn": "191007",
+    "pe_fund_seln_tr_pbmn": "28108", "pe_fund_seln_vol": "96281",
+    "pe_fund_shnu_tr_pbmn": "306602", "pe_fund_shnu_vol": "1060276",
+    "bank_seln_vol": "192", "bank_shnu_vol": "12864",
+    "bank_seln_tr_pbmn": "57", "bank_shnu_tr_pbmn": "3694",
+    "insu_seln_vol": "21826", "insu_shnu_vol": "78185",
+    "insu_seln_tr_pbmn": "6356", "insu_shnu_tr_pbmn": "22713",
+    "mrbn_seln_vol": "60", "mrbn_shnu_vol": "4700",
+    "mrbn_seln_tr_pbmn": "17", "mrbn_shnu_tr_pbmn": "1371",
+    "fund_seln_vol": "4405018", "fund_shnu_vol": "4385991",
+    "fund_seln_tr_pbmn": "1278590", "fund_shnu_tr_pbmn": "1270727",
+    "etc_seln_vol": "247082", "etc_shnu_vol": "158818",
+    "etc_seln_tr_pbmn": "71421", "etc_shnu_tr_pbmn": "46160",
+    "etc_orgt_seln_vol": "0", "etc_orgt_shnu_vol": "0",
+    "etc_orgt_seln_tr_pbmn": "0", "etc_orgt_shnu_tr_pbmn": "0",
+    "etc_corp_seln_vol": "247082", "etc_corp_shnu_vol": "158818",
+    "etc_corp_seln_tr_pbmn": "71421", "etc_corp_shnu_tr_pbmn": "46160",
+    "bold_yn": "N",
+}
+
+# FHPTJ04040000 output 실측 행 (KSP, 20260710) — 39필드 전량.
+_MARKET_FLOW_ROW = {
+    "stck_bsop_date": "20260710", "bstp_nmix_prpr": "7475.94",
+    "bstp_nmix_prdy_vrss": "184.03", "prdy_vrss_sign": "2",
+    "bstp_nmix_prdy_ctrt": "2.52", "bstp_nmix_oprc": "7552.49",
+    "bstp_nmix_hgpr": "7704.93", "bstp_nmix_lwpr": "7429.51",
+    "stck_prdy_clpr": "7291.91",
+    "frgn_ntby_qty": "32633", "frgn_reg_ntby_qty": "32490",
+    "frgn_nreg_ntby_qty": "144", "prsn_ntby_qty": "-37060",
+    "orgn_ntby_qty": "5190", "scrt_ntby_qty": "3809",
+    "ivtr_ntby_qty": "420", "pe_fund_ntby_vol": "726",
+    "bank_ntby_qty": "-1437", "insu_ntby_qty": "283",
+    "mrbn_ntby_qty": "243", "fund_ntby_qty": "1145",
+    "etc_ntby_qty": "-762", "etc_orgt_ntby_vol": "0",
+    "etc_corp_ntby_vol": "-762",
+    "frgn_ntby_tr_pbmn": "-322775", "frgn_reg_ntby_pbmn": "-330147",
+    "frgn_nreg_ntby_pbmn": "7372", "prsn_ntby_tr_pbmn": "-780456",
+    "orgn_ntby_tr_pbmn": "1131391", "scrt_ntby_tr_pbmn": "1134892",
+    "ivtr_ntby_tr_pbmn": "-430258", "pe_fund_ntby_tr_pbmn": "280431",
+    "bank_ntby_tr_pbmn": "6943", "insu_ntby_tr_pbmn": "57923",
+    "mrbn_ntby_tr_pbmn": "45994", "fund_ntby_tr_pbmn": "35467",
+    "etc_ntby_tr_pbmn": "-28160", "etc_orgt_ntby_tr_pbmn": "0",
+    "etc_corp_ntby_tr_pbmn": "-28160",
+}
+
+# FHPST04830000 output2 실측 행 (005930, 20260710) — 21필드 전량.
+# 시세·조회창 의존 누적 필드 포함 → ignore 배제 검증 겸용.
+_SHORT_SALE_ROW = {
+    "stck_bsop_date": "20260710", "stck_clpr": "285000", "prdy_vrss": "7000",
+    "prdy_vrss_sign": "2", "prdy_ctrt": "2.52", "acml_vol": "20088811",
+    "stnd_vol_smtn": "1857451028", "ssts_cntg_qty": "225060",
+    "ssts_vol_rlim": "1.12", "acml_ssts_cntg_qty": "56509707",
+    "acml_ssts_cntg_qty_rlim": "3.04", "acml_tr_pbmn": "5816051148000",
+    "stnd_tr_pbmn_smtn": "545375592278777", "ssts_tr_pbmn": "65122268750",
+    "ssts_tr_pbmn_rlim": "1.12", "acml_ssts_tr_pbmn": "16735690205106",
+    "acml_ssts_tr_pbmn_rlim": "3.07", "stck_oprc": "291000",
+    "stck_hgpr": "298000", "stck_lwpr": "282000", "avrg_prc": "289355",
+}
+
+# HHPST074500C0 output1 실측 행 — ⚠️ 시장 단위 오호출 실측(스키마 가정용).
+_LOAN_TRANS_ROW = {
+    "bsop_date": "20260710", "stck_prpr": "7475.94", "prdy_vrss_sign": "2",
+    "prdy_vrss": "184.03", "prdy_ctrt": "2.52", "acml_vol": "453242000",
+    "new_stcn": "29188408", "rdmp_stcn": "36628891",
+    "prdy_rmnd_vrss": "-7440483", "rmnd_stcn": "1549969777",
+    "rmnd_amt": "138671779",
+}
+
+
+def _investor_flow_row(date_str="20260710", **overrides):
+    row = dict(_INVESTOR_FLOW_ROW, stck_bsop_date=date_str)
+    row.update(overrides)
+    return row
+
+
+def _market_flow_row(date_str="20260710", **overrides):
+    row = dict(_MARKET_FLOW_ROW, stck_bsop_date=date_str)
+    row.update(overrides)
+    return row
+
+
+def _short_sale_row(date_str="20260710", **overrides):
+    row = dict(_SHORT_SALE_ROW, stck_bsop_date=date_str)
+    row.update(overrides)
+    return row
+
+
+def _loan_trans_row(date_str="20260710", **overrides):
+    row = dict(_LOAN_TRANS_ROW, bsop_date=date_str)
+    row.update(overrides)
+    return row
+
+
+def _daily_rows(factory, count, newest: date):
+    """newest부터 하루씩 과거로 count개 행 생성 (날짜 내림차순 — KIS 응답 순서)."""
+    return [
+        factory((newest - timedelta(days=i)).strftime("%Y%m%d")) for i in range(count)
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -226,6 +370,177 @@ class TestKISDailyChartOutput:
         bar = out.to_domain("005930")
         assert bar.open == Decimal(0)
         assert bar.volume == 0
+
+
+class TestMillionKrw:
+    def test_converts_million_to_krw(self):
+        assert _million_krw("193652") == Decimal("193652000000")
+
+    def test_negative(self):
+        assert _million_krw("-2801") == Decimal("-2801000000")
+
+    def test_empty(self):
+        assert _million_krw("") == Decimal(0)
+
+
+class TestKISInvestorFlowOutput:
+    """FHPTJ04160001 — probe1 실측 행 기반 매핑·단위 검증."""
+
+    def _domain(self, **overrides):
+        out = KISInvestorFlowOutput.model_validate(_investor_flow_row(**overrides))
+        return out.to_domain("005930")
+
+    def test_date_and_symbol(self):
+        rec = self._domain()
+        assert rec.symbol == "005930"
+        assert rec.date == date(2026, 7, 10)
+
+    def test_standard_axis_mapping(self):
+        rec = self._domain()
+        # frgn: 표준 패턴 (ntby_qty / ntby_tr_pbmn / seln_vol / shnu_vol)
+        assert rec.frgn_net_qty == 625985
+        assert rec.frgn_net_amt == Decimal("190851000000")
+        assert rec.frgn_sell_qty == 6783626
+        assert rec.frgn_buy_qty == 7409611
+        assert rec.frgn_sell_amt == Decimal("1955385000000")
+        assert rec.frgn_buy_amt == Decimal("2146237000000")
+
+    def test_quirk_net_qty_ntby_vol(self):
+        """pe_fund/etc_corp/etc_orgt는 KIS 원명이 _ntby_vol (_ntby_qty 아님)."""
+        rec = self._domain()
+        assert rec.pe_fund_net_qty == 963995
+        assert rec.etc_corp_net_qty == -88264
+        assert rec.etc_orgt_net_qty == 0
+
+    def test_quirk_net_amt_ntby_pbmn(self):
+        """frgn_reg/frgn_nreg net 대금은 KIS 원명이 _ntby_pbmn (_ntby_tr_pbmn 아님)."""
+        rec = self._domain()
+        assert rec.frgn_reg_net_amt == Decimal("193652000000")
+        assert rec.frgn_nreg_net_amt == Decimal("-2801000000")
+
+    def test_quirk_askp_bidp_sell_buy(self):
+        """frgn_reg/frgn_nreg 매도/매수는 KIS 원명이 askp/bidp (seln/shnu 아님)."""
+        rec = self._domain()
+        assert rec.frgn_reg_sell_qty == 6754657
+        assert rec.frgn_reg_buy_qty == 7390233
+        assert rec.frgn_reg_sell_amt == Decimal("1946964000000")
+        assert rec.frgn_reg_buy_amt == Decimal("2140616000000")
+        assert rec.frgn_nreg_sell_qty == 28969
+        assert rec.frgn_nreg_buy_qty == 19378
+
+    def test_negative_net_preserved(self):
+        """net 값은 원천 부호 그대로 — 부호 재처리 없음."""
+        rec = self._domain()
+        assert rec.prsn_net_qty == -2851466
+        assert rec.prsn_net_amt == Decimal("-832871000000")
+        assert rec.fund_net_qty == -19027
+
+    def test_price_fields_ignored(self):
+        """시세 10필드·bold_yn은 extra="ignore"로 배제 (확정 11)."""
+        out = KISInvestorFlowOutput.model_validate(_investor_flow_row())
+        assert not hasattr(out, "stck_clpr")
+        assert not hasattr(out, "acml_vol")
+        assert not hasattr(out, "bold_yn")
+
+    def test_empty_fields_default_zero(self):
+        out = KISInvestorFlowOutput(stck_bsop_date="20260710")
+        rec = out.to_domain("005930")
+        assert rec.frgn_net_qty == 0
+        assert rec.frgn_net_amt == Decimal(0)
+        assert rec.etc_orgt_buy_amt == Decimal(0)
+
+
+class TestKISMarketInvestorFlowOutput:
+    """FHPTJ04040000 — probe1 실측 행(KSP) 기반 매핑·단위 검증."""
+
+    def _domain(self, market="kospi", **overrides):
+        out = KISMarketInvestorFlowOutput.model_validate(_market_flow_row(**overrides))
+        return out.to_domain(market)
+
+    def test_index_ohlc_mapping(self):
+        rec = self._domain()
+        assert rec.market == "kospi"
+        assert rec.date == date(2026, 7, 10)
+        assert rec.index_open == Decimal("7552.49")
+        assert rec.index_high == Decimal("7704.93")
+        assert rec.index_low == Decimal("7429.51")
+        assert rec.index_close == Decimal("7475.94")
+        assert rec.index_prev_close == Decimal("7291.91")
+        assert rec.index_change == Decimal("184.03")
+        assert rec.index_change_rate == Decimal("2.52")
+
+    def test_sign_5_negates_change(self):
+        rec = self._domain(prdy_vrss_sign="5")
+        assert rec.index_change == Decimal("-184.03")
+        assert rec.index_change_rate == Decimal("-2.52")
+
+    def test_net_qty_raw_not_scaled(self):
+        """⚠️ 천주 단위 의심(이월 검증 ②) — EC2 확정 전 ×1000 미적용을 고정."""
+        rec = self._domain()
+        assert rec.frgn_net_qty == 32633
+        assert rec.prsn_net_qty == -37060
+
+    def test_net_amt_million_krw(self):
+        rec = self._domain()
+        assert rec.frgn_net_amt == Decimal("-322775000000")
+        assert rec.orgn_net_amt == Decimal("1131391000000")
+
+    def test_quirk_fields(self):
+        rec = self._domain()
+        assert rec.pe_fund_net_qty == 726          # pe_fund_ntby_vol
+        assert rec.etc_corp_net_qty == -762        # etc_corp_ntby_vol
+        assert rec.frgn_reg_net_amt == Decimal("-330147000000")  # frgn_reg_ntby_pbmn
+
+
+class TestKISShortSaleOutput:
+    """FHPST04830000 — probe1 실측 행 기반 매핑·단위 검증."""
+
+    def test_field_mapping(self):
+        out = KISShortSaleOutput.model_validate(_short_sale_row())
+        rec = out.to_domain("005930")
+        assert rec.symbol == "005930"
+        assert rec.date == date(2026, 7, 10)
+        assert rec.short_sale_qty == 225060
+        assert rec.short_sale_vol_ratio == Decimal("1.12")
+        assert rec.short_sale_amt_ratio == Decimal("1.12")
+        assert rec.avg_price == Decimal("289355")
+
+    def test_amt_is_krw_not_million(self):
+        """ssts_tr_pbmn은 필드명과 달리 원 단위 실측 — ×1e6 회귀 방지 고정."""
+        out = KISShortSaleOutput.model_validate(_short_sale_row())
+        rec = out.to_domain("005930")
+        assert rec.short_sale_amt == Decimal("65122268750")
+
+    def test_window_dependent_fields_ignored(self):
+        """조회 창 의존 누적 필드(acml_ssts_*, stnd_*_smtn)는 배제 (단계 1 확정 ②)."""
+        out = KISShortSaleOutput.model_validate(_short_sale_row())
+        assert not hasattr(out, "acml_ssts_cntg_qty")
+        assert not hasattr(out, "stnd_vol_smtn")
+        assert not hasattr(out, "stck_clpr")
+
+
+class TestKISLoanTransOutput:
+    """HHPST074500C0 — ⚠️ 스키마는 시장 단위 오호출 실측 기반 가정 (EC2 확정 대기)."""
+
+    def test_field_mapping(self):
+        out = KISLoanTransOutput.model_validate(_loan_trans_row())
+        rec = out.to_domain("005930")
+        assert rec.symbol == "005930"
+        assert rec.date == date(2026, 7, 10)
+        assert rec.loan_new_qty == 29188408
+        assert rec.loan_redemption_qty == 36628891
+        assert rec.loan_balance_qty == 1549969777
+
+    def test_negative_balance_diff(self):
+        out = KISLoanTransOutput.model_validate(_loan_trans_row())
+        rec = out.to_domain("005930")
+        assert rec.loan_balance_diff == -7440483
+
+    def test_balance_amt_raw(self):
+        """rmnd_amt는 단위 미실측(이월 검증 ①) — 원값 그대로를 고정."""
+        out = KISLoanTransOutput.model_validate(_loan_trans_row())
+        rec = out.to_domain("005930")
+        assert rec.loan_balance_amt == Decimal("138671779")
 
 
 class TestKISBalanceOutput1:
@@ -671,6 +986,286 @@ class TestKISClientGetDailyOHLCV:
 
         bars = await client.get_daily_ohlcv("005930", period_days=10000)
         assert client._session.get.await_count <= 20
+
+
+class TestKISClientGetInvestorFlow:
+    @pytest.mark.asyncio
+    async def test_single_call_without_start_date(self):
+        """start_date 미지정 → 재앵커 없이 정확히 1콜, 날짜 오름차순 반환."""
+        client = _make_kis_client()
+        rows = _daily_rows(_investor_flow_row, 30, date(2026, 7, 10))
+        client._session.get = AsyncMock(return_value=_make_ok_response(output2=rows))
+
+        records = await client.get_investor_flow("005930")
+        assert client._session.get.await_count == 1
+        assert len(records) == 30
+        assert records[0].date < records[-1].date
+        assert records[-1].date == date(2026, 7, 10)
+
+    @pytest.mark.asyncio
+    async def test_request_params(self):
+        client = _make_kis_client()
+        rows = _daily_rows(_investor_flow_row, 30, date(2026, 7, 10))
+        client._session.get = AsyncMock(return_value=_make_ok_response(output2=rows))
+
+        await client.get_investor_flow("005930", anchor_date=date(2026, 7, 10))
+        params = client._session.get.call_args.kwargs["params"]
+        assert params["FID_COND_MRKT_DIV_CODE"] == "J"
+        assert params["FID_INPUT_ISCD"] == "005930"
+        assert params["FID_INPUT_DATE_1"] == "20260710"
+
+    @pytest.mark.asyncio
+    async def test_reanchor_extension(self):
+        """start_date 지정 → oldest-1일 재앵커, 경계 중복 dedupe, 범위 필터."""
+        client = _make_kis_client()
+        page1 = _daily_rows(_investor_flow_row, 30, date(2026, 7, 10))  # ~20260611
+        page2 = _daily_rows(_investor_flow_row, 30, date(2026, 6, 10))  # ~20260512
+        client._session.get = AsyncMock(side_effect=[
+            _make_ok_response(output2=page1),
+            _make_ok_response(output2=page2),
+        ])
+
+        records = await client.get_investor_flow(
+            "005930", start_date=date(2026, 5, 20), anchor_date=date(2026, 7, 10)
+        )
+        assert client._session.get.await_count == 2
+        # 2콜째 앵커 = 1페이지 oldest(20260611) - 1일
+        params2 = client._session.get.call_args_list[1].kwargs["params"]
+        assert params2["FID_INPUT_DATE_1"] == "20260610"
+        # start_date 미만 필터 + 오름차순
+        assert records[0].date == date(2026, 5, 20)
+        assert records[-1].date == date(2026, 7, 10)
+        assert all(r.date >= date(2026, 5, 20) for r in records)
+
+    @pytest.mark.asyncio
+    async def test_under_30_rows_stops(self):
+        """앵커당 30행 미만 → 과거 끝으로 판단하고 재앵커 중단."""
+        client = _make_kis_client()
+        rows = _daily_rows(_investor_flow_row, 10, date(2026, 7, 10))
+        client._session.get = AsyncMock(return_value=_make_ok_response(output2=rows))
+
+        records = await client.get_investor_flow(
+            "005930", start_date=date(2020, 1, 1), anchor_date=date(2026, 7, 10)
+        )
+        assert client._session.get.await_count == 1
+        assert len(records) == 10
+
+    @pytest.mark.asyncio
+    async def test_empty_response(self):
+        client = _make_kis_client()
+        client._session.get = AsyncMock(return_value=_make_ok_response(output2=[]))
+        records = await client.get_investor_flow("005930")
+        assert records == []
+
+    @pytest.mark.asyncio
+    async def test_page_cap(self):
+        """항상 30행 신규 반환 → _MAX_INVESTOR_FLOW_PAGES(20)에서 중단."""
+        client = _make_kis_client()
+        call_count = 0
+
+        async def _side_effect(*args, **kwargs):
+            nonlocal call_count
+            newest = date(2026, 7, 10) - timedelta(days=30 * call_count)
+            call_count += 1
+            return _make_ok_response(
+                output2=_daily_rows(_investor_flow_row, 30, newest)
+            )
+
+        client._session.get = AsyncMock(side_effect=_side_effect)
+        await client.get_investor_flow(
+            "005930", start_date=date(2000, 1, 1), anchor_date=date(2026, 7, 10)
+        )
+        assert client._session.get.await_count == 20
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_retry_inherited(self):
+        """EGW00201 1회 후 성공 — F-20 백오프 상속 스모크."""
+        client = _make_kis_client()
+        err_resp = mock_aiohttp_response(
+            json_data={"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate limit"},
+            headers={"tr_cont": ""},
+        )
+        ok_resp = _make_ok_response(
+            output2=_daily_rows(_investor_flow_row, 30, date(2026, 7, 10))
+        )
+        client._session.get = AsyncMock(side_effect=[err_resp, ok_resp])
+        with patch("src.broker.kis.client.asyncio.sleep", new_callable=AsyncMock):
+            records = await client.get_investor_flow("005930")
+        assert len(records) == 30
+        assert client._session.get.await_count == 2
+
+
+class TestKISClientGetMarketInvestorFlow:
+    @pytest.mark.asyncio
+    async def test_kospi_params(self):
+        client = _make_kis_client()
+        client._session.get = AsyncMock(
+            return_value=_make_ok_response(output=[_market_flow_row()])
+        )
+        records = await client.get_market_investor_flow(
+            "kospi", anchor_date=date(2026, 7, 10)
+        )
+        params = client._session.get.call_args.kwargs["params"]
+        assert params["FID_COND_MRKT_DIV_CODE"] == "U"
+        assert params["FID_INPUT_ISCD"] == "0001"
+        assert params["FID_INPUT_ISCD_1"] == "KSP"
+        assert params["FID_INPUT_ISCD_2"] == "0001"
+        assert params["FID_INPUT_DATE_1"] == "20260710"
+        assert params["FID_INPUT_DATE_2"] == "20260710"
+        assert len(records) == 1
+        assert records[0].market == "kospi"
+
+    @pytest.mark.asyncio
+    async def test_kosdaq_params(self):
+        client = _make_kis_client()
+        client._session.get = AsyncMock(
+            return_value=_make_ok_response(output=[_market_flow_row()])
+        )
+        await client.get_market_investor_flow("kosdaq")
+        params = client._session.get.call_args.kwargs["params"]
+        assert params["FID_INPUT_ISCD"] == "1001"
+        assert params["FID_INPUT_ISCD_1"] == "KSQ"
+
+    @pytest.mark.asyncio
+    async def test_unknown_market_raises(self):
+        client = _make_kis_client()
+        client._session.get = AsyncMock()
+        with pytest.raises(ValueError, match="unknown market"):
+            await client.get_market_investor_flow("nasdaq")
+        client._session.get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sorted_and_filtered(self):
+        client = _make_kis_client()
+        rows = _daily_rows(_market_flow_row, 5, date(2026, 7, 10))
+        client._session.get = AsyncMock(return_value=_make_ok_response(output=rows))
+
+        records = await client.get_market_investor_flow(
+            "kospi", start_date=date(2026, 7, 8)
+        )
+        assert [r.date for r in records] == [
+            date(2026, 7, 8), date(2026, 7, 9), date(2026, 7, 10)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_single_dict_output_promoted(self):
+        """output이 list가 아니라 dict 단건이어도 방어 승격."""
+        client = _make_kis_client()
+        client._session.get = AsyncMock(
+            return_value=_make_ok_response(output=_market_flow_row())
+        )
+        records = await client.get_market_investor_flow("kospi")
+        assert len(records) == 1
+
+
+class TestKISClientGetDailyShortSale:
+    @pytest.mark.asyncio
+    async def test_params_and_parse(self):
+        client = _make_kis_client()
+        rows = _daily_rows(_short_sale_row, 3, date(2026, 7, 10))
+        client._session.get = AsyncMock(return_value=_make_ok_response(output2=rows))
+
+        records = await client.get_daily_short_sale(
+            "005930", start_date=date(2026, 7, 8), end_date=date(2026, 7, 10)
+        )
+        params = client._session.get.call_args_list[0].kwargs["params"]
+        assert params["FID_COND_MRKT_DIV_CODE"] == "J"
+        assert params["FID_INPUT_ISCD"] == "005930"
+        assert params["FID_INPUT_DATE_1"] == "20260708"
+        assert params["FID_INPUT_DATE_2"] == "20260710"
+        assert len(records) == 3
+        assert records[0].date < records[-1].date
+
+    @pytest.mark.asyncio
+    async def test_full_range_single_call(self):
+        """반환 행이 start_date까지 도달하면 1콜로 종료 (캡 없음 정상 케이스)."""
+        client = _make_kis_client()
+        rows = _daily_rows(_short_sale_row, 10, date(2026, 7, 10))  # ~20260701
+        client._session.get = AsyncMock(return_value=_make_ok_response(output2=rows))
+
+        records = await client.get_daily_short_sale(
+            "005930", start_date=date(2026, 7, 1), end_date=date(2026, 7, 10)
+        )
+        assert client._session.get.await_count == 1
+        assert len(records) == 10
+
+    @pytest.mark.asyncio
+    async def test_repeat_response_terminates(self):
+        """창 이동 후 동일 응답(신규 행 0)이어도 무한루프 없이 종료."""
+        client = _make_kis_client()
+        rows = _daily_rows(_short_sale_row, 5, date(2026, 7, 10))  # ~20260706
+        client._session.get = AsyncMock(side_effect=[
+            _make_ok_response(output2=rows),
+            _make_ok_response(output2=rows),
+        ])
+
+        records = await client.get_daily_short_sale(
+            "005930", start_date=date(2026, 6, 1), end_date=date(2026, 7, 10)
+        )
+        assert client._session.get.await_count == 2
+        assert len(records) == 5
+
+
+class TestKISClientGetDailyLoanTrans:
+    @pytest.mark.asyncio
+    async def test_stock_mode_params(self):
+        """MRKT_DIV_CLS_CODE는 반드시 "3"(종목) — "1"은 코스피 시장 단위(프로브 오호출)."""
+        client = _make_kis_client()
+        rows = _daily_rows(_loan_trans_row, 3, date(2026, 7, 10))
+        client._session.get = AsyncMock(return_value=_make_ok_response(output1=rows))
+
+        records = await client.get_daily_loan_trans(
+            "005930", start_date=date(2026, 7, 8), end_date=date(2026, 7, 10)
+        )
+        params = client._session.get.call_args.kwargs["params"]
+        assert params["MRKT_DIV_CLS_CODE"] == "3"
+        assert params["MKSC_SHRN_ISCD"] == "005930"
+        assert params["START_DATE"] == "20260708"
+        assert params["END_DATE"] == "20260710"
+        assert params["CTS"] == ""
+        assert len(records) == 3
+
+    @pytest.mark.asyncio
+    async def test_100_row_cap_pagination(self):
+        """100행 = 캡 도달 → END_DATE를 oldest-1일로 당겨 다음 창 조회."""
+        client = _make_kis_client()
+        page1 = _daily_rows(_loan_trans_row, 100, date(2026, 7, 10))  # ~20260402
+        page2 = _daily_rows(_loan_trans_row, 50, date(2026, 4, 1))    # ~20260211
+        client._session.get = AsyncMock(side_effect=[
+            _make_ok_response(output1=page1),
+            _make_ok_response(output1=page2),
+        ])
+
+        records = await client.get_daily_loan_trans(
+            "005930", start_date=date(2026, 2, 15), end_date=date(2026, 7, 10)
+        )
+        assert client._session.get.await_count == 2
+        params2 = client._session.get.call_args_list[1].kwargs["params"]
+        assert params2["END_DATE"] == "20260401"  # page1 oldest(20260402) - 1일
+        assert params2["START_DATE"] == "20260215"
+        assert all(r.date >= date(2026, 2, 15) for r in records)
+        assert records[0].date < records[-1].date
+
+    @pytest.mark.asyncio
+    async def test_under_100_rows_single_call(self):
+        client = _make_kis_client()
+        rows = _daily_rows(_loan_trans_row, 40, date(2026, 7, 10))
+        client._session.get = AsyncMock(return_value=_make_ok_response(output1=rows))
+
+        records = await client.get_daily_loan_trans(
+            "005930", start_date=date(2026, 5, 1), end_date=date(2026, 7, 10)
+        )
+        assert client._session.get.await_count == 1
+        assert len(records) == 40
+
+    @pytest.mark.asyncio
+    async def test_empty_response(self):
+        client = _make_kis_client()
+        client._session.get = AsyncMock(return_value=_make_ok_response(output1=[]))
+        records = await client.get_daily_loan_trans(
+            "005930", start_date=date(2026, 7, 1), end_date=date(2026, 7, 10)
+        )
+        assert records == []
 
 
 class TestKISClientGetStockMaster:

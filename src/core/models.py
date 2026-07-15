@@ -93,6 +93,224 @@ class OHLCV(BaseModel):
     value: Decimal = Decimal(0)
 
 
+# ---------------------------------------------------------------------------
+# PRJ-03: Investor flow (수급) domain records
+#
+# 필드명은 src/db/models/investor_flow.py 컬럼명과 1:1 — 수집 계층이
+# ``record.model_dump()``로 바로 upsert values를 만들 수 있게 한다.
+# ``source`` 컬럼은 수집 경로 표기 책임이므로 레코드에 포함하지 않는다.
+# 대금(*_amt)은 원(KRW) 단위 — KIS 백만원(*_pbmn) → 원 변환은 브로커
+# 계층 to_domain 1곳 책임.
+# ---------------------------------------------------------------------------
+
+
+class InvestorFlowRecord(BaseModel):
+    """종목별 일별 투자자 수급 — KISClient.get_investor_flow() 반환.
+
+    투자자 주체 15축 × {net,sell,buy} × {qty,amt}. 축 의미는
+    InvestorFlowDaily(DB 모델) docstring 참조.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    date: date
+
+    frgn_net_qty: int | None = None
+    frgn_net_amt: Decimal | None = None
+    frgn_sell_qty: int | None = None
+    frgn_buy_qty: int | None = None
+    frgn_sell_amt: Decimal | None = None
+    frgn_buy_amt: Decimal | None = None
+
+    frgn_reg_net_qty: int | None = None
+    frgn_reg_net_amt: Decimal | None = None
+    frgn_reg_sell_qty: int | None = None
+    frgn_reg_buy_qty: int | None = None
+    frgn_reg_sell_amt: Decimal | None = None
+    frgn_reg_buy_amt: Decimal | None = None
+
+    frgn_nreg_net_qty: int | None = None
+    frgn_nreg_net_amt: Decimal | None = None
+    frgn_nreg_sell_qty: int | None = None
+    frgn_nreg_buy_qty: int | None = None
+    frgn_nreg_sell_amt: Decimal | None = None
+    frgn_nreg_buy_amt: Decimal | None = None
+
+    prsn_net_qty: int | None = None
+    prsn_net_amt: Decimal | None = None
+    prsn_sell_qty: int | None = None
+    prsn_buy_qty: int | None = None
+    prsn_sell_amt: Decimal | None = None
+    prsn_buy_amt: Decimal | None = None
+
+    orgn_net_qty: int | None = None
+    orgn_net_amt: Decimal | None = None
+    orgn_sell_qty: int | None = None
+    orgn_buy_qty: int | None = None
+    orgn_sell_amt: Decimal | None = None
+    orgn_buy_amt: Decimal | None = None
+
+    scrt_net_qty: int | None = None
+    scrt_net_amt: Decimal | None = None
+    scrt_sell_qty: int | None = None
+    scrt_buy_qty: int | None = None
+    scrt_sell_amt: Decimal | None = None
+    scrt_buy_amt: Decimal | None = None
+
+    ivtr_net_qty: int | None = None
+    ivtr_net_amt: Decimal | None = None
+    ivtr_sell_qty: int | None = None
+    ivtr_buy_qty: int | None = None
+    ivtr_sell_amt: Decimal | None = None
+    ivtr_buy_amt: Decimal | None = None
+
+    pe_fund_net_qty: int | None = None
+    pe_fund_net_amt: Decimal | None = None
+    pe_fund_sell_qty: int | None = None
+    pe_fund_buy_qty: int | None = None
+    pe_fund_sell_amt: Decimal | None = None
+    pe_fund_buy_amt: Decimal | None = None
+
+    bank_net_qty: int | None = None
+    bank_net_amt: Decimal | None = None
+    bank_sell_qty: int | None = None
+    bank_buy_qty: int | None = None
+    bank_sell_amt: Decimal | None = None
+    bank_buy_amt: Decimal | None = None
+
+    insu_net_qty: int | None = None
+    insu_net_amt: Decimal | None = None
+    insu_sell_qty: int | None = None
+    insu_buy_qty: int | None = None
+    insu_sell_amt: Decimal | None = None
+    insu_buy_amt: Decimal | None = None
+
+    mrbn_net_qty: int | None = None
+    mrbn_net_amt: Decimal | None = None
+    mrbn_sell_qty: int | None = None
+    mrbn_buy_qty: int | None = None
+    mrbn_sell_amt: Decimal | None = None
+    mrbn_buy_amt: Decimal | None = None
+
+    fund_net_qty: int | None = None
+    fund_net_amt: Decimal | None = None
+    fund_sell_qty: int | None = None
+    fund_buy_qty: int | None = None
+    fund_sell_amt: Decimal | None = None
+    fund_buy_amt: Decimal | None = None
+
+    etc_net_qty: int | None = None
+    etc_net_amt: Decimal | None = None
+    etc_sell_qty: int | None = None
+    etc_buy_qty: int | None = None
+    etc_sell_amt: Decimal | None = None
+    etc_buy_amt: Decimal | None = None
+
+    etc_corp_net_qty: int | None = None
+    etc_corp_net_amt: Decimal | None = None
+    etc_corp_sell_qty: int | None = None
+    etc_corp_buy_qty: int | None = None
+    etc_corp_sell_amt: Decimal | None = None
+    etc_corp_buy_amt: Decimal | None = None
+
+    etc_orgt_net_qty: int | None = None
+    etc_orgt_net_amt: Decimal | None = None
+    etc_orgt_sell_qty: int | None = None
+    etc_orgt_buy_qty: int | None = None
+    etc_orgt_sell_amt: Decimal | None = None
+    etc_orgt_buy_amt: Decimal | None = None
+
+
+class MarketInvestorFlowRecord(BaseModel):
+    """시장 단위 일별 투자자 수급 + 지수 OHLC — get_market_investor_flow() 반환.
+
+    market은 'kospi'/'kosdaq' 소문자. KRX(pykrx) 백필 전용 축
+    (index_volume/trading_value/market_cap)은 KIS TR에 없어 미포함.
+
+    ⚠️ ``*_net_qty``는 KIS 원값 그대로(천주 단위 의심 — dev.md 이월 검증 ②).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    market: str
+    date: date
+
+    index_open: Decimal | None = None
+    index_high: Decimal | None = None
+    index_low: Decimal | None = None
+    index_close: Decimal | None = None
+    index_prev_close: Decimal | None = None
+    index_change: Decimal | None = None
+    index_change_rate: Decimal | None = None
+
+    frgn_net_qty: int | None = None
+    frgn_net_amt: Decimal | None = None
+    frgn_reg_net_qty: int | None = None
+    frgn_reg_net_amt: Decimal | None = None
+    frgn_nreg_net_qty: int | None = None
+    frgn_nreg_net_amt: Decimal | None = None
+    prsn_net_qty: int | None = None
+    prsn_net_amt: Decimal | None = None
+    orgn_net_qty: int | None = None
+    orgn_net_amt: Decimal | None = None
+    scrt_net_qty: int | None = None
+    scrt_net_amt: Decimal | None = None
+    ivtr_net_qty: int | None = None
+    ivtr_net_amt: Decimal | None = None
+    pe_fund_net_qty: int | None = None
+    pe_fund_net_amt: Decimal | None = None
+    bank_net_qty: int | None = None
+    bank_net_amt: Decimal | None = None
+    insu_net_qty: int | None = None
+    insu_net_amt: Decimal | None = None
+    mrbn_net_qty: int | None = None
+    mrbn_net_amt: Decimal | None = None
+    fund_net_qty: int | None = None
+    fund_net_amt: Decimal | None = None
+    etc_net_qty: int | None = None
+    etc_net_amt: Decimal | None = None
+    etc_corp_net_qty: int | None = None
+    etc_corp_net_amt: Decimal | None = None
+    etc_orgt_net_qty: int | None = None
+    etc_orgt_net_amt: Decimal | None = None
+
+
+class ShortSaleRecord(BaseModel):
+    """종목별 일별 공매도 — get_daily_short_sale() 반환.
+
+    ShortInterestDaily의 공매도 절반 컬럼. 대금은 원 단위(TR 원값이 원 단위 실측).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    date: date
+    short_sale_qty: int | None = None
+    short_sale_vol_ratio: Decimal | None = None
+    short_sale_amt: Decimal | None = None
+    short_sale_amt_ratio: Decimal | None = None
+    avg_price: Decimal | None = None
+
+
+class LoanTransRecord(BaseModel):
+    """종목별 일별 대차거래 — get_daily_loan_trans() 반환.
+
+    ShortInterestDaily의 대차 절반 컬럼.
+    ⚠️ ``loan_balance_amt``는 KIS 원값 그대로(단위 미실측 — dev.md 이월 검증 ①).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    date: date
+    loan_new_qty: int | None = None
+    loan_redemption_qty: int | None = None
+    loan_balance_diff: int | None = None
+    loan_balance_qty: int | None = None
+    loan_balance_amt: Decimal | None = None
+
+
 class Signal(BaseModel):
     """매매 시그널 — generate_signals() 반환."""
 

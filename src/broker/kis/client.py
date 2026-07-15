@@ -35,12 +35,16 @@ from src.broker.kis.models import (
     KISBalanceRlzPlOutput2,
     KISBaseResponse,
     KISDailyChartOutput,
+    KISInvestorFlowOutput,
+    KISLoanTransOutput,
+    KISMarketInvestorFlowOutput,
     KISOrderCcldOutput,
     KISOrderOutput,
     KISPriceOutput,
     KISPsblOrderOutput,
     KISPsblSellOutput,
     KISRvseCnclPsblOutput,
+    KISShortSaleOutput,
     _to_decimal,
     _to_int,
 )
@@ -62,12 +66,17 @@ from src.core.exceptions import (
 from src.core.models import (
     OHLCV,
     AccountBalance,
+    InvestorFlowRecord,
+    LoanTransRecord,
+    MarketInvestorFlowRecord,
     OrderRequest,
     OrderResult,
     Position,
     PriceInfo,
+    ShortSaleRecord,
     StockInfo,
 )
+from src.core.time import today_kst
 from src.data.cache import RedisCache
 
 logger = structlog.get_logger(__name__)
@@ -91,6 +100,25 @@ _CODE_PATTERN = re.compile(r"^\d{6}$")
 # Pagination safety limits
 _MAX_OHLCV_PAGES = 20
 _MAX_BALANCE_PAGES = 10
+
+# ── PRJ-03 수급 TR 4종 (경로·TR ID는 probe_common.py 실측 검증본) ──
+_INVESTOR_FLOW_PATH = "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
+_INVESTOR_FLOW_TR = "FHPTJ04160001"
+_MARKET_INVESTOR_FLOW_PATH = (
+    "/uapi/domestic-stock/v1/quotations/inquire-investor-daily-by-market"
+)
+_MARKET_INVESTOR_FLOW_TR = "FHPTJ04040000"
+_SHORT_SALE_PATH = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
+_SHORT_SALE_TR = "FHPST04830000"
+_LOAN_TRANS_PATH = "/uapi/domestic-stock/v1/quotations/daily-loan-trans"
+_LOAN_TRANS_TR = "HHPST074500C0"
+
+_MAX_INVESTOR_FLOW_PAGES = 20  # 앵커당 30행 × 20 = 600행 ≈ 2.4년 (증분 용도 충분)
+_MAX_SHORT_SALE_PAGES = 10     # 3개월 61행 실측 — 장기 캡 미실측이라 방어 루프
+_MAX_LOAN_PAGES = 20           # 100행 캡 × 20 = 2,000행 (종목 모드 캡은 EC2 재확인)
+
+# market('kospi'/'kosdaq' — StockMaster.market_type 컨벤션) → (시장코드, 업종코드)
+_MARKET_INVESTOR_CODES = {"kospi": ("KSP", "0001"), "kosdaq": ("KSQ", "1001")}
 
 
 class KISClient(BrokerInterface):
@@ -447,6 +475,257 @@ class KISClient(BrokerInterface):
         # Sort ascending by date
         all_bars.sort(key=lambda b: b.date)
         return all_bars
+
+    # ── PRJ-03 수급 TR 4종 ──────────────────────────────────────────
+
+    async def get_investor_flow(
+        self,
+        symbol: str,
+        *,
+        start_date: date | None = None,
+        anchor_date: date | None = None,
+    ) -> list[InvestorFlowRecord]:
+        """종목별 일별 투자자 수급 조회 (``FHPTJ04160001``) — 재앵커 연장 페이징.
+
+        앵커 일자당 정확히 30행(앵커 이전 최근 30영업일)이 단발로 오고
+        연속조회 헤더가 발생하지 않는다(게이트 ① 실측) — 과거 연장은
+        가장 오래된 행 전일로 재앵커해 반복 호출한다.
+
+        Args:
+            symbol: 종목코드 6자리.
+            start_date: 이 날짜까지 과거로 연장(포함). ``None``이면 단발 1콜(30행).
+            anchor_date: 조회 기준일(포함, 기본 오늘 KST). 비영업일이면 KIS가
+                직전 영업일부터 반환한다.
+
+        Returns:
+            날짜 오름차순 ``InvestorFlowRecord`` 리스트.
+        """
+        anchor = anchor_date or today_kst()
+        records: list[InvestorFlowRecord] = []
+        seen: set[date] = set()
+
+        for _ in range(_MAX_INVESTOR_FLOW_PAGES):
+            data = await self._request(
+                "GET",
+                _INVESTOR_FLOW_PATH,
+                _INVESTOR_FLOW_TR,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_DATE_1": anchor.strftime("%Y%m%d"),
+                    "FID_ORG_ADJ_PRC": "",
+                    "FID_ETC_CLS_CODE": "",
+                },
+            )
+            page_rows = 0
+            new_count = 0
+            oldest: date | None = None
+            for raw in data.get("output2", []):
+                out = KISInvestorFlowOutput.model_validate(raw)
+                if not out.stck_bsop_date:
+                    continue
+                page_rows += 1
+                rec = out.to_domain(symbol)
+                if rec.date not in seen:
+                    seen.add(rec.date)
+                    records.append(rec)
+                    new_count += 1
+                if oldest is None or rec.date < oldest:
+                    oldest = rec.date
+
+            if start_date is None or new_count == 0 or oldest is None:
+                break
+            # 앵커당 30행 미만 → 상장 초기 등 과거 데이터 끝
+            if page_rows < 30 or oldest <= start_date:
+                break
+            anchor = oldest - timedelta(days=1)
+
+        if start_date is not None:
+            records = [r for r in records if r.date >= start_date]
+        records.sort(key=lambda r: r.date)
+        return records
+
+    async def get_market_investor_flow(
+        self,
+        market: str,
+        *,
+        anchor_date: date | None = None,
+        start_date: date | None = None,
+    ) -> list[MarketInvestorFlowRecord]:
+        """시장 단위 일별 투자자 수급 + 지수 OHLC 조회 (``FHPTJ04040000``) — 단발.
+
+        단발 호출로 앵커 이전 300행(≈14.5개월)이 오고 연속조회가 없다
+        (게이트 ① 실측) — 증분 수집 용도에는 충분해 재앵커를 두지 않는다.
+        300행 초과 과거가 필요하면 pykrx 백필(단계 4) 소관.
+
+        Args:
+            market: ``"kospi"`` | ``"kosdaq"`` (StockMaster.market_type 컨벤션).
+            anchor_date: 조회 기준일(포함, 기본 오늘 KST).
+            start_date: 지정 시 이 날짜 이전 행 제외.
+
+        Returns:
+            날짜 오름차순 ``MarketInvestorFlowRecord`` 리스트.
+        """
+        try:
+            market_code, sector_code = _MARKET_INVESTOR_CODES[market]
+        except KeyError:
+            raise ValueError(
+                f"unknown market: {market!r} (expected one of "
+                f"{sorted(_MARKET_INVESTOR_CODES)})"
+            ) from None
+
+        anchor_str = (anchor_date or today_kst()).strftime("%Y%m%d")
+        data = await self._request(
+            "GET",
+            _MARKET_INVESTOR_FLOW_PATH,
+            _MARKET_INVESTOR_FLOW_TR,
+            params={
+                "FID_COND_MRKT_DIV_CODE": "U",
+                "FID_INPUT_ISCD": sector_code,
+                "FID_INPUT_DATE_1": anchor_str,
+                "FID_INPUT_ISCD_1": market_code,
+                "FID_INPUT_DATE_2": anchor_str,
+                "FID_INPUT_ISCD_2": sector_code,
+            },
+        )
+        items = data.get("output") or []
+        if isinstance(items, dict):
+            items = [items]
+
+        records: list[MarketInvestorFlowRecord] = []
+        for raw in items:
+            out = KISMarketInvestorFlowOutput.model_validate(raw)
+            if not out.stck_bsop_date:
+                continue
+            rec = out.to_domain(market)
+            if start_date is not None and rec.date < start_date:
+                continue
+            records.append(rec)
+        records.sort(key=lambda r: r.date)
+        return records
+
+    async def get_daily_short_sale(
+        self, symbol: str, *, start_date: date, end_date: date
+    ) -> list[ShortSaleRecord]:
+        """종목별 일별 공매도 추이 조회 (``FHPST04830000``) — date-window 루프.
+
+        날짜범위 지정이 동작한다(게이트 ① 실측: 3개월 요청 61행 반환).
+        장기 범위의 행수 캡은 미실측이라 방어적으로 창 이동 루프를 둔다 —
+        캡이 없으면 두 번째 호출이 신규 행 0으로 즉시 종료돼 무해하다.
+
+        Args:
+            symbol: 종목코드 6자리.
+            start_date / end_date: 조회 구간(포함).
+
+        Returns:
+            날짜 오름차순 ``ShortSaleRecord`` 리스트.
+        """
+        records: list[ShortSaleRecord] = []
+        seen: set[date] = set()
+        window_end = end_date
+
+        for _ in range(_MAX_SHORT_SALE_PAGES):
+            data = await self._request(
+                "GET",
+                _SHORT_SALE_PATH,
+                _SHORT_SALE_TR,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_DATE_1": start_date.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": window_end.strftime("%Y%m%d"),
+                },
+            )
+            new_count = 0
+            oldest: date | None = None
+            for raw in data.get("output2", []):
+                out = KISShortSaleOutput.model_validate(raw)
+                if not out.stck_bsop_date:
+                    continue
+                rec = out.to_domain(symbol)
+                if rec.date not in seen:
+                    seen.add(rec.date)
+                    records.append(rec)
+                    new_count += 1
+                if oldest is None or rec.date < oldest:
+                    oldest = rec.date
+
+            if new_count == 0 or oldest is None or oldest <= start_date:
+                break
+            window_end = oldest - timedelta(days=1)
+
+        records = [r for r in records if r.date >= start_date]
+        records.sort(key=lambda r: r.date)
+        return records
+
+    async def get_daily_loan_trans(
+        self, symbol: str, *, start_date: date, end_date: date
+    ) -> list[LoanTransRecord]:
+        """종목별 일별 대차거래 추이 조회 (``HHPST074500C0``) — 100행 캡 창 이동.
+
+        1회 호출당 100행 캡이며 연속조회 수단이 없다(게이트 ① 실측:
+        tr_cont='E'·CTS 키 부재) — END_DATE를 가장 오래된 행 전일로 당겨
+        과거로 연장한다.
+
+        ⚠️ ``MRKT_DIV_CLS_CODE``는 ``"3"``(종목)이다 — 게이트 ① 프로브는
+        ``"1"``(코스피 시장 단위)로 오호출됐던 것이 확인돼(2026-07-15), 종목
+        모드의 응답 스키마·행 캡·``rmnd_amt`` 단위는 미실측이다.
+        scripts/verify_kis_investor_flow.py EC2 실행으로 확정한다.
+
+        Args:
+            symbol: 종목코드 6자리.
+            start_date / end_date: 조회 구간(포함).
+
+        Returns:
+            날짜 오름차순 ``LoanTransRecord`` 리스트.
+        """
+        records: list[LoanTransRecord] = []
+        seen: set[date] = set()
+        window_end = end_date
+
+        for _ in range(_MAX_LOAN_PAGES):
+            data = await self._request(
+                "GET",
+                _LOAN_TRANS_PATH,
+                _LOAN_TRANS_TR,
+                params={
+                    "MRKT_DIV_CLS_CODE": "3",
+                    "MKSC_SHRN_ISCD": symbol,
+                    "START_DATE": start_date.strftime("%Y%m%d"),
+                    "END_DATE": window_end.strftime("%Y%m%d"),
+                    "CTS": "",
+                },
+            )
+            items = data.get("output1") or []
+            if isinstance(items, dict):
+                items = [items]
+
+            page_rows = 0
+            new_count = 0
+            oldest: date | None = None
+            for raw in items:
+                out = KISLoanTransOutput.model_validate(raw)
+                if not out.bsop_date:
+                    continue
+                page_rows += 1
+                rec = out.to_domain(symbol)
+                if rec.date not in seen:
+                    seen.add(rec.date)
+                    records.append(rec)
+                    new_count += 1
+                if oldest is None or rec.date < oldest:
+                    oldest = rec.date
+
+            # 100행 미만 → 마지막 페이지
+            if page_rows < 100 or new_count == 0 or oldest is None:
+                break
+            if oldest <= start_date:
+                break
+            window_end = oldest - timedelta(days=1)
+
+        records = [r for r in records if r.date >= start_date]
+        records.sort(key=lambda r: r.date)
+        return records
 
     async def get_stock_master(self) -> list[StockInfo]:
         """Download and parse KOSPI + KOSDAQ .mst.zip master files.

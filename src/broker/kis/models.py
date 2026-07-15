@@ -14,7 +14,15 @@ from decimal import Decimal, InvalidOperation
 from pydantic import BaseModel, ConfigDict
 
 from src.core.enums import PositionStatus
-from src.core.models import OHLCV, Position, PriceInfo
+from src.core.models import (
+    OHLCV,
+    InvestorFlowRecord,
+    LoanTransRecord,
+    MarketInvestorFlowRecord,
+    Position,
+    PriceInfo,
+    ShortSaleRecord,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -37,6 +45,19 @@ def _to_int(value: str) -> int:
         return int(value.strip())
     except ValueError:
         return 0
+
+
+def _to_date(value: str) -> date:
+    """Parse a KIS ``YYYYMMDD`` string into ``date``."""
+    return date(int(value[:4]), int(value[4:6]), int(value[6:8]))
+
+
+def _million_krw(value: str) -> Decimal:
+    """수급 TR ``*_pbmn``(백만원 실측 — 게이트 ③) → 원(KRW) 변환의 단일 지점.
+
+    원천 정밀도가 백만원 절사임에 유의(DB 스키마 주석과 동일 전제).
+    """
+    return _to_decimal(value) * 1_000_000
 
 
 # ── Base Response ─────────────────────────────────────────────────────
@@ -119,17 +140,437 @@ class KISDailyChartOutput(BaseModel):
         """Convert to ``OHLCV`` domain model."""
         return OHLCV(
             symbol=symbol,
-            date=date(
-                int(self.stck_bsop_date[:4]),
-                int(self.stck_bsop_date[4:6]),
-                int(self.stck_bsop_date[6:8]),
-            ),
+            date=_to_date(self.stck_bsop_date),
             open=_to_decimal(self.stck_oprc),
             high=_to_decimal(self.stck_hgpr),
             low=_to_decimal(self.stck_lwpr),
             close=_to_decimal(self.stck_clpr),
             volume=_to_int(self.acml_vol),
             value=_to_decimal(self.acml_tr_pbmn),
+        )
+
+
+# ── 종목별 투자자매매동향 (FHPTJ04160001 output2 배열) — PRJ-03 ─────
+
+
+class KISInvestorFlowOutput(BaseModel):
+    """종목별 일별 투자자 수급 — ``FHPTJ04160001`` ``output2`` 배열 원소.
+
+    실측 101필드(probe1_kis_api.md) 중 수급 90필드만 선언 — 시세 필드
+    (종가·OHLC·거래량·누적대금)는 DailyOHLCV 완전 중복이라 ``extra="ignore"``로
+    배제(PRJ-03 확정 11).
+
+    KIS 원 필드명 quirk (표준 패턴에서 벗어나는 축 — probe1 실측 전수):
+    - net qty: 표준 ``{axis}_ntby_qty``, 예외 ``pe_fund/etc_corp/etc_orgt``는 ``_ntby_vol``
+    - net amt: 표준 ``{axis}_ntby_tr_pbmn``, 예외 ``frgn_reg/frgn_nreg``는 ``_ntby_pbmn``
+    - sell/buy qty: 표준 ``{axis}_seln_vol``/``{axis}_shnu_vol``,
+      예외 ``frgn_reg/frgn_nreg``는 ``_askp_qty``/``_bidp_qty``
+    - sell/buy amt: 표준 ``{axis}_seln_tr_pbmn``/``{axis}_shnu_tr_pbmn``,
+      예외 ``frgn_reg/frgn_nreg``는 ``_askp_pbmn``/``_bidp_pbmn``
+
+    ``*_pbmn``은 전부 백만원 단위(게이트 ③ 실측) — ``to_domain``에서 원으로 변환.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    stck_bsop_date: str = ""  # 영업일 (YYYYMMDD)
+
+    # ── 외국인 합계 (frgn) ──
+    frgn_ntby_qty: str = ""
+    frgn_ntby_tr_pbmn: str = ""
+    frgn_seln_vol: str = ""
+    frgn_shnu_vol: str = ""
+    frgn_seln_tr_pbmn: str = ""
+    frgn_shnu_tr_pbmn: str = ""
+
+    # ── 등록 외국인 (frgn_reg) — net amt·sell/buy가 quirk ──
+    frgn_reg_ntby_qty: str = ""
+    frgn_reg_ntby_pbmn: str = ""   # quirk: _ntby_tr_pbmn 아님
+    frgn_reg_askp_qty: str = ""    # quirk: 매도 수량 (seln_vol 아님)
+    frgn_reg_bidp_qty: str = ""    # quirk: 매수 수량
+    frgn_reg_askp_pbmn: str = ""   # quirk: 매도 대금
+    frgn_reg_bidp_pbmn: str = ""   # quirk: 매수 대금
+
+    # ── 비등록 외국인 (frgn_nreg) — frgn_reg와 동일 quirk ──
+    frgn_nreg_ntby_qty: str = ""
+    frgn_nreg_ntby_pbmn: str = ""
+    frgn_nreg_askp_qty: str = ""
+    frgn_nreg_bidp_qty: str = ""
+    frgn_nreg_askp_pbmn: str = ""
+    frgn_nreg_bidp_pbmn: str = ""
+
+    # ── 개인 (prsn) ──
+    prsn_ntby_qty: str = ""
+    prsn_ntby_tr_pbmn: str = ""
+    prsn_seln_vol: str = ""
+    prsn_shnu_vol: str = ""
+    prsn_seln_tr_pbmn: str = ""
+    prsn_shnu_tr_pbmn: str = ""
+
+    # ── 기관합계 (orgn) ──
+    orgn_ntby_qty: str = ""
+    orgn_ntby_tr_pbmn: str = ""
+    orgn_seln_vol: str = ""
+    orgn_shnu_vol: str = ""
+    orgn_seln_tr_pbmn: str = ""
+    orgn_shnu_tr_pbmn: str = ""
+
+    # ── 금융투자 (scrt) ──
+    scrt_ntby_qty: str = ""
+    scrt_ntby_tr_pbmn: str = ""
+    scrt_seln_vol: str = ""
+    scrt_shnu_vol: str = ""
+    scrt_seln_tr_pbmn: str = ""
+    scrt_shnu_tr_pbmn: str = ""
+
+    # ── 투신 (ivtr) ──
+    ivtr_ntby_qty: str = ""
+    ivtr_ntby_tr_pbmn: str = ""
+    ivtr_seln_vol: str = ""
+    ivtr_shnu_vol: str = ""
+    ivtr_seln_tr_pbmn: str = ""
+    ivtr_shnu_tr_pbmn: str = ""
+
+    # ── 사모 (pe_fund) — net qty가 quirk ──
+    pe_fund_ntby_vol: str = ""     # quirk: _ntby_qty 아님
+    pe_fund_ntby_tr_pbmn: str = ""
+    pe_fund_seln_vol: str = ""
+    pe_fund_shnu_vol: str = ""
+    pe_fund_seln_tr_pbmn: str = ""
+    pe_fund_shnu_tr_pbmn: str = ""
+
+    # ── 은행 (bank) ──
+    bank_ntby_qty: str = ""
+    bank_ntby_tr_pbmn: str = ""
+    bank_seln_vol: str = ""
+    bank_shnu_vol: str = ""
+    bank_seln_tr_pbmn: str = ""
+    bank_shnu_tr_pbmn: str = ""
+
+    # ── 보험 (insu) ──
+    insu_ntby_qty: str = ""
+    insu_ntby_tr_pbmn: str = ""
+    insu_seln_vol: str = ""
+    insu_shnu_vol: str = ""
+    insu_seln_tr_pbmn: str = ""
+    insu_shnu_tr_pbmn: str = ""
+
+    # ── 종금·기타금융 (mrbn) ──
+    mrbn_ntby_qty: str = ""
+    mrbn_ntby_tr_pbmn: str = ""
+    mrbn_seln_vol: str = ""
+    mrbn_shnu_vol: str = ""
+    mrbn_seln_tr_pbmn: str = ""
+    mrbn_shnu_tr_pbmn: str = ""
+
+    # ── 연기금 (fund) ──
+    fund_ntby_qty: str = ""
+    fund_ntby_tr_pbmn: str = ""
+    fund_seln_vol: str = ""
+    fund_shnu_vol: str = ""
+    fund_seln_tr_pbmn: str = ""
+    fund_shnu_tr_pbmn: str = ""
+
+    # ── 기타 합계 (etc) ──
+    etc_ntby_qty: str = ""
+    etc_ntby_tr_pbmn: str = ""
+    etc_seln_vol: str = ""
+    etc_shnu_vol: str = ""
+    etc_seln_tr_pbmn: str = ""
+    etc_shnu_tr_pbmn: str = ""
+
+    # ── 기타법인 (etc_corp) — net qty가 quirk ──
+    etc_corp_ntby_vol: str = ""    # quirk: _ntby_qty 아님
+    etc_corp_ntby_tr_pbmn: str = ""
+    etc_corp_seln_vol: str = ""
+    etc_corp_shnu_vol: str = ""
+    etc_corp_seln_tr_pbmn: str = ""
+    etc_corp_shnu_tr_pbmn: str = ""
+
+    # ── 기타단체 (etc_orgt) — net qty가 quirk ──
+    etc_orgt_ntby_vol: str = ""    # quirk: _ntby_qty 아님
+    etc_orgt_ntby_tr_pbmn: str = ""
+    etc_orgt_seln_vol: str = ""
+    etc_orgt_shnu_vol: str = ""
+    etc_orgt_seln_tr_pbmn: str = ""
+    etc_orgt_shnu_tr_pbmn: str = ""
+
+    def to_domain(self, symbol: str) -> InvestorFlowRecord:
+        """KIS 원 필드 → 정규화 컬럼(``{axis}_{net|sell|buy}_{qty|amt}``) 매핑의 단일 지점.
+
+        net 값은 원천이 부호를 가지므로 부호 재처리 없음. 대금은 백만원 → 원.
+        """
+        return InvestorFlowRecord(
+            symbol=symbol,
+            date=_to_date(self.stck_bsop_date),
+            frgn_net_qty=_to_int(self.frgn_ntby_qty),
+            frgn_net_amt=_million_krw(self.frgn_ntby_tr_pbmn),
+            frgn_sell_qty=_to_int(self.frgn_seln_vol),
+            frgn_buy_qty=_to_int(self.frgn_shnu_vol),
+            frgn_sell_amt=_million_krw(self.frgn_seln_tr_pbmn),
+            frgn_buy_amt=_million_krw(self.frgn_shnu_tr_pbmn),
+            frgn_reg_net_qty=_to_int(self.frgn_reg_ntby_qty),
+            frgn_reg_net_amt=_million_krw(self.frgn_reg_ntby_pbmn),
+            frgn_reg_sell_qty=_to_int(self.frgn_reg_askp_qty),
+            frgn_reg_buy_qty=_to_int(self.frgn_reg_bidp_qty),
+            frgn_reg_sell_amt=_million_krw(self.frgn_reg_askp_pbmn),
+            frgn_reg_buy_amt=_million_krw(self.frgn_reg_bidp_pbmn),
+            frgn_nreg_net_qty=_to_int(self.frgn_nreg_ntby_qty),
+            frgn_nreg_net_amt=_million_krw(self.frgn_nreg_ntby_pbmn),
+            frgn_nreg_sell_qty=_to_int(self.frgn_nreg_askp_qty),
+            frgn_nreg_buy_qty=_to_int(self.frgn_nreg_bidp_qty),
+            frgn_nreg_sell_amt=_million_krw(self.frgn_nreg_askp_pbmn),
+            frgn_nreg_buy_amt=_million_krw(self.frgn_nreg_bidp_pbmn),
+            prsn_net_qty=_to_int(self.prsn_ntby_qty),
+            prsn_net_amt=_million_krw(self.prsn_ntby_tr_pbmn),
+            prsn_sell_qty=_to_int(self.prsn_seln_vol),
+            prsn_buy_qty=_to_int(self.prsn_shnu_vol),
+            prsn_sell_amt=_million_krw(self.prsn_seln_tr_pbmn),
+            prsn_buy_amt=_million_krw(self.prsn_shnu_tr_pbmn),
+            orgn_net_qty=_to_int(self.orgn_ntby_qty),
+            orgn_net_amt=_million_krw(self.orgn_ntby_tr_pbmn),
+            orgn_sell_qty=_to_int(self.orgn_seln_vol),
+            orgn_buy_qty=_to_int(self.orgn_shnu_vol),
+            orgn_sell_amt=_million_krw(self.orgn_seln_tr_pbmn),
+            orgn_buy_amt=_million_krw(self.orgn_shnu_tr_pbmn),
+            scrt_net_qty=_to_int(self.scrt_ntby_qty),
+            scrt_net_amt=_million_krw(self.scrt_ntby_tr_pbmn),
+            scrt_sell_qty=_to_int(self.scrt_seln_vol),
+            scrt_buy_qty=_to_int(self.scrt_shnu_vol),
+            scrt_sell_amt=_million_krw(self.scrt_seln_tr_pbmn),
+            scrt_buy_amt=_million_krw(self.scrt_shnu_tr_pbmn),
+            ivtr_net_qty=_to_int(self.ivtr_ntby_qty),
+            ivtr_net_amt=_million_krw(self.ivtr_ntby_tr_pbmn),
+            ivtr_sell_qty=_to_int(self.ivtr_seln_vol),
+            ivtr_buy_qty=_to_int(self.ivtr_shnu_vol),
+            ivtr_sell_amt=_million_krw(self.ivtr_seln_tr_pbmn),
+            ivtr_buy_amt=_million_krw(self.ivtr_shnu_tr_pbmn),
+            pe_fund_net_qty=_to_int(self.pe_fund_ntby_vol),
+            pe_fund_net_amt=_million_krw(self.pe_fund_ntby_tr_pbmn),
+            pe_fund_sell_qty=_to_int(self.pe_fund_seln_vol),
+            pe_fund_buy_qty=_to_int(self.pe_fund_shnu_vol),
+            pe_fund_sell_amt=_million_krw(self.pe_fund_seln_tr_pbmn),
+            pe_fund_buy_amt=_million_krw(self.pe_fund_shnu_tr_pbmn),
+            bank_net_qty=_to_int(self.bank_ntby_qty),
+            bank_net_amt=_million_krw(self.bank_ntby_tr_pbmn),
+            bank_sell_qty=_to_int(self.bank_seln_vol),
+            bank_buy_qty=_to_int(self.bank_shnu_vol),
+            bank_sell_amt=_million_krw(self.bank_seln_tr_pbmn),
+            bank_buy_amt=_million_krw(self.bank_shnu_tr_pbmn),
+            insu_net_qty=_to_int(self.insu_ntby_qty),
+            insu_net_amt=_million_krw(self.insu_ntby_tr_pbmn),
+            insu_sell_qty=_to_int(self.insu_seln_vol),
+            insu_buy_qty=_to_int(self.insu_shnu_vol),
+            insu_sell_amt=_million_krw(self.insu_seln_tr_pbmn),
+            insu_buy_amt=_million_krw(self.insu_shnu_tr_pbmn),
+            mrbn_net_qty=_to_int(self.mrbn_ntby_qty),
+            mrbn_net_amt=_million_krw(self.mrbn_ntby_tr_pbmn),
+            mrbn_sell_qty=_to_int(self.mrbn_seln_vol),
+            mrbn_buy_qty=_to_int(self.mrbn_shnu_vol),
+            mrbn_sell_amt=_million_krw(self.mrbn_seln_tr_pbmn),
+            mrbn_buy_amt=_million_krw(self.mrbn_shnu_tr_pbmn),
+            fund_net_qty=_to_int(self.fund_ntby_qty),
+            fund_net_amt=_million_krw(self.fund_ntby_tr_pbmn),
+            fund_sell_qty=_to_int(self.fund_seln_vol),
+            fund_buy_qty=_to_int(self.fund_shnu_vol),
+            fund_sell_amt=_million_krw(self.fund_seln_tr_pbmn),
+            fund_buy_amt=_million_krw(self.fund_shnu_tr_pbmn),
+            etc_net_qty=_to_int(self.etc_ntby_qty),
+            etc_net_amt=_million_krw(self.etc_ntby_tr_pbmn),
+            etc_sell_qty=_to_int(self.etc_seln_vol),
+            etc_buy_qty=_to_int(self.etc_shnu_vol),
+            etc_sell_amt=_million_krw(self.etc_seln_tr_pbmn),
+            etc_buy_amt=_million_krw(self.etc_shnu_tr_pbmn),
+            etc_corp_net_qty=_to_int(self.etc_corp_ntby_vol),
+            etc_corp_net_amt=_million_krw(self.etc_corp_ntby_tr_pbmn),
+            etc_corp_sell_qty=_to_int(self.etc_corp_seln_vol),
+            etc_corp_buy_qty=_to_int(self.etc_corp_shnu_vol),
+            etc_corp_sell_amt=_million_krw(self.etc_corp_seln_tr_pbmn),
+            etc_corp_buy_amt=_million_krw(self.etc_corp_shnu_tr_pbmn),
+            etc_orgt_net_qty=_to_int(self.etc_orgt_ntby_vol),
+            etc_orgt_net_amt=_million_krw(self.etc_orgt_ntby_tr_pbmn),
+            etc_orgt_sell_qty=_to_int(self.etc_orgt_seln_vol),
+            etc_orgt_buy_qty=_to_int(self.etc_orgt_shnu_vol),
+            etc_orgt_sell_amt=_million_krw(self.etc_orgt_seln_tr_pbmn),
+            etc_orgt_buy_amt=_million_krw(self.etc_orgt_shnu_tr_pbmn),
+        )
+
+
+# ── 시장 단위 투자자매매동향 (FHPTJ04040000 output 배열) — PRJ-03 ───
+
+
+class KISMarketInvestorFlowOutput(BaseModel):
+    """시장 단위 일별 투자자 수급 + 지수 OHLC — ``FHPTJ04040000`` ``output`` 원소.
+
+    실측 39필드(probe1_kis_api.md). net qty/amt quirk는 종목 TR과 동일
+    (``pe_fund/etc_corp/etc_orgt`` → ``_ntby_vol``,
+    ``frgn_reg/frgn_nreg`` → ``_ntby_pbmn``).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    stck_bsop_date: str = ""       # 영업일 (YYYYMMDD)
+
+    # ── 지수 OHLC ──
+    bstp_nmix_prpr: str = ""       # 지수 현재가(= 종가)
+    bstp_nmix_oprc: str = ""       # 지수 시가
+    bstp_nmix_hgpr: str = ""       # 지수 고가
+    bstp_nmix_lwpr: str = ""       # 지수 저가
+    stck_prdy_clpr: str = ""       # 전일 종가
+    bstp_nmix_prdy_vrss: str = ""  # 전일 대비
+    prdy_vrss_sign: str = ""       # 전일 대비 부호 (1~5)
+    bstp_nmix_prdy_ctrt: str = ""  # 전일 대비율 (%)
+
+    # ── 수급 15축 × net qty/amt ──
+    frgn_ntby_qty: str = ""
+    frgn_ntby_tr_pbmn: str = ""
+    frgn_reg_ntby_qty: str = ""
+    frgn_reg_ntby_pbmn: str = ""   # quirk
+    frgn_nreg_ntby_qty: str = ""
+    frgn_nreg_ntby_pbmn: str = ""  # quirk
+    prsn_ntby_qty: str = ""
+    prsn_ntby_tr_pbmn: str = ""
+    orgn_ntby_qty: str = ""
+    orgn_ntby_tr_pbmn: str = ""
+    scrt_ntby_qty: str = ""
+    scrt_ntby_tr_pbmn: str = ""
+    ivtr_ntby_qty: str = ""
+    ivtr_ntby_tr_pbmn: str = ""
+    pe_fund_ntby_vol: str = ""     # quirk
+    pe_fund_ntby_tr_pbmn: str = ""
+    bank_ntby_qty: str = ""
+    bank_ntby_tr_pbmn: str = ""
+    insu_ntby_qty: str = ""
+    insu_ntby_tr_pbmn: str = ""
+    mrbn_ntby_qty: str = ""
+    mrbn_ntby_tr_pbmn: str = ""
+    fund_ntby_qty: str = ""
+    fund_ntby_tr_pbmn: str = ""
+    etc_ntby_qty: str = ""
+    etc_ntby_tr_pbmn: str = ""
+    etc_corp_ntby_vol: str = ""    # quirk
+    etc_corp_ntby_tr_pbmn: str = ""
+    etc_orgt_ntby_vol: str = ""    # quirk
+    etc_orgt_ntby_tr_pbmn: str = ""
+
+    def to_domain(self, market: str) -> MarketInvestorFlowRecord:
+        """지수 전일 대비는 ``prdy_vrss_sign`` 4/5 → 음수화 (KISPriceOutput 패턴).
+
+        ⚠️ ``*_ntby_qty``는 천주 단위 의심(dev.md 이월 검증 ②) — EC2 실검증
+        확정 전까지 원값 그대로 두고, 확정 시 이 지점에서만 변환한다.
+        """
+        index_change = _to_decimal(self.bstp_nmix_prdy_vrss)
+        index_change_rate = _to_decimal(self.bstp_nmix_prdy_ctrt)
+        if self.prdy_vrss_sign in ("4", "5"):
+            index_change = -abs(index_change)
+            index_change_rate = -abs(index_change_rate)
+        return MarketInvestorFlowRecord(
+            market=market,
+            date=_to_date(self.stck_bsop_date),
+            index_open=_to_decimal(self.bstp_nmix_oprc),
+            index_high=_to_decimal(self.bstp_nmix_hgpr),
+            index_low=_to_decimal(self.bstp_nmix_lwpr),
+            index_close=_to_decimal(self.bstp_nmix_prpr),
+            index_prev_close=_to_decimal(self.stck_prdy_clpr),
+            index_change=index_change,
+            index_change_rate=index_change_rate,
+            frgn_net_qty=_to_int(self.frgn_ntby_qty),
+            frgn_net_amt=_million_krw(self.frgn_ntby_tr_pbmn),
+            frgn_reg_net_qty=_to_int(self.frgn_reg_ntby_qty),
+            frgn_reg_net_amt=_million_krw(self.frgn_reg_ntby_pbmn),
+            frgn_nreg_net_qty=_to_int(self.frgn_nreg_ntby_qty),
+            frgn_nreg_net_amt=_million_krw(self.frgn_nreg_ntby_pbmn),
+            prsn_net_qty=_to_int(self.prsn_ntby_qty),
+            prsn_net_amt=_million_krw(self.prsn_ntby_tr_pbmn),
+            orgn_net_qty=_to_int(self.orgn_ntby_qty),
+            orgn_net_amt=_million_krw(self.orgn_ntby_tr_pbmn),
+            scrt_net_qty=_to_int(self.scrt_ntby_qty),
+            scrt_net_amt=_million_krw(self.scrt_ntby_tr_pbmn),
+            ivtr_net_qty=_to_int(self.ivtr_ntby_qty),
+            ivtr_net_amt=_million_krw(self.ivtr_ntby_tr_pbmn),
+            pe_fund_net_qty=_to_int(self.pe_fund_ntby_vol),
+            pe_fund_net_amt=_million_krw(self.pe_fund_ntby_tr_pbmn),
+            bank_net_qty=_to_int(self.bank_ntby_qty),
+            bank_net_amt=_million_krw(self.bank_ntby_tr_pbmn),
+            insu_net_qty=_to_int(self.insu_ntby_qty),
+            insu_net_amt=_million_krw(self.insu_ntby_tr_pbmn),
+            mrbn_net_qty=_to_int(self.mrbn_ntby_qty),
+            mrbn_net_amt=_million_krw(self.mrbn_ntby_tr_pbmn),
+            fund_net_qty=_to_int(self.fund_ntby_qty),
+            fund_net_amt=_million_krw(self.fund_ntby_tr_pbmn),
+            etc_net_qty=_to_int(self.etc_ntby_qty),
+            etc_net_amt=_million_krw(self.etc_ntby_tr_pbmn),
+            etc_corp_net_qty=_to_int(self.etc_corp_ntby_vol),
+            etc_corp_net_amt=_million_krw(self.etc_corp_ntby_tr_pbmn),
+            etc_orgt_net_qty=_to_int(self.etc_orgt_ntby_vol),
+            etc_orgt_net_amt=_million_krw(self.etc_orgt_ntby_tr_pbmn),
+        )
+
+
+# ── 공매도 일별추이 (FHPST04830000 output2 배열) — PRJ-03 ───────────
+
+
+class KISShortSaleOutput(BaseModel):
+    """종목별 일별 공매도 — ``FHPST04830000`` ``output2`` 배열 원소.
+
+    실측 21필드 중 고유 일별 필드 5종만 선언(단계 1 확정 ②) — 시세 중복 9필드와
+    조회 창 의존 누적 계열(``acml_ssts_*``, ``stnd_*_smtn``)은 ``extra="ignore"`` 배제.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    stck_bsop_date: str = ""    # 영업일 (YYYYMMDD)
+    ssts_cntg_qty: str = ""     # 공매도 체결 수량
+    ssts_vol_rlim: str = ""     # 공매도 거래량 비중 (%)
+    ssts_tr_pbmn: str = ""      # 공매도 거래대금 — ⚠️ 원 단위 실측 (백만원 아님)
+    ssts_tr_pbmn_rlim: str = "" # 공매도 거래대금 비중 (%)
+    avrg_prc: str = ""          # 공매도 평균가
+
+    def to_domain(self, symbol: str) -> ShortSaleRecord:
+        """``ssts_tr_pbmn``은 필드명과 달리 **원 단위 실측**(probe1 검산:
+        65,122,268,750원) — ``_million_krw`` 변환 금지."""
+        return ShortSaleRecord(
+            symbol=symbol,
+            date=_to_date(self.stck_bsop_date),
+            short_sale_qty=_to_int(self.ssts_cntg_qty),
+            short_sale_vol_ratio=_to_decimal(self.ssts_vol_rlim),
+            short_sale_amt=_to_decimal(self.ssts_tr_pbmn),
+            short_sale_amt_ratio=_to_decimal(self.ssts_tr_pbmn_rlim),
+            avg_price=_to_decimal(self.avrg_prc),
+        )
+
+
+# ── 대차거래추이 (HHPST074500C0 output1 배열) — PRJ-03 ──────────────
+
+
+class KISLoanTransOutput(BaseModel):
+    """종목별 일별 대차거래 — ``HHPST074500C0`` ``output1`` 배열 원소.
+
+    ⚠️ 스키마는 시장 단위 실측(probe1 — ``MRKT_DIV_CLS_CODE="1"`` 오호출)에서
+    가져온 가정이다. 종목 모드(``"3"``) 응답 스키마·``rmnd_amt`` 단위는 미실측 —
+    scripts/verify_kis_investor_flow.py EC2 실행으로 확정 후 필요 시 수정.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    bsop_date: str = ""         # 영업일 (YYYYMMDD)
+    new_stcn: str = ""          # 신규 대차 주수
+    rdmp_stcn: str = ""         # 상환 주수
+    prdy_rmnd_vrss: str = ""    # 전일 대비 잔고 증감
+    rmnd_stcn: str = ""         # 대차잔고 주수
+    rmnd_amt: str = ""          # 대차잔고 금액 — ⚠️ 단위 미실측 (원/천원/백만원?)
+
+    def to_domain(self, symbol: str) -> LoanTransRecord:
+        """``rmnd_amt``는 단위 미실측(dev.md 이월 검증 ①) — 원값 그대로 두고,
+        EC2 확정 후 이 지점에서만 변환한다."""
+        return LoanTransRecord(
+            symbol=symbol,
+            date=_to_date(self.bsop_date),
+            loan_new_qty=_to_int(self.new_stcn),
+            loan_redemption_qty=_to_int(self.rdmp_stcn),
+            loan_balance_diff=_to_int(self.prdy_rmnd_vrss),
+            loan_balance_qty=_to_int(self.rmnd_stcn),
+            loan_balance_amt=_to_decimal(self.rmnd_amt),
         )
 
 
@@ -320,6 +761,10 @@ __all__ = [
     "KISBaseResponse",
     "KISPriceOutput",
     "KISDailyChartOutput",
+    "KISInvestorFlowOutput",
+    "KISMarketInvestorFlowOutput",
+    "KISShortSaleOutput",
+    "KISLoanTransOutput",
     "KISOrderOutput",
     "KISOrderCcldOutput",
     "KISBalanceOutput1",

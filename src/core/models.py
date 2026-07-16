@@ -228,7 +228,8 @@ class MarketInvestorFlowRecord(BaseModel):
     market은 'kospi'/'kosdaq' 소문자. KRX(pykrx) 백필 전용 축
     (index_volume/trading_value/market_cap)은 KIS TR에 없어 미포함.
 
-    ⚠️ ``*_net_qty``는 KIS 원값 그대로(천주 단위 의심 — dev.md 이월 검증 ②).
+    ``*_net_qty``는 주(株) 단위 — KIS 천주 원값의 ×1000 변환은 to_domain 책임
+    (2026-07-15 EC2 실측 확정, 원천 반올림으로 ±500주 정밀도 한계).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -297,7 +298,8 @@ class LoanTransRecord(BaseModel):
     """종목별 일별 대차거래 — get_daily_loan_trans() 반환.
 
     ShortInterestDaily의 대차 절반 컬럼.
-    ⚠️ ``loan_balance_amt``는 KIS 원값 그대로(단위 미실측 — dev.md 이월 검증 ①).
+    ``loan_balance_amt``는 원(KRW) 단위 — KIS 백만원 원값의 ×1e6 변환은
+    to_domain 책임(2026-07-15 EC2 실측 확정).
     """
 
     model_config = ConfigDict(from_attributes=True)

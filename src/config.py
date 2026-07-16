@@ -163,6 +163,12 @@ class Settings(BaseSettings):
     # 08:30 결정 전에 밤사이 뉴스를 종목명 검색어로 적재(F-19). NAVER 키 없으면 미등록.
     NEWS_COLLECTION_TIME: str = "16:00"
 
+    # PRJ-03: 수급 수집 — KST, mon-fri. 19:00 종목/시장 수급(KIS 확정치 17:56~18:11
+    # 이후, 20:00 데일리 리포트 전 완료), 21:00 공매도·대차(트레일링 14일 창 재조회).
+    INVESTOR_FLOW_COLLECTION_ENABLED: bool = True
+    INVESTOR_FLOW_COLLECTION_TIME: str = "19:00"
+    INVESTOR_FLOW_SHORT_INTEREST_TIME: str = "21:00"
+
     # 배치 재구성(2026-06-29): "분석=발주" 결합을 끊어 (개장 전 준비 게이트 →
     # 개장 전 결정 → 개장 후 실행)의 3단계 파이프라인으로 분리. 모두 KST.
     PRE_OPEN_PREP_TIME: str = "08:00"          # 결측 백필 + 신선도 게이트 + 토큰 갱신

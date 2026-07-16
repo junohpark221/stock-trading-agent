@@ -26,6 +26,7 @@ from src.scheduler.jobs import (
     job_daily_report,
     job_execution_drain,
     job_hypothesis_invalidation_check,
+    job_investor_flow_collect,
     job_llm_cost_report,
     job_market_data_collect,
     job_monthly_report,
@@ -34,6 +35,7 @@ from src.scheduler.jobs import (
     job_pre_open_prep,
     job_reconcile_open_orders,
     job_reconcile_positions,
+    job_short_interest_collect,
     job_stop_loss_check,
     job_swing_decision,
     job_token_refresh,
@@ -853,6 +855,40 @@ class SchedulerFactory:
                 "market_data_collect",
                 partial(job_market_data_collect, provider=provider, symbols=watchlist_symbols),
                 CronTrigger(day_of_week="mon-fri", hour=md_h, minute=md_m, timezone="UTC"),
+            )
+
+        # PRJ-03 수급 수집 2종 — InMemoryBroker(provider=None)면 스킵.
+        # ⚠️ 이웃 market_data_collect는 UTC 등록이지만 이 잡들은 KST 시맨틱
+        # (19:00 종목/시장 수급 · 21:00 공매도/대차) — Asia/Seoul 명시(c5d6a80 전례).
+        if provider is not None and s.INVESTOR_FLOW_COLLECTION_ENABLED:
+            if_h, if_m = SchedulerEngine._parse_time(s.INVESTOR_FLOW_COLLECTION_TIME)
+            engine.register_job(
+                "investor_flow_collect",
+                partial(
+                    job_investor_flow_collect,
+                    provider=provider,
+                    symbols=watchlist_symbols,
+                    holidays=s.KR_HOLIDAYS,
+                ),
+                CronTrigger(
+                    day_of_week="mon-fri", hour=if_h, minute=if_m,
+                    timezone="Asia/Seoul",
+                ),
+            )
+
+            si_h, si_m = SchedulerEngine._parse_time(s.INVESTOR_FLOW_SHORT_INTEREST_TIME)
+            engine.register_job(
+                "short_interest_collect",
+                partial(
+                    job_short_interest_collect,
+                    provider=provider,
+                    symbols=watchlist_symbols,
+                    holidays=s.KR_HOLIDAYS,
+                ),
+                CronTrigger(
+                    day_of_week="mon-fri", hour=si_h, minute=si_m,
+                    timezone="Asia/Seoul",
+                ),
             )
 
         # news_collect — NAVER 키 있을 때만(NaverProvider 존재). 종목명 검색어로 수집(F-19).

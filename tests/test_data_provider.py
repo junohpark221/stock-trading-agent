@@ -732,3 +732,247 @@ class TestCollectDailyOHLCV:
 
         await collect_daily_ohlcv(provider, ["A"], period_days=200)
         provider.sync_daily_ohlcv.assert_awaited_once_with("A", period_days=200)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PRJ-03: investor flow sync (수급 upsert)
+# ═══════════════════════════════════════════════════════════════════════
+
+from sqlalchemy.dialects import postgresql as _pg  # noqa: E402
+
+from src.core.models import (  # noqa: E402
+    InvestorFlowRecord,
+    LoanTransRecord,
+    MarketInvestorFlowRecord,
+    ShortSaleRecord,
+)
+from src.data.providers.kis_provider import (  # noqa: E402
+    _FLOW_UPDATE_COLS,
+    _LOAN_UPDATE_COLS,
+    _MARKET_FLOW_UPDATE_COLS,
+    _SHORT_SALE_UPDATE_COLS,
+)
+
+
+def _compiled_sql(session) -> tuple[str, dict]:
+    """마지막 execute된 statement의 (SQL 문자열, 파라미터)를 반환."""
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile(dialect=_pg.dialect())
+    return str(compiled), dict(compiled.params)
+
+
+def _flow_record(**kwargs) -> InvestorFlowRecord:
+    defaults = {
+        "symbol": "005930",
+        "date": date(2026, 7, 15),
+        "frgn_net_qty": 1000,
+        "frgn_net_amt": Decimal("72500000"),
+    }
+    return InvestorFlowRecord(**{**defaults, **kwargs})
+
+
+def _market_record(**kwargs) -> MarketInvestorFlowRecord:
+    defaults = {
+        "market": "kospi",
+        "date": date(2026, 7, 15),
+        "index_close": Decimal("2800.55"),
+        "frgn_net_qty": 1000000,
+    }
+    return MarketInvestorFlowRecord(**{**defaults, **kwargs})
+
+
+class TestFlowUpdateColConstants:
+    """set_ 구성 상수 — 부분 upsert 정합성의 구조적 가드."""
+
+    def test_key_columns_excluded(self):
+        assert "symbol" not in _FLOW_UPDATE_COLS
+        assert "date" not in _FLOW_UPDATE_COLS
+        assert "market" not in _MARKET_FLOW_UPDATE_COLS
+        assert "date" not in _MARKET_FLOW_UPDATE_COLS
+        assert "symbol" not in _SHORT_SALE_UPDATE_COLS
+        assert "symbol" not in _LOAN_UPDATE_COLS
+
+    def test_short_loan_halves_disjoint(self):
+        """공매도/대차 반쪽이 겹치면 부분 upsert가 상대편을 NULL로 덮는다."""
+        assert set(_SHORT_SALE_UPDATE_COLS).isdisjoint(_LOAN_UPDATE_COLS)
+        assert set(_SHORT_SALE_UPDATE_COLS) == {
+            "short_sale_qty",
+            "short_sale_vol_ratio",
+            "short_sale_amt",
+            "short_sale_amt_ratio",
+            "avg_price",
+        }
+        assert set(_LOAN_UPDATE_COLS) == {
+            "loan_new_qty",
+            "loan_redemption_qty",
+            "loan_balance_diff",
+            "loan_balance_qty",
+            "loan_balance_amt",
+        }
+
+    def test_market_cols_exclude_pykrx_only(self):
+        """pykrx 백필 전용 컬럼은 레코드에 없어 set_에서 자동 제외."""
+        for col in ("index_volume", "index_trading_value", "index_market_cap"):
+            assert col not in _MARKET_FLOW_UPDATE_COLS
+
+
+class TestSyncInvestorFlow:
+    @pytest.mark.asyncio
+    async def test_empty_returns_zero_without_db(self):
+        client = AsyncMock(spec=KISClient)
+        client.get_investor_flow = AsyncMock(return_value=[])
+        sf, _ = _mock_session_factory()
+        p = _make_provider(client=client, session_factory=sf)
+
+        assert await p.sync_investor_flow("005930") == 0
+        assert not sf.called
+
+    @pytest.mark.asyncio
+    async def test_upsert_constraint_and_source(self):
+        client = AsyncMock(spec=KISClient)
+        client.get_investor_flow = AsyncMock(
+            return_value=[_flow_record(), _flow_record(date=date(2026, 7, 14))]
+        )
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(return_value=_make_db_result(rowcount=2))
+        session.commit = AsyncMock()
+        p = _make_provider(client=client, session_factory=sf)
+
+        result = await p.sync_investor_flow("005930")
+        assert result == 2
+        session.commit.assert_awaited_once()
+
+        sql, params = _compiled_sql(session)
+        assert "INSERT INTO investor_flow_daily" in sql
+        assert "ON CONFLICT ON CONSTRAINT uq_investor_flow_daily_symbol_date" in sql
+        assert "source" in sql
+        assert "kis" in params.values()
+
+    @pytest.mark.asyncio
+    async def test_db_error_wrapped(self):
+        client = AsyncMock(spec=KISClient)
+        client.get_investor_flow = AsyncMock(return_value=[_flow_record()])
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(side_effect=Exception("db down"))
+        p = _make_provider(client=client, session_factory=sf)
+
+        with pytest.raises(DatabaseError):
+            await p.sync_investor_flow("005930")
+
+
+class TestSyncMarketInvestorFlow:
+    @pytest.mark.asyncio
+    async def test_upsert_preserves_pykrx_only_columns(self):
+        client = AsyncMock(spec=KISClient)
+        client.get_market_investor_flow = AsyncMock(return_value=[_market_record()])
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(return_value=_make_db_result(rowcount=1))
+        session.commit = AsyncMock()
+        p = _make_provider(client=client, session_factory=sf)
+
+        assert await p.sync_market_investor_flow("kospi") == 1
+
+        sql, _ = _compiled_sql(session)
+        assert "INSERT INTO market_investor_flow_daily" in sql
+        assert (
+            "ON CONFLICT ON CONSTRAINT uq_market_investor_flow_daily_market_date"
+            in sql
+        )
+        # pykrx 전용 컬럼은 INSERT/SET 어디에도 등장하면 안 된다(백필 값 보존)
+        assert "index_volume" not in sql
+        assert "index_trading_value" not in sql
+        assert "index_market_cap" not in sql
+
+    @pytest.mark.asyncio
+    async def test_duplicate_dates_deduped(self):
+        """동일 (market,date) 2행이 한 INSERT에 섞이면 pg 에러 — 후승 dedupe."""
+        client = AsyncMock(spec=KISClient)
+        client.get_market_investor_flow = AsyncMock(
+            return_value=[
+                _market_record(frgn_net_qty=1),
+                _market_record(frgn_net_qty=2),
+            ]
+        )
+        p = _make_provider(client=client)
+
+        with patch.object(
+            p, "_upsert_flow_rows", AsyncMock(return_value=1)
+        ) as upsert_mock:
+            await p.sync_market_investor_flow("kospi")
+
+        rows = upsert_mock.call_args.kwargs["rows"]
+        assert len(rows) == 1
+        assert rows[0]["frgn_net_qty"] == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_zero(self):
+        client = AsyncMock(spec=KISClient)
+        client.get_market_investor_flow = AsyncMock(return_value=[])
+        sf, _ = _mock_session_factory()
+        p = _make_provider(client=client, session_factory=sf)
+
+        assert await p.sync_market_investor_flow("kosdaq") == 0
+        assert not sf.called
+
+
+class TestSyncShortInterestPartialUpsert:
+    """공매도/대차 — 같은 테이블 반쪽씩 부분 upsert. 상대편 컬럼 불가침."""
+
+    @pytest.mark.asyncio
+    async def test_short_sale_set_excludes_loan_half(self):
+        client = AsyncMock(spec=KISClient)
+        client.get_daily_short_sale = AsyncMock(
+            return_value=[
+                ShortSaleRecord(
+                    symbol="005930",
+                    date=date(2026, 7, 15),
+                    short_sale_qty=1000,
+                    short_sale_amt=Decimal("72500000"),
+                )
+            ]
+        )
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(return_value=_make_db_result(rowcount=1))
+        session.commit = AsyncMock()
+        p = _make_provider(client=client, session_factory=sf)
+
+        result = await p.sync_short_sale(
+            "005930", start_date=date(2026, 7, 1), end_date=date(2026, 7, 15)
+        )
+        assert result == 1
+
+        sql, _ = _compiled_sql(session)
+        assert "INSERT INTO short_interest_daily" in sql
+        assert "ON CONFLICT ON CONSTRAINT uq_short_interest_daily_symbol_date" in sql
+        assert "loan_" not in sql  # 대차 절반은 INSERT/SET 불가침
+
+    @pytest.mark.asyncio
+    async def test_loan_trans_set_excludes_short_half(self):
+        client = AsyncMock(spec=KISClient)
+        client.get_daily_loan_trans = AsyncMock(
+            return_value=[
+                LoanTransRecord(
+                    symbol="005930",
+                    date=date(2026, 7, 15),
+                    loan_balance_qty=82_000_000,
+                    loan_balance_amt=Decimal("23000000000000"),
+                )
+            ]
+        )
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(return_value=_make_db_result(rowcount=1))
+        session.commit = AsyncMock()
+        p = _make_provider(client=client, session_factory=sf)
+
+        result = await p.sync_loan_trans(
+            "005930", start_date=date(2026, 7, 1), end_date=date(2026, 7, 15)
+        )
+        assert result == 1
+        client.get_daily_loan_trans.assert_awaited_once_with(
+            "005930", start_date=date(2026, 7, 1), end_date=date(2026, 7, 15)
+        )
+
+        sql, _ = _compiled_sql(session)
+        assert "INSERT INTO short_interest_daily" in sql
+        assert "short_sale" not in sql  # 공매도 절반은 INSERT/SET 불가침
+        assert "avg_price" not in sql

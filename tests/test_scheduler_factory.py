@@ -586,3 +586,63 @@ async def test_reload_account_build_failure_keeps_old_context():
 
     assert ok is False
     assert runtime.contexts[0] is old_ctx
+
+
+# ── PRJ-03: 수급 수집 잡 등록 (_register_common_jobs 직접 호출) ──────────
+
+
+def _make_engine(settings):
+    from src.scheduler.engine import SchedulerEngine
+
+    sf, _ = _mock_session_factory()
+    return SchedulerEngine(session_factory=sf, settings=settings, telegram_bot=None)
+
+
+def _register_common(engine, settings, provider):
+    sf, _ = _mock_session_factory()
+    SchedulerFactory._register_common_jobs(
+        engine,
+        provider=provider,
+        watchlist_symbols=["005930"],
+        generator=MagicMock(),
+        telegram_bot=AsyncMock(),
+        settings=settings,
+        session_factory=sf,
+    )
+
+
+def test_investor_flow_jobs_registered_by_default():
+    """provider 존재 + 플래그 기본값(True) → 수급 잡 2종 등록."""
+    settings = make_settings(SCHEDULER_ENABLED=False)
+    engine = _make_engine(settings)
+
+    _register_common(engine, settings, provider=AsyncMock())
+
+    assert "investor_flow_collect" in engine._job_fns
+    assert "short_interest_collect" in engine._job_fns
+
+
+def test_investor_flow_jobs_skipped_when_disabled():
+    """INVESTOR_FLOW_COLLECTION_ENABLED=False → 수급 잡 미등록."""
+    settings = make_settings(
+        SCHEDULER_ENABLED=False, INVESTOR_FLOW_COLLECTION_ENABLED=False
+    )
+    engine = _make_engine(settings)
+
+    _register_common(engine, settings, provider=AsyncMock())
+
+    assert "investor_flow_collect" not in engine._job_fns
+    assert "short_interest_collect" not in engine._job_fns
+    # 이웃 잡 market_data_collect는 플래그 무관하게 등록되어야 한다
+    assert "market_data_collect" in engine._job_fns
+
+
+def test_investor_flow_jobs_skipped_without_provider():
+    """provider=None(InMemoryBroker) → 수급 잡 미등록."""
+    settings = make_settings(SCHEDULER_ENABLED=False)
+    engine = _make_engine(settings)
+
+    _register_common(engine, settings, provider=None)
+
+    assert "investor_flow_collect" not in engine._job_fns
+    assert "short_interest_collect" not in engine._job_fns

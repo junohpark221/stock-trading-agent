@@ -206,3 +206,122 @@ class TestCollectNews:
         call = naver_provider.sync_news.call_args
         assert call.args[0] == "005930"
         assert call.kwargs["query"] == "005930"
+
+
+# ── PRJ-03: collect_investor_flow / market / short_interest ─────────
+
+
+class TestCollectInvestorFlow:
+    """collect_investor_flow 오케스트레이션 테스트 (페이싱 0으로 패치)."""
+
+    @pytest.fixture()
+    def provider(self):
+        p = AsyncMock()
+        p.provider_name = "kis"
+        p.sync_investor_flow = AsyncMock(return_value=30)
+        return p
+
+    @pytest.mark.asyncio()
+    async def test_all_success(self, provider):
+        from src.data.collector import collect_investor_flow
+
+        with patch("src.data.collector._FLOW_CALL_PACE_SEC", 0):
+            summary = await collect_investor_flow(provider, ["A", "B", "C"])
+
+        assert summary.total_symbols == 3
+        assert summary.succeeded == 3
+        assert summary.failed == 0
+        assert summary.total_rows == 90
+
+    @pytest.mark.asyncio()
+    async def test_middle_failure_isolated(self, provider):
+        from src.data.collector import collect_investor_flow
+
+        provider.sync_investor_flow = AsyncMock(
+            side_effect=[30, RuntimeError("kis down"), 30]
+        )
+        with patch("src.data.collector._FLOW_CALL_PACE_SEC", 0):
+            summary = await collect_investor_flow(provider, ["A", "B", "C"])
+
+        assert summary.succeeded == 2
+        assert summary.failed == 1
+        assert summary.failed_symbols == ["B"]
+        assert summary.total_rows == 60
+
+
+class TestCollectMarketInvestorFlow:
+    @pytest.mark.asyncio()
+    async def test_default_two_markets(self):
+        from src.data.collector import collect_market_investor_flow
+
+        provider = AsyncMock()
+        provider.provider_name = "kis"
+        provider.sync_market_investor_flow = AsyncMock(return_value=300)
+
+        summary = await collect_market_investor_flow(provider)
+
+        assert summary.total_symbols == 2
+        assert summary.succeeded == 2
+        assert summary.total_rows == 600
+        provider.sync_market_investor_flow.assert_any_await("kospi")
+        provider.sync_market_investor_flow.assert_any_await("kosdaq")
+
+    @pytest.mark.asyncio()
+    async def test_one_market_failure(self):
+        from src.data.collector import collect_market_investor_flow
+
+        provider = AsyncMock()
+        provider.provider_name = "kis"
+        provider.sync_market_investor_flow = AsyncMock(
+            side_effect=[300, RuntimeError("fail")]
+        )
+
+        summary = await collect_market_investor_flow(provider)
+
+        assert summary.succeeded == 1
+        assert summary.failed == 1
+        assert summary.failed_symbols == ["kosdaq"]
+
+
+class TestCollectShortInterest:
+    @pytest.mark.asyncio()
+    async def test_window_and_both_trs_called(self):
+        from src.data.collector import collect_short_interest
+
+        provider = AsyncMock()
+        provider.provider_name = "kis"
+        provider.sync_short_sale = AsyncMock(return_value=10)
+        provider.sync_loan_trans = AsyncMock(return_value=10)
+
+        fixed_today = date(2026, 7, 16)
+        with (
+            patch("src.data.collector.today_kst", return_value=fixed_today),
+            patch("src.data.collector._FLOW_CALL_PACE_SEC", 0),
+        ):
+            summary = await collect_short_interest(provider, ["A"], window_days=14)
+
+        expected_start = fixed_today - timedelta(days=14)
+        provider.sync_short_sale.assert_awaited_once_with(
+            "A", start_date=expected_start, end_date=fixed_today
+        )
+        provider.sync_loan_trans.assert_awaited_once_with(
+            "A", start_date=expected_start, end_date=fixed_today
+        )
+        assert summary.succeeded == 1
+        assert summary.total_rows == 20
+
+    @pytest.mark.asyncio()
+    async def test_loan_failure_marks_symbol_failed(self):
+        from src.data.collector import collect_short_interest
+
+        provider = AsyncMock()
+        provider.provider_name = "kis"
+        provider.sync_short_sale = AsyncMock(return_value=10)
+        provider.sync_loan_trans = AsyncMock(side_effect=RuntimeError("loan fail"))
+
+        with patch("src.data.collector._FLOW_CALL_PACE_SEC", 0):
+            summary = await collect_short_interest(provider, ["A", "B"])
+
+        assert summary.succeeded == 0
+        assert summary.failed == 2
+        assert summary.failed_symbols == ["A", "B"]

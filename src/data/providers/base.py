@@ -72,3 +72,33 @@ class DataProvider(ABC):
         raise NotImplementedError(
             f"{self.provider_name} does not support sync_daily_ohlcv"
         )
+
+    # ── PRJ-03: investor flow (수급) sync methods ──────────────────────
+
+    async def sync_investor_flow(self, symbol: str) -> int:
+        """Fetch per-symbol investor flow and upsert to DB. Returns row count."""
+        raise NotImplementedError(
+            f"{self.provider_name} does not support sync_investor_flow"
+        )
+
+    async def sync_market_investor_flow(self, market: str) -> int:
+        """Fetch market-level investor flow and upsert to DB. Returns row count."""
+        raise NotImplementedError(
+            f"{self.provider_name} does not support sync_market_investor_flow"
+        )
+
+    async def sync_short_sale(
+        self, symbol: str, *, start_date: date, end_date: date
+    ) -> int:
+        """Fetch daily short-sale rows and upsert to DB. Returns row count."""
+        raise NotImplementedError(
+            f"{self.provider_name} does not support sync_short_sale"
+        )
+
+    async def sync_loan_trans(
+        self, symbol: str, *, start_date: date, end_date: date
+    ) -> int:
+        """Fetch daily loan-transaction rows and upsert to DB. Returns row count."""
+        raise NotImplementedError(
+            f"{self.provider_name} does not support sync_loan_trans"
+        )

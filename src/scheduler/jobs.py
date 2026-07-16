@@ -17,7 +17,13 @@ from sqlalchemy import func, select
 
 from src.core.enums import DecisionAction, ExitReason, StrategyType
 from src.core.time import KST as _KST
-from src.data.collector import collect_daily_ohlcv, collect_news
+from src.data.collector import (
+    collect_daily_ohlcv,
+    collect_investor_flow,
+    collect_market_investor_flow,
+    collect_news,
+    collect_short_interest,
+)
 from src.data.stock_names import resolve_symbol_names
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.execution.exit_coordinator import exit_phase
@@ -115,6 +121,70 @@ async def job_market_data_collect(
     summary = await collect_daily_ohlcv(provider, symbols)
     logger.info(
         "job.market_data_collect.done",
+        total=summary.total_symbols,
+        succeeded=summary.succeeded,
+        failed=summary.failed,
+        rows=summary.total_rows,
+    )
+
+
+async def job_investor_flow_collect(
+    *,
+    provider: DataProvider,
+    symbols: list[str],
+    holidays: str = "",
+) -> None:
+    """PRJ-03: 종목·시장 수급 수집. 19:00 KST 평일 (KIS 확정치 17:56~18:11 이후).
+
+    시장 단위(2콜)를 먼저 실행해 KIS 장애 시 조기에 드러나게 하고,
+    이어서 전 종목(~2,600콜)을 순회한다. 20:00 데일리 리포트 전 완료 설계.
+    """
+    today = datetime.now(_KST).date()
+    if today.isoformat() in _holiday_set(holidays):
+        logger.info(
+            "job.investor_flow_collect.skip",
+            reason="kr_holiday",
+            date=today.isoformat(),
+        )
+        return
+
+    market_summary = await collect_market_investor_flow(provider)
+    summary = await collect_investor_flow(provider, symbols)
+    logger.info(
+        "job.investor_flow_collect.done",
+        total=summary.total_symbols,
+        succeeded=summary.succeeded,
+        failed=summary.failed,
+        rows=summary.total_rows,
+        market_succeeded=market_summary.succeeded,
+        market_failed=market_summary.failed,
+        market_rows=market_summary.total_rows,
+    )
+
+
+async def job_short_interest_collect(
+    *,
+    provider: DataProvider,
+    symbols: list[str],
+    holidays: str = "",
+    window_days: int = 14,
+) -> None:
+    """PRJ-03: 공매도·대차 수집. 21:00 KST 평일 (데일리 리포트 20:00 이후).
+
+    KRX 공표 지연(T+1~T+2)을 트레일링 14일 창 재조회로 흡수한다.
+    """
+    today = datetime.now(_KST).date()
+    if today.isoformat() in _holiday_set(holidays):
+        logger.info(
+            "job.short_interest_collect.skip",
+            reason="kr_holiday",
+            date=today.isoformat(),
+        )
+        return
+
+    summary = await collect_short_interest(provider, symbols, window_days=window_days)
+    logger.info(
+        "job.short_interest_collect.done",
         total=summary.total_symbols,
         succeeded=summary.succeeded,
         failed=summary.failed,

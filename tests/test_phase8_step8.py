@@ -238,9 +238,11 @@ class TestRegisterAccountJobs:
 
         job_names = set(engine._job_fns.keys())
 
-        # 공통: market_data_collect, pre_open_prep, weekly_report, monthly_report,
-        #       llm_cost_report = 5
+        # 공통: market_data_collect, investor_flow_collect, short_interest_collect,
+        #       pre_open_prep, weekly_report, monthly_report, llm_cost_report = 7
         assert "market_data_collect" in job_names
+        assert "investor_flow_collect" in job_names
+        assert "short_interest_collect" in job_names
         assert "pre_open_prep" in job_names
         assert "weekly_report" in job_names
         assert "monthly_report" in job_names
@@ -262,8 +264,8 @@ class TestRegisterAccountJobs:
         assert "stop_loss_check:acct-2" in job_names
         assert "daily_report:acct-2" in job_names
 
-        # 총: 5 + 5 + 5 = 15
-        assert len(job_names) == 15
+        # 총: 7 + 5 + 5 = 17
+        assert len(job_names) == 17
 
 
 # ── job 함수 계좌별 파라미터 전달 ──────────────────────────────────────────
@@ -467,7 +469,7 @@ class TestRegisterCommonJobs:
         )
 
     def test_with_provider(self, engine):
-        """provider 있으면 market_data_collect + pre_open_prep 포함 5개 등록."""
+        """provider 있으면 market_data_collect + 수급 2종 + pre_open_prep 포함 7개 등록."""
         SchedulerFactory._register_common_jobs(
             engine,
             provider=MagicMock(),
@@ -477,8 +479,10 @@ class TestRegisterCommonJobs:
             settings=make_settings(),
             session_factory=MagicMock(),
         )
-        assert len(engine._job_fns) == 5
+        assert len(engine._job_fns) == 7
         assert "market_data_collect" in engine._job_fns
+        assert "investor_flow_collect" in engine._job_fns
+        assert "short_interest_collect" in engine._job_fns
         assert "pre_open_prep" in engine._job_fns
 
     def test_without_provider(self, engine):

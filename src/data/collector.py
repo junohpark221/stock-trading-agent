@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from src.core.enums import ReportType
+from src.core.time import today_kst
 
 if TYPE_CHECKING:
     from src.data.providers.base import DataProvider
@@ -30,6 +31,12 @@ if TYPE_CHECKING:
     from src.data.providers.naver_provider import NaverProvider
 
 logger = structlog.get_logger(__name__)
+
+# PRJ-03 수급 수집 종목 간 페이싱(초). KIS 클라이언트 자체 인터벌
+# (KIS_RATE_LIMIT_INTERVAL) 위에 얹는 추가 간격 — 게이트 ④ 실측에서
+# EGW00201 재시도가 매 스냅샷 발생해(전부 흡수되긴 함) 백오프 진입
+# 빈도를 낮추기 위한 완충이다.
+_FLOW_CALL_PACE_SEC = 0.2
 
 
 @dataclass
@@ -102,6 +109,147 @@ async def collect_daily_ohlcv(
         succeeded=summary.succeeded,
         failed=summary.failed,
         total_rows=summary.total_rows,
+    )
+    return summary
+
+
+async def collect_investor_flow(
+    provider: DataProvider,
+    symbols: list[str],
+) -> CollectionSummary:
+    """PRJ-03: 종목별 수급을 순차 수집(종목당 단발 1콜, 최근 ~30거래일 upsert).
+
+    실패 종목은 기록만 하고 계속 진행. 순차 순회 + ``_FLOW_CALL_PACE_SEC``
+    페이싱으로 KIS 레이트리밋(EGW00201) 백오프 진입을 완화한다.
+    """
+    summary = CollectionSummary(total_symbols=len(symbols))
+
+    for symbol in symbols:
+        try:
+            rows = await provider.sync_investor_flow(symbol)
+            summary.succeeded += 1
+            summary.total_rows += rows
+            logger.debug(
+                "collect_investor_flow_symbol_done",
+                provider=provider.provider_name,
+                symbol=symbol,
+                rows=rows,
+            )
+        except Exception:
+            summary.failed += 1
+            summary.failed_symbols.append(symbol)
+            logger.exception(
+                "collect_investor_flow_symbol_failed",
+                provider=provider.provider_name,
+                symbol=symbol,
+            )
+        await asyncio.sleep(_FLOW_CALL_PACE_SEC)
+
+    logger.info(
+        "collect_investor_flow_done",
+        provider=provider.provider_name,
+        total=summary.total_symbols,
+        succeeded=summary.succeeded,
+        failed=summary.failed,
+        total_rows=summary.total_rows,
+    )
+    return summary
+
+
+async def collect_market_investor_flow(
+    provider: DataProvider,
+    markets: tuple[str, ...] = ("kospi", "kosdaq"),
+) -> CollectionSummary:
+    """PRJ-03: 시장 단위 수급 수집(시장당 단발 1콜, ~300행 upsert).
+
+    ``failed_symbols``에는 시장명('kospi'/'kosdaq')이 담긴다.
+    """
+    summary = CollectionSummary(total_symbols=len(markets))
+
+    for market in markets:
+        try:
+            rows = await provider.sync_market_investor_flow(market)
+            summary.succeeded += 1
+            summary.total_rows += rows
+            logger.debug(
+                "collect_market_investor_flow_market_done",
+                provider=provider.provider_name,
+                market=market,
+                rows=rows,
+            )
+        except Exception:
+            summary.failed += 1
+            summary.failed_symbols.append(market)
+            logger.exception(
+                "collect_market_investor_flow_market_failed",
+                provider=provider.provider_name,
+                market=market,
+            )
+
+    logger.info(
+        "collect_market_investor_flow_done",
+        provider=provider.provider_name,
+        total=summary.total_symbols,
+        succeeded=summary.succeeded,
+        failed=summary.failed,
+        total_rows=summary.total_rows,
+    )
+    return summary
+
+
+async def collect_short_interest(
+    provider: DataProvider,
+    symbols: list[str],
+    *,
+    window_days: int = 14,
+) -> CollectionSummary:
+    """PRJ-03: 종목별 공매도+대차를 트레일링 창으로 순차 수집.
+
+    KRX 공표 지연(공매도 T+1·대차 T+2)을 흡수하기 위해 매일
+    ``[today_kst()-window_days, today_kst()]`` 창을 재조회한다(idempotent upsert).
+    종목당 공매도 → 대차 순차 호출, 둘 중 하나라도 실패하면 종목 failed.
+    공매도 성공 후 대차 실패 시 공매도 행은 이미 커밋된 상태로 남지만(세션 분리),
+    다음 날 창 재조회가 자가 치유하므로 의도된 동작이다.
+    """
+    end = today_kst()
+    start = end - timedelta(days=window_days)
+    summary = CollectionSummary(total_symbols=len(symbols))
+
+    for symbol in symbols:
+        try:
+            symbol_rows = await provider.sync_short_sale(
+                symbol, start_date=start, end_date=end
+            )
+            symbol_rows += await provider.sync_loan_trans(
+                symbol, start_date=start, end_date=end
+            )
+            summary.succeeded += 1
+            summary.total_rows += symbol_rows
+            logger.debug(
+                "collect_short_interest_symbol_done",
+                provider=provider.provider_name,
+                symbol=symbol,
+                rows=symbol_rows,
+            )
+        except Exception:
+            summary.failed += 1
+            summary.failed_symbols.append(symbol)
+            logger.exception(
+                "collect_short_interest_symbol_failed",
+                provider=provider.provider_name,
+                symbol=symbol,
+            )
+        await asyncio.sleep(_FLOW_CALL_PACE_SEC)
+
+    logger.info(
+        "collect_short_interest_done",
+        provider=provider.provider_name,
+        total=summary.total_symbols,
+        succeeded=summary.succeeded,
+        failed=summary.failed,
+        total_rows=summary.total_rows,
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
     )
     return summary
 

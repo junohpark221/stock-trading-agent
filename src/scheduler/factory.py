@@ -22,6 +22,7 @@ from src.db.models.account import Account, AccountCrypto
 from src.db.models.market_data import StockMaster
 from src.scheduler.engine import SchedulerEngine
 from src.scheduler.jobs import (
+    job_calendar_sync,
     job_cleanup_expired_memories,
     job_daily_report,
     job_execution_drain,
@@ -426,6 +427,32 @@ class SchedulerFactory:
                 logger.info("stock_master_sync_on_startup", upserted=count)
             except Exception:
                 logger.exception("stock_master_sync_on_startup_failed")
+
+        # ── 4-1b. F-23 거래 캘린더 부트스트랩 — 오늘 행이 없을 때만 ────
+        # (재기동 반복 시 KIS "1일 1회" 제약 존중 — 오늘 행이 있으면 07:30
+        # calendar_sync 잡에 맡긴다. 실패해도 비치명 — KR_HOLIDAYS 폴백.)
+        if provider is not None:
+            try:
+                from src.core.time import today_kst
+                from src.db.models.calendar import TradingCalendarDay
+
+                async with session_factory() as session:
+                    has_today = await session.scalar(
+                        select(TradingCalendarDay.date).where(
+                            TradingCalendarDay.date == today_kst()
+                        )
+                    )
+                if has_today is None:
+                    from src.scheduler.jobs import job_calendar_sync as _cal_sync
+
+                    await _cal_sync(
+                        provider=provider,
+                        session_factory=session_factory,
+                        settings=settings,
+                    )
+                    logger.info("calendar_sync_on_startup_done")
+            except Exception:
+                logger.exception("calendar_sync_on_startup_failed")
 
         # ── 4-2. FillFinalizer + ExecutionStreamManager + OrderReconciler ─
         from src.execution.decision_queue import TradeDecisionQueueManager
@@ -855,6 +882,22 @@ class SchedulerFactory:
                 "market_data_collect",
                 partial(job_market_data_collect, provider=provider, symbols=watchlist_symbols),
                 CronTrigger(day_of_week="mon-fri", hour=md_h, minute=md_m, timezone="UTC"),
+            )
+
+        # F-23 calendar_sync — 거래 캘린더 동기화. 매일(주말 포함) 07:30 KST,
+        # pre_open_prep(08:00) 이전. 연휴 중에도 미래 커버리지가 유지되도록
+        # day_of_week 미지정. KIS 원장 연관 TR — 1일 1회 호출 준수.
+        if provider is not None:
+            cs_h, cs_m = SchedulerEngine._parse_time(s.CALENDAR_SYNC_TIME)
+            engine.register_job(
+                "calendar_sync",
+                partial(
+                    job_calendar_sync,
+                    provider=provider,
+                    session_factory=session_factory,
+                    settings=s,
+                ),
+                CronTrigger(hour=cs_h, minute=cs_m, timezone="Asia/Seoul"),
             )
 
         # PRJ-03 수급 수집 2종 — InMemoryBroker(provider=None)면 스킵.

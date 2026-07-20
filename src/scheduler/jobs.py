@@ -25,6 +25,7 @@ from src.data.collector import (
     collect_short_interest,
 )
 from src.data.stock_names import resolve_symbol_names
+from src.db.models.calendar import TradingCalendarDay
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.execution.exit_coordinator import exit_phase
 from src.notification.templates import MessageTemplates
@@ -125,6 +126,51 @@ async def job_market_data_collect(
         succeeded=summary.succeeded,
         failed=summary.failed,
         rows=summary.total_rows,
+    )
+
+
+_CALENDAR_BOOTSTRAP_PAST_DAYS = 40   # 부트스트랩 시 과거 커버(직전 거래일 탐색용)
+_CALENDAR_BOOTSTRAP_MIN_PAST_DAYS = 35  # min(date)가 이보다 얕으면 부트스트랩 재수행
+
+
+async def job_calendar_sync(
+    *,
+    provider: DataProvider,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> None:
+    """F-23: KIS 국내휴장일조회 → trading_calendar 동기화. 매일 07:30 KST.
+
+    평시 앵커는 오늘(과거 행은 이전 동기화로 이미 적재·소급 변경 없음), 미래는
+    CALENDAR_FORWARD_HORIZON_DAYS까지 확보 — 미래 재지정 공휴일(제헌절 케이스)은
+    매일 미래 창을 다시 upsert하므로 자동 반영된다. 테이블이 비었거나 과거 커버가
+    얕으면(초기 배포·리셋) 과거 40일 앵커로 자가 부트스트랩(멱등).
+
+    실패 시 raise — 엔진 wrap_job이 텔레그램 실패 알림을 보내고, 판정 측은
+    KR_HOLIDAYS 폴백 모드로 안전 동작한다(매매 잡 비차단).
+    """
+    today = datetime.now(_KST).date()
+    horizon = today + timedelta(days=settings.CALENDAR_FORWARD_HORIZON_DAYS)
+
+    async with session_factory() as session:
+        min_date = await session.scalar(select(func.min(TradingCalendarDay.date)))
+
+    bootstrap = min_date is None or min_date > today - timedelta(
+        days=_CALENDAR_BOOTSTRAP_MIN_PAST_DAYS
+    )
+    start = (
+        today - timedelta(days=_CALENDAR_BOOTSTRAP_PAST_DAYS) if bootstrap else today
+    )
+
+    upserted = await provider.sync_trading_calendar(
+        start_date=start, until_date=horizon
+    )
+    logger.info(
+        "job.calendar_sync.done",
+        upserted=upserted,
+        start=start.isoformat(),
+        horizon=horizon.isoformat(),
+        bootstrap=bootstrap,
     )
 
 

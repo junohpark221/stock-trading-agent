@@ -155,7 +155,15 @@ class Settings(BaseSettings):
 
     # ── Phase 6: Scheduler + Report + Monitoring ─────────────────────────
     SCHEDULER_ENABLED: bool = True
+    # F-23: 폴백 전용 — 거래일 판정의 1차 소스는 trading_calendar 테이블
+    # (calendar_sync 잡이 KIS CTCA0903R을 일 1회 동기화). 이 목록은 캘린더에
+    # 해당 날짜가 없을 때(동기화 실패·부트스트랩 전)만 주말 판정과 함께 쓰인다.
     KR_HOLIDAYS: str = ""  # 쉼표 구분 공휴일 (예: "2026-01-01,2026-01-27")
+
+    # F-23: 거래 캘린더 동기화 — 매일(주말 포함) KST. pre_open_prep(08:00) 이전.
+    # KIS 원장 연관 TR이라 1일 1회만 호출, 결과는 trading_calendar에 영속.
+    CALENDAR_SYNC_TIME: str = "07:30"
+    CALENDAR_FORWARD_HORIZON_DAYS: int = 30  # 오늘+N일까지 미래 캘린더 확보
 
     # 작업 스케줄. 신규 잡(prep/decision/execution_drain)은 KST(Asia/Seoul) 트리거.
     MARKET_DATA_COLLECTION_TIME: str = "15:40"

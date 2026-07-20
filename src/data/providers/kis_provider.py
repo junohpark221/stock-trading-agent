@@ -26,8 +26,10 @@ from src.core.models import (
     MarketInvestorFlowRecord,
     ShortSaleRecord,
     StockInfo,
+    TradingDayRecord,
 )
 from src.data.providers.base import DataProvider
+from src.db.models.calendar import TradingCalendarDay
 from src.db.models.investor_flow import (
     InvestorFlowDaily,
     MarketInvestorFlowDaily,
@@ -389,6 +391,53 @@ class KISDataProvider(DataProvider):
             err_label=f"sync_loan_trans ({symbol})",
         )
         logger.info("kis_sync_loan_trans_done", symbol=symbol, upserted=upserted)
+        return upserted
+
+    # ── F-23: trading calendar sync (API → DB upsert) ─────────────────
+
+    async def sync_trading_calendar(
+        self, *, start_date: date, until_date: date
+    ) -> int:
+        """국내휴장일조회(``CTCA0903R``) → ``trading_calendar`` upsert.
+
+        원장 연관 TR(가급적 1일 1회 호출)이므로 호출부는 calendar_sync 잡
+        1곳으로 제한한다. date PK 단순 upsert — 연 365행 소형 테이블이라
+        배치 분할 없이 단일 statement.
+        """
+        records = await self._client.get_holidays(
+            start_date=start_date, until_date=until_date
+        )
+        if not records:
+            logger.warning("kis_sync_trading_calendar_empty", start=str(start_date))
+            return 0
+
+        update_cols = tuple(
+            k for k in TradingDayRecord.model_fields if k != "date"
+        )
+        try:
+            async with self._session_factory() as session:
+                batch = [
+                    {**r.model_dump(), "source": _FLOW_SOURCE} for r in records
+                ]
+                stmt = pg_insert(TradingCalendarDay).values(batch)
+                set_ = {k: stmt.excluded[k] for k in update_cols}
+                set_["source"] = stmt.excluded.source
+                set_["updated_at"] = func.now()
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[TradingCalendarDay.date], set_=set_
+                )
+                result = await session.execute(stmt)
+                upserted = result.rowcount
+                await session.commit()
+        except Exception as exc:
+            raise DatabaseError(f"sync_trading_calendar DB error: {exc}") from exc
+
+        logger.info(
+            "kis_sync_trading_calendar_done",
+            upserted=upserted,
+            start=str(records[0].date),
+            end=str(records[-1].date),
+        )
         return upserted
 
     # ── fetch_stock_master: cache-through read ────────────────────────

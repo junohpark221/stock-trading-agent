@@ -102,3 +102,13 @@ class DataProvider(ABC):
         raise NotImplementedError(
             f"{self.provider_name} does not support sync_loan_trans"
         )
+
+    # ── F-23: trading calendar sync ────────────────────────────────────
+
+    async def sync_trading_calendar(
+        self, *, start_date: date, until_date: date
+    ) -> int:
+        """Fetch trading-day/holiday flags and upsert to DB. Returns row count."""
+        raise NotImplementedError(
+            f"{self.provider_name} does not support sync_trading_calendar"
+        )

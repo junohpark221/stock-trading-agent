@@ -7,6 +7,7 @@ can detect them via ``Base.metadata``.
 from src.db.models.account import Account, AccountCrypto
 from src.db.models.analysis import Disclosure, EconomicIndicator, FinancialStatement, NewsArticle
 from src.db.models.backtest import BacktestRun, BacktestTrade
+from src.db.models.calendar import TradingCalendarDay
 from src.db.models.execution import (
     ApprovalRequestDB,
     Execution,
@@ -48,4 +49,5 @@ __all__ = [
     "ShortInterestDaily",
     "StockMaster",
     "TradeDecisionQueue",
+    "TradingCalendarDay",
 ]

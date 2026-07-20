@@ -24,6 +24,7 @@ from src.data.collector import (
     collect_news,
     collect_short_interest,
 )
+from src.data.market_calendar import MarketCalendar, load_market_calendar
 from src.data.stock_names import resolve_symbol_names
 from src.db.models.calendar import TradingCalendarDay
 from src.db.models.market_data import DailyOHLCV, StockMaster
@@ -179,14 +180,21 @@ async def job_investor_flow_collect(
     provider: DataProvider,
     symbols: list[str],
     holidays: str = "",
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """PRJ-03: 종목·시장 수급 수집. 19:00 KST 평일 (KIS 확정치 17:56~18:11 이후).
 
     시장 단위(2콜)를 먼저 실행해 KIS 장애 시 조기에 드러나게 하고,
     이어서 전 종목(~2,600콜)을 순회한다. 20:00 데일리 리포트 전 완료 설계.
+    휴장일 스킵은 DB 캘린더 우선(F-23), 미주입 시 KR_HOLIDAYS 폴백.
     """
     today = datetime.now(_KST).date()
-    if today.isoformat() in _holiday_set(holidays):
+    cal = (
+        await load_market_calendar(session_factory, holidays_fallback=holidays)
+        if session_factory is not None
+        else MarketCalendar.fallback_only(holidays)
+    )
+    if not cal.is_trading_day(today):
         logger.info(
             "job.investor_flow_collect.skip",
             reason="kr_holiday",
@@ -214,13 +222,20 @@ async def job_short_interest_collect(
     symbols: list[str],
     holidays: str = "",
     window_days: int = 14,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """PRJ-03: 공매도·대차 수집. 21:00 KST 평일 (데일리 리포트 20:00 이후).
 
     KRX 공표 지연(T+1~T+2)을 트레일링 14일 창 재조회로 흡수한다.
+    휴장일 스킵은 DB 캘린더 우선(F-23), 미주입 시 KR_HOLIDAYS 폴백.
     """
     today = datetime.now(_KST).date()
-    if today.isoformat() in _holiday_set(holidays):
+    cal = (
+        await load_market_calendar(session_factory, holidays_fallback=holidays)
+        if session_factory is not None
+        else MarketCalendar.fallback_only(holidays)
+    )
+    if not cal.is_trading_day(today):
         logger.info(
             "job.short_interest_collect.skip",
             reason="kr_holiday",
@@ -277,7 +292,16 @@ async def job_pre_open_prep(
     매매 차단(stale-data 방지)은 결정 잡이 _check_data_freshness로 독립 검증한다.
     """
     holidays = settings.KR_HOLIDAYS
-    prev = _previous_trading_day(datetime.now(_KST).date(), holidays)
+    # F-23: DB 캘린더 로드(1회) — 직전 거래일·신선도 판정에 공유. stale이면
+    # (오늘 행 부재 = 동기화 실패·미부트스트랩) 폴백 판정 사실을 1건 경고한다.
+    cal = await load_market_calendar(session_factory, holidays_fallback=holidays)
+    if cal.stale and telegram_bot is not None:
+        await telegram_bot.send_message(
+            "⚠️ <b>거래 캘린더 폴백 모드</b> — trading_calendar에 오늘 날짜가 "
+            "없어 KR_HOLIDAYS 기준으로 판정합니다. calendar_sync 잡 상태를 "
+            "확인하세요."
+        )
+    prev = _previous_trading_day(datetime.now(_KST).date(), holidays, calendar=cal)
 
     # 1. 결측 종목 백필 (타깃 한정이라 경량)
     if provider is not None:
@@ -297,6 +321,7 @@ async def job_pre_open_prep(
         session_factory,
         holidays=holidays,
         min_coverage_pct=settings.DATA_FRESHNESS_MIN_COVERAGE_PCT,
+        calendar=cal,
     )
     logger.info("job.pre_open_prep.freshness", ok=ok, **detail)
     if not ok and telegram_bot is not None:
@@ -314,37 +339,33 @@ def _is_market_open(
     market_open: str = "09:00",
     market_close: str = "15:30",
     holidays: str = "",
+    *,
+    calendar: MarketCalendar | None = None,
 ) -> bool:
     """현재 시각이 한국 장 운영 시간(KST) 내인지 확인.
 
-    주말(토/일) 및 공휴일(KR_HOLIDAYS 설정)에는 False를 반환한다.
+    F-23: ``calendar`` 주입 시 trading_calendar(DB) 기준으로 휴장일을 판정하고,
+    미주입(None)이면 기존과 동일하게 주말 + KR_HOLIDAYS 목록으로 판정한다.
     """
     now_kst = datetime.now(_KST)
-    # 주말 체크 (0=월 ~ 4=금, 5=토, 6=일)
-    if now_kst.weekday() >= 5:
+    cal = calendar if calendar is not None else MarketCalendar.fallback_only(holidays)
+    if not cal.is_trading_day(now_kst.date()):
         return False
-    # 공휴일 체크
-    if holidays:
-        holiday_dates = {d.strip() for d in holidays.split(",") if d.strip()}
-        if now_kst.strftime("%Y-%m-%d") in holiday_dates:
-            return False
     now_time = now_kst.time()
     h_open, m_open = map(int, market_open.split(":"))
     h_close, m_close = map(int, market_close.split(":"))
     return time(h_open, m_open) <= now_time <= time(h_close, m_close)
 
 
-def _holiday_set(holidays: str) -> set[str]:
-    return {d.strip() for d in holidays.split(",") if d.strip()} if holidays else set()
+def _previous_trading_day(
+    ref: date, holidays: str = "", *, calendar: MarketCalendar | None = None
+) -> date:
+    """ref 직전(이전)의 거래일(주말·공휴일 제외)을 반환.
 
-
-def _previous_trading_day(ref: date, holidays: str = "") -> date:
-    """ref 직전(이전)의 거래일(주말·공휴일 제외)을 반환."""
-    hol = _holiday_set(holidays)
-    d = ref - timedelta(days=1)
-    while d.weekday() >= 5 or d.strftime("%Y-%m-%d") in hol:
-        d -= timedelta(days=1)
-    return d
+    F-23: ``calendar`` 주입 시 DB 캘린더 기준, 미주입 시 기존 판정.
+    """
+    cal = calendar if calendar is not None else MarketCalendar.fallback_only(holidays)
+    return cal.previous_trading_day(ref)
 
 
 def _market_close_dt(market_close: str = "15:30") -> datetime:
@@ -358,13 +379,23 @@ async def _check_data_freshness(
     *,
     holidays: str = "",
     min_coverage_pct: float = 95.0,
+    calendar: MarketCalendar | None = None,
 ) -> tuple[bool, dict]:
     """직전 거래일 일봉의 신선도·커버리지 검증.
 
     ok = (daily_ohlcv 최신일 ≥ 직전 거래일) AND (직전 거래일 커버리지 ≥ 임계).
     stale 데이터로 매매가 진행되는 것을 결정 잡 진입부에서 차단하기 위함.
+
+    F-23: ``calendar`` 미주입이면 내부에서 DB 캘린더를 로드한다 — 결정 잡들은
+    호출부 변경 없이 DB 기준 직전 거래일 판정으로 전환된다.
     """
-    prev = _previous_trading_day(datetime.now(_KST).date(), holidays)
+    if calendar is None:
+        calendar = await load_market_calendar(
+            session_factory, holidays_fallback=holidays
+        )
+    prev = _previous_trading_day(
+        datetime.now(_KST).date(), holidays, calendar=calendar
+    )
     async with session_factory() as session:
         active = await session.scalar(
             select(func.count())
@@ -390,6 +421,7 @@ async def _check_data_freshness(
         "active": active,
         "covered": covered,
         "coverage_pct": round(coverage_pct, 1),
+        "calendar_stale": calendar.stale,
     }
     return ok, detail
 
@@ -753,15 +785,22 @@ async def job_execution_drain(
     market_close: str = "15:30",
     holidays: str = "",
     gap_guard_pct: float = 3.0,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """개장 후 실행 드레인 — 결정 큐 pending을 당일가/갭 게이트 통과분만 발주. 계좌별.
 
     장중 주기적으로 실행한다. 각 pending에 대해 실시간가를 조회하여 결정 시점
     기준가(reference_price) 대비 갭이 한도(gap_guard_pct%) 안이면 라이브가로 진입가를
     갱신해 발주하고, 벗어나면 expired(gap_guard) 처리한다. 만료(전일 이월)분은 먼저
-    정리한다.
+    정리한다. 휴장일 판정은 DB 캘린더 우선(F-23) — stale이어도 로그만(5분 주기
+    스팸 방지, 경고는 pre_open_prep 담당).
     """
-    if not _is_market_open(market_open, market_close, holidays):
+    cal = (
+        await load_market_calendar(session_factory, holidays_fallback=holidays)
+        if session_factory is not None
+        else None
+    )
+    if not _is_market_open(market_open, market_close, holidays, calendar=cal):
         logger.debug("job.execution_drain.skip", reason="market_closed", account_id=account_id)
         return
 
@@ -876,6 +915,7 @@ async def job_stop_loss_check(
     market_close: str = "15:30",
     holidays: str = "",
     coordinator: ExitCoordinator | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """손절/익절/트레일링 스톱 체크 + 자동 청산 + 근접 알림. 5분 간격. 계좌별 실행.
 
@@ -884,8 +924,18 @@ async def job_stop_loss_check(
     2. 각 포지션: 현재가 조회 → 미실현 손익률 계산 → 4가지 청산 조건 체크
     3. exit_signals 수집 → ExitExecutionService로 일괄 청산
     4. TradingMonitor.check_all() → 근접/편중/예산/낙폭 알림
+
+    휴장일 판정은 DB 캘린더 우선(F-23), 미주입 시 KR_HOLIDAYS 폴백.
     """
-    if not _is_market_open(market_open=market_open, market_close=market_close, holidays=holidays):
+    cal = (
+        await load_market_calendar(session_factory, holidays_fallback=holidays)
+        if session_factory is not None
+        else None
+    )
+    if not _is_market_open(
+        market_open=market_open, market_close=market_close, holidays=holidays,
+        calendar=cal,
+    ):
         logger.debug("job.stop_loss_check.skip", reason="market_closed", account_id=account_id)
         return
 

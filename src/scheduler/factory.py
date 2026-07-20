@@ -912,6 +912,7 @@ class SchedulerFactory:
                     provider=provider,
                     symbols=watchlist_symbols,
                     holidays=s.KR_HOLIDAYS,
+                    session_factory=session_factory,
                 ),
                 CronTrigger(
                     day_of_week="mon-fri", hour=if_h, minute=if_m,
@@ -927,6 +928,7 @@ class SchedulerFactory:
                     provider=provider,
                     symbols=watchlist_symbols,
                     holidays=s.KR_HOLIDAYS,
+                    session_factory=session_factory,
                 ),
                 CronTrigger(
                     day_of_week="mon-fri", hour=si_h, minute=si_m,
@@ -1211,6 +1213,7 @@ class SchedulerFactory:
                 market_close=s.MARKET_CLOSE_TIME,
                 holidays=s.KR_HOLIDAYS,
                 gap_guard_pct=s.EXECUTION_GAP_GUARD_PCT,
+                session_factory=session_factory,
             ),
             CronTrigger(
                 day_of_week="mon-fri",
@@ -1237,6 +1240,7 @@ class SchedulerFactory:
                 market_close=s.MARKET_CLOSE_TIME,
                 holidays=s.KR_HOLIDAYS,
                 coordinator=coordinator,
+                session_factory=session_factory,
             ),
             IntervalTrigger(minutes=s.STOP_LOSS_CHECK_INTERVAL_MIN),
         )

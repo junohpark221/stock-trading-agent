@@ -313,6 +313,24 @@ class LoanTransRecord(BaseModel):
     loan_balance_amt: Decimal | None = None
 
 
+class TradingDayRecord(BaseModel):
+    """국내휴장일조회 1일분 — get_holidays() 반환.
+
+    TradingCalendarDay 컬럼과 필드명 1:1 (``model_dump()``로 upsert 직결).
+    개장 여부 판정은 ``is_open``(KIS ``opnd_yn`` — "주문 가능 여부는
+    개장일여부를 사용" 공식 안내).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    wday_dvsn_cd: str | None = None
+    is_business_day: bool
+    is_trade_day: bool
+    is_open: bool
+    is_settlement_day: bool
+
+
 class Signal(BaseModel):
     """매매 시그널 — generate_signals() 반환."""
 

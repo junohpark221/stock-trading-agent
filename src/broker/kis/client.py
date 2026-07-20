@@ -35,6 +35,7 @@ from src.broker.kis.models import (
     KISBalanceRlzPlOutput2,
     KISBaseResponse,
     KISDailyChartOutput,
+    KISHolidayOutput,
     KISInvestorFlowOutput,
     KISLoanTransOutput,
     KISMarketInvestorFlowOutput,
@@ -75,6 +76,7 @@ from src.core.models import (
     PriceInfo,
     ShortSaleRecord,
     StockInfo,
+    TradingDayRecord,
 )
 from src.core.time import today_kst
 from src.data.cache import RedisCache
@@ -119,6 +121,11 @@ _MAX_LOAN_PAGES = 20           # 100행 캡 × 20 = 2,000행 (종목 모드 캡�
 
 # market('kospi'/'kosdaq' — StockMaster.market_type 컨벤션) → (시장코드, 업종코드)
 _MARKET_INVESTOR_CODES = {"kospi": ("KSP", "0001"), "kosdaq": ("KSQ", "1001")}
+
+# ── F-23 국내휴장일조회 — 원장 연관 TR이라 가급적 1일 1회 호출(SDK 명시) ──
+_CHK_HOLIDAY_PATH = "/uapi/domestic-stock/v1/quotations/chk-holiday"
+_CHK_HOLIDAY_TR = "CTCA0903R"
+_MAX_HOLIDAY_PAGES = 10  # SDK 재귀 캡과 동일. 1콜 행수 미실측 — horizon 컷이 1차 종료 조건
 
 
 class KISClient(BrokerInterface):
@@ -724,6 +731,83 @@ class KISClient(BrokerInterface):
             window_end = oldest - timedelta(days=1)
 
         records = [r for r in records if r.date >= start_date]
+        records.sort(key=lambda r: r.date)
+        return records
+
+    # ── F-23 국내휴장일조회 ─────────────────────────────────────────
+
+    async def get_holidays(
+        self,
+        *,
+        start_date: date,
+        until_date: date | None = None,
+    ) -> list[TradingDayRecord]:
+        """국내휴장일조회 (``CTCA0903R``) — ``start_date``부터 순방향 페이징.
+
+        원장 연관 TR이라 가급적 1일 1회만 호출할 것(SDK 명시) — 결과는
+        trading_calendar 테이블에 영속화해 재사용한다. 페이징은
+        :meth:`_fetch_cancelable_orders`와 동일한 ``tr_cont`` + ``ctx_area_*``
+        프로토콜 (단, 이 TR의 ctx 키는 ``ctx_area_fk``/``ctx_area_nk``).
+
+        Args:
+            start_date: 기준일자(포함). 과거 일자도 조회 가능(Postman 공식 샘플).
+            until_date: 이 날짜(포함)에 도달하면 페이징 중단·초과분 절단.
+                ``None``이면 첫 페이지 단발.
+
+        Returns:
+            날짜 오름차순 ``TradingDayRecord`` 리스트 (dedupe 완료).
+        """
+        records: list[TradingDayRecord] = []
+        seen: set[date] = set()
+        tr_cont_req = ""
+        ctx_fk = ""
+        ctx_nk = ""
+
+        for _page in range(_MAX_HOLIDAY_PAGES):
+            data = await self._request(
+                "GET",
+                _CHK_HOLIDAY_PATH,
+                _CHK_HOLIDAY_TR,
+                params={
+                    "BASS_DT": start_date.strftime("%Y%m%d"),
+                    "CTX_AREA_FK": ctx_fk,
+                    "CTX_AREA_NK": ctx_nk,
+                },
+                tr_cont=tr_cont_req,
+            )
+
+            items = data.get("output", [])
+            if isinstance(items, dict):
+                items = [items]
+
+            newest: date | None = None
+            for raw in items:
+                out = KISHolidayOutput.model_validate(raw)
+                if not out.bass_dt:
+                    continue
+                rec = out.to_domain()
+                if rec.date not in seen:
+                    seen.add(rec.date)
+                    records.append(rec)
+                if newest is None or rec.date > newest:
+                    newest = rec.date
+
+            # horizon 도달 → 연속조회 불필요 (1일 1회 제약상 호출 최소화)
+            if until_date is not None and newest is not None and newest >= until_date:
+                break
+            if until_date is None:
+                break
+
+            resp_tr_cont = data.get("_tr_cont", "")
+            if resp_tr_cont in ("M", "F"):
+                tr_cont_req = "N"
+                ctx_fk = data.get("ctx_area_fk", "")
+                ctx_nk = data.get("ctx_area_nk", "")
+            else:
+                break
+
+        if until_date is not None:
+            records = [r for r in records if r.date <= until_date]
         records.sort(key=lambda r: r.date)
         return records
 

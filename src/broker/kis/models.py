@@ -22,6 +22,7 @@ from src.core.models import (
     Position,
     PriceInfo,
     ShortSaleRecord,
+    TradingDayRecord,
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -574,6 +575,36 @@ class KISLoanTransOutput(BaseModel):
         )
 
 
+# ── 국내휴장일조회 (CTCA0903R output 배열) — F-23 ───────────────────
+
+
+class KISHolidayOutput(BaseModel):
+    """일자별 영업일/거래일/개장일/결제일 여부 — ``CTCA0903R`` ``output`` 원소.
+
+    KIS 공식 안내: 주문 가능 여부 판정은 개장일여부(``opnd_yn``)를 사용.
+    원장 연관 서비스라 가급적 1일 1회 호출(SDK chk_holiday.py 명시).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    bass_dt: str = ""       # 기준일자 (YYYYMMDD)
+    wday_dvsn_cd: str = ""  # 요일구분코드
+    bzdy_yn: str = ""       # 영업일여부 (Y/N)
+    tr_day_yn: str = ""     # 거래일여부 (Y/N)
+    opnd_yn: str = ""       # 개장일여부 (Y/N)
+    sttl_day_yn: str = ""   # 결제일여부 (Y/N)
+
+    def to_domain(self) -> TradingDayRecord:
+        return TradingDayRecord(
+            date=_to_date(self.bass_dt),
+            wday_dvsn_cd=self.wday_dvsn_cd or None,
+            is_business_day=self.bzdy_yn == "Y",
+            is_trade_day=self.tr_day_yn == "Y",
+            is_open=self.opnd_yn == "Y",
+            is_settlement_day=self.sttl_day_yn == "Y",
+        )
+
+
 # ── 주문 응답 (TTTC0012U / TTTC0011U output) ────────────────────────
 
 
@@ -765,6 +796,7 @@ __all__ = [
     "KISMarketInvestorFlowOutput",
     "KISShortSaleOutput",
     "KISLoanTransOutput",
+    "KISHolidayOutput",
     "KISOrderOutput",
     "KISOrderCcldOutput",
     "KISBalanceOutput1",

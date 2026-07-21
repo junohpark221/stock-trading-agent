@@ -374,7 +374,7 @@ async def account_manual_order(
             f"{redirect_base}?order_error={quote(msg)}", status_code=303,
         )
 
-    symbol = str(form.get("symbol", "")).strip()
+    symbol = str(form.get("symbol", "")).strip().upper()
     side_raw = str(form.get("side", "")).strip().lower()
     qty_raw = str(form.get("quantity", "")).strip()
     price_raw = str(form.get("price", "")).strip()

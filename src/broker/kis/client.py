@@ -97,7 +97,8 @@ _MST_IDXCODE_URL = "https://new.real.download.dws.co.kr/common/master/idxcode.ms
 _SECTOR_MID_OFFSET = 7
 _SECTOR_MID_LEN = 4
 
-_CODE_PATTERN = re.compile(r"^\d{6}$")
+# KRX 단축코드 6자 — 신형 영숫자 코드(예: 0001A0) 포함, ETN(7자리)은 제외 (F-22)
+_CODE_PATTERN = re.compile(r"^[0-9A-Z]{6}$")
 
 # Pagination safety limits
 _MAX_OHLCV_PAGES = 20
@@ -912,7 +913,7 @@ class KISClient(BrokerInterface):
                             continue
                         short_code = part1[:9].strip()
                         korean_name = part1[21:].strip()
-                        # Only keep 6-digit numeric codes
+                        # Only keep 6-char alphanumeric short codes
                         if not _CODE_PATTERN.match(short_code):
                             continue
                         # part2: 고정폭 구간 — 지수업종중분류 코드 → 업종명 해석

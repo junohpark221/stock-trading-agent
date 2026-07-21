@@ -298,6 +298,11 @@ class TestParseOrderArgs:
         got = _parse_order_args("005930 10 long term acct")
         assert got == ("005930", 10, None, "long term acct")
 
+    def test_lowercase_symbol_uppercased(self):
+        """F-22: 소문자 영숫자 심볼은 대문자로 정규화된다."""
+        got = _parse_order_args("0001a0 10")
+        assert got == ("0001A0", 10, None, "")
+
     def test_missing_qty(self):
         assert _parse_order_args("005930") is None
 

@@ -859,6 +859,56 @@ class TestManualOrderHandler:
         assert kwargs["trade_decision"].order_type == OrderType.MARKET
 
     @pytest.mark.asyncio
+    async def test_lowercase_symbol_uppercased(self, mock_session):
+        """F-22: 소문자 영숫자 심볼 입력이 대문자로 정규화되어 전달된다."""
+        from decimal import Decimal
+
+        from src.core.enums import (
+            ApprovalStatus,
+            OrderSide,
+            WebVerifyResult,
+        )
+        from src.core.models import ExecutionResult
+
+        mock_session.get.return_value = _mock_account()
+
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(
+            return_value=MagicMock(current_price=Decimal("70000")),
+        )
+        broker.disconnect = AsyncMock()
+
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock(return_value=ExecutionResult(
+            success=True, order_id=52, broker_order_id="KIS52", symbol="0001A0",
+            side=OrderSide.BUY, quantity=10, fill_price=Decimal("70000"),
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            web_verify_result=WebVerifyResult.SAFE,
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "0001a0",
+                        "quantity": "10",
+                        "order_type": "market",
+                        "side": "buy",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        kwargs = executor.execute_entry.await_args.kwargs
+        assert kwargs["trade_decision"].symbol == "0001A0"
+
+    @pytest.mark.asyncio
     async def test_default_order_type_is_limit(self, mock_session):
         """B-08: order_type 미지정 → 기존대로 LIMIT."""
         from decimal import Decimal

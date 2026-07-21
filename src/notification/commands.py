@@ -542,7 +542,7 @@ def _parse_order_args(args: str) -> tuple[str, int, "Decimal | None", str] | Non
     if len(parts) < 2:
         return None
 
-    symbol = parts[0].strip()
+    symbol = parts[0].strip().upper()
     if not symbol:
         return None
 

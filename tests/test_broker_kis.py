@@ -1379,6 +1379,43 @@ class TestKISClientParseMst:
         assert result[0].symbol == "005930"
 
     @pytest.mark.asyncio
+    async def test_keeps_alphanumeric_new_style_code(self):
+        """F-22: KRX 신형 영숫자 단축코드(예: 0001A0)를 유지한다."""
+        client = _make_kis_client()
+        part2_len = 228
+        line1 = "0001A0   " + "KR70001A0009" + "신형코드종목" + "X" * part2_len
+        line2 = "005930   " + "KR7005930003" + "삼성전자" + "X" * part2_len
+
+        zip_bytes = _build_mst_zip([line1, line2])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, part2_len)
+        assert [s.symbol for s in result] == ["0001A0", "005930"]
+        assert result[0].name == "신형코드종목"
+
+    @pytest.mark.asyncio
+    async def test_still_drops_non_6char_and_lowercase(self):
+        """F-22: 완화 후에도 7자리(ETN)·5자리·소문자 포함 코드는 드랍된다."""
+        client = _make_kis_client()
+        part2_len = 228
+        etn_7digit = "5800115  " + "KR7580011506" + "ETN상품" + "X" * part2_len
+        five_char = "12345    " + "KR7123450001" + "다섯자리" + "X" * part2_len
+        lowercase = "0001a0   " + "KR70001A0009" + "소문자코드" + "X" * part2_len
+        valid = "0001A0   " + "KR70001A0009" + "신형코드종목" + "X" * part2_len
+
+        zip_bytes = _build_mst_zip([etn_7digit, five_char, lowercase, valid])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, part2_len)
+        assert [s.symbol for s in result] == ["0001A0"]
+
+    @pytest.mark.asyncio
     async def test_short_lines_skipped(self):
         client = _make_kis_client()
         part2_len = 228

@@ -49,6 +49,11 @@ class CollectionSummary:
     total_rows: int = 0
     failed_symbols: list[str] = field(default_factory=list)
 
+    # PRJ-03 단계 5 크로스체크 집계(수급 수집 전용 — 그 외 수집은 항상 0).
+    revision_rows: int = 0
+    cross_source_rows: int = 0
+    mismatched_cells: int = 0
+
 
 # 기존 코드 하위호환 (tests/test_data_provider.py:19에서 import)
 OHLCVCollectionSummary = CollectionSummary
@@ -126,14 +131,17 @@ async def collect_investor_flow(
 
     for symbol in symbols:
         try:
-            rows = await provider.sync_investor_flow(symbol)
+            res = await provider.sync_investor_flow(symbol)
             summary.succeeded += 1
-            summary.total_rows += rows
+            summary.total_rows += res.upserted
+            summary.revision_rows += res.revision_rows
+            summary.cross_source_rows += res.cross_source_rows
+            summary.mismatched_cells += res.mismatched_cells
             logger.debug(
                 "collect_investor_flow_symbol_done",
                 provider=provider.provider_name,
                 symbol=symbol,
-                rows=rows,
+                rows=res.upserted,
             )
         except Exception:
             summary.failed += 1
@@ -152,6 +160,9 @@ async def collect_investor_flow(
         succeeded=summary.succeeded,
         failed=summary.failed,
         total_rows=summary.total_rows,
+        revision_rows=summary.revision_rows,
+        cross_source_rows=summary.cross_source_rows,
+        mismatched_cells=summary.mismatched_cells,
     )
     return summary
 
@@ -168,14 +179,17 @@ async def collect_market_investor_flow(
 
     for market in markets:
         try:
-            rows = await provider.sync_market_investor_flow(market)
+            res = await provider.sync_market_investor_flow(market)
             summary.succeeded += 1
-            summary.total_rows += rows
+            summary.total_rows += res.upserted
+            summary.revision_rows += res.revision_rows
+            summary.cross_source_rows += res.cross_source_rows
+            summary.mismatched_cells += res.mismatched_cells
             logger.debug(
                 "collect_market_investor_flow_market_done",
                 provider=provider.provider_name,
                 market=market,
-                rows=rows,
+                rows=res.upserted,
             )
         except Exception:
             summary.failed += 1
@@ -193,6 +207,9 @@ async def collect_market_investor_flow(
         succeeded=summary.succeeded,
         failed=summary.failed,
         total_rows=summary.total_rows,
+        revision_rows=summary.revision_rows,
+        cross_source_rows=summary.cross_source_rows,
+        mismatched_cells=summary.mismatched_cells,
     )
     return summary
 

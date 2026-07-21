@@ -913,6 +913,8 @@ class SchedulerFactory:
                     symbols=watchlist_symbols,
                     holidays=s.KR_HOLIDAYS,
                     session_factory=session_factory,
+                    telegram_bot=telegram_bot,
+                    revision_alert_threshold=s.INVESTOR_FLOW_REVISION_ALERT_THRESHOLD,
                 ),
                 CronTrigger(
                     day_of_week="mon-fri", hour=if_h, minute=if_m,

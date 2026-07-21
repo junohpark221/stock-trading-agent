@@ -69,6 +69,56 @@ class TestJobInvestorFlowCollect:
         flow_mock.assert_awaited_once_with(provider, ["005930", "000660"])
 
 
+class TestJobInvestorFlowRevisionAlert:
+    """단계 5: 리비전 감지 텔레그램 경보 — 임계 이상 발송 / 미만·비활성 미발송."""
+
+    async def _run(self, *, flagged: int, threshold: int, telegram_bot):
+        with (
+            patch(
+                "src.scheduler.jobs.collect_market_investor_flow",
+                new_callable=AsyncMock,
+                return_value=_summary(revision_rows=0, cross_source_rows=0),
+            ),
+            patch(
+                "src.scheduler.jobs.collect_investor_flow",
+                new_callable=AsyncMock,
+                return_value=_summary(
+                    revision_rows=flagged, cross_source_rows=0, mismatched_cells=flagged
+                ),
+            ),
+        ):
+            await job_investor_flow_collect(
+                provider=AsyncMock(),
+                symbols=["005930"],
+                holidays="",
+                telegram_bot=telegram_bot,
+                revision_alert_threshold=threshold,
+            )
+
+    @pytest.mark.asyncio
+    async def test_alert_sent_at_threshold(self):
+        bot = AsyncMock()
+        await self._run(flagged=10, threshold=10, telegram_bot=bot)
+        bot.send_message.assert_awaited_once()
+        assert "수급 데이터 리비전 감지" in bot.send_message.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_no_alert_below_threshold(self):
+        bot = AsyncMock()
+        await self._run(flagged=9, threshold=10, telegram_bot=bot)
+        bot.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_threshold_zero_disables_alert(self):
+        bot = AsyncMock()
+        await self._run(flagged=100, threshold=0, telegram_bot=bot)
+        bot.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_bot_no_crash(self):
+        await self._run(flagged=100, threshold=10, telegram_bot=None)
+
+
 class TestJobShortInterestCollect:
     @pytest.mark.asyncio
     async def test_holiday_skips_collector(self):

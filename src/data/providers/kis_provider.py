@@ -28,6 +28,14 @@ from src.core.models import (
     StockInfo,
     TradingDayRecord,
 )
+from src.core.time import today_kst
+from src.data.flow_crosscheck import (
+    REVISION_FIELDS_MARKET,
+    REVISION_FIELDS_SYMBOL,
+    CrosscheckStats,
+    FlowSyncResult,
+    crosscheck_rows,
+)
 from src.data.providers.base import DataProvider
 from src.db.models.calendar import TradingCalendarDay
 from src.db.models.investor_flow import (
@@ -67,6 +75,33 @@ _SHORT_SALE_UPDATE_COLS = tuple(
 _LOAN_UPDATE_COLS = tuple(
     k for k in LoanTransRecord.model_fields if k not in ("symbol", "date")
 )
+
+# PRJ-03 단계 5 리비전 감지 — 로그 홍수 방지 캡(카운트는 stats에 정확 유지).
+_CROSSCHECK_LOG_MAX_ROWS = 5  # 콜당 kis_flow_revision 상세 라인 수
+_CROSSCHECK_LOG_MAX_FIELDS = 5  # 라인당 changes 필드 수
+
+
+def _group_diffs(stats: "CrosscheckStats") -> list[dict]:
+    """FieldDiff 목록을 행(key,day,kind) 단위 로그 페이로드로 묶는다."""
+    grouped: dict[tuple, dict] = {}
+    for d in stats.diffs:
+        entry = grouped.setdefault(
+            (d.key, d.day, d.kind),
+            {
+                "key": d.key,
+                "date": d.day.isoformat(),
+                "kind": d.kind,
+                "source_before": d.source_before,
+                "changed_fields": 0,
+                "changes": [],
+            },
+        )
+        entry["changed_fields"] += 1
+        if len(entry["changes"]) < _CROSSCHECK_LOG_MAX_FIELDS:
+            entry["changes"].append(
+                {"field": d.field, "old": str(d.old), "new": str(d.new)}
+            )
+    return list(grouped.values())
 
 _MASTER_CACHE_NS = "kis:master"
 _OHLCV_CACHE_NS = "kis:ohlcv"
@@ -304,27 +339,95 @@ class KISDataProvider(DataProvider):
             raise DatabaseError(f"{err_label} DB error: {exc}") from exc
         return total_upserted
 
-    async def sync_investor_flow(self, symbol: str) -> int:
+    async def _crosscheck_existing(
+        self,
+        *,
+        model: type,
+        key_col: str,
+        key_value: str,
+        rows: list[dict],
+        table: str,
+        fields: tuple[str, ...],
+    ) -> CrosscheckStats | None:
+        """PRJ-03 단계 5: upsert 직전 기존 행과 diff(리비전·경계 크로스체크).
+
+        오늘 미만 날짜만 비교(당일 행 최초 적재는 리비전 아님). 어떤 실패도
+        수집을 막지 않는다 — 예외는 경고 로그 후 None.
+        """
+        try:
+            today = today_kst()
+            dates = [row["date"] for row in rows if row["date"] < today]
+            if not dates:
+                return CrosscheckStats()
+            key_attr = getattr(model, key_col)
+            stmt = select(
+                model.date,
+                model.source,
+                *[getattr(model, f) for f in fields],
+            ).where(key_attr == key_value, model.date.in_(dates))
+            async with self._session_factory() as session:
+                result = await session.execute(stmt)
+                existing_by_date = {row["date"]: row for row in result.mappings()}
+
+            stats = crosscheck_rows(
+                existing_by_date,
+                rows,
+                key_value=key_value,
+                table=table,  # type: ignore[arg-type]
+                incoming_source=_FLOW_SOURCE,
+                before=today,
+            )
+        except Exception as exc:
+            logger.warning(
+                "kis_flow_crosscheck_failed", table=table, key=key_value, error=str(exc)
+            )
+            return None
+
+        for diff_group in _group_diffs(stats)[:_CROSSCHECK_LOG_MAX_ROWS]:
+            logger.warning("kis_flow_revision", table=table, **diff_group)
+        if stats.mismatched_cells:
+            logger.info(
+                "kis_flow_crosscheck_summary",
+                table=table,
+                key=key_value,
+                compared_rows=stats.compared_rows,
+                revision_rows=stats.revision_rows,
+                cross_source_rows=stats.cross_source_rows,
+                mismatched_cells=stats.mismatched_cells,
+            )
+        return stats
+
+    async def sync_investor_flow(self, symbol: str) -> FlowSyncResult:
         """종목 수급 단발 조회(최근 ~30거래일) → ``investor_flow_daily`` upsert.
 
         30행 전체를 upsert하므로 최근 한 달 내 결손일이 다음 실행에서 자동 복구된다.
+        upsert 직전 기존 행과 diff(단계 5 리비전 감지 — ④ 새벽 보정 상시 감시).
         """
         records = await self._client.get_investor_flow(symbol)
         if not records:
             logger.warning("kis_sync_investor_flow_empty", symbol=symbol)
-            return 0
+            return FlowSyncResult(0)
 
+        rows = [r.model_dump() for r in records]
+        stats = await self._crosscheck_existing(
+            model=InvestorFlowDaily,
+            key_col="symbol",
+            key_value=symbol,
+            rows=rows,
+            table="flow",
+            fields=REVISION_FIELDS_SYMBOL,
+        )
         upserted = await self._upsert_flow_rows(
             model=InvestorFlowDaily,
             constraint="uq_investor_flow_daily_symbol_date",
-            rows=[r.model_dump() for r in records],
+            rows=rows,
             update_cols=_FLOW_UPDATE_COLS,
             err_label=f"sync_investor_flow ({symbol})",
         )
         logger.info("kis_sync_investor_flow_done", symbol=symbol, upserted=upserted)
-        return upserted
+        return FlowSyncResult(upserted, stats)
 
-    async def sync_market_investor_flow(self, market: str) -> int:
+    async def sync_market_investor_flow(self, market: str) -> FlowSyncResult:
         """시장 단위 수급 단발 조회(~300행) → ``market_investor_flow_daily`` upsert.
 
         pykrx 전용 컬럼(index_volume/trading_value/market_cap)은 레코드에 없어
@@ -333,23 +436,32 @@ class KISDataProvider(DataProvider):
         records = await self._client.get_market_investor_flow(market)
         if not records:
             logger.warning("kis_sync_market_investor_flow_empty", market=market)
-            return 0
+            return FlowSyncResult(0)
 
         # 클라이언트에 dedupe 없음 — 동일 (market,date) 2행이면 pg가
         # "cannot affect row a second time" 에러를 내므로 날짜 기준 후승 dedupe.
         deduped = list({r.date: r for r in records}.values())
 
+        rows = [r.model_dump() for r in deduped]
+        stats = await self._crosscheck_existing(
+            model=MarketInvestorFlowDaily,
+            key_col="market",
+            key_value=market,
+            rows=rows,
+            table="market_flow",
+            fields=REVISION_FIELDS_MARKET,
+        )
         upserted = await self._upsert_flow_rows(
             model=MarketInvestorFlowDaily,
             constraint="uq_market_investor_flow_daily_market_date",
-            rows=[r.model_dump() for r in deduped],
+            rows=rows,
             update_cols=_MARKET_FLOW_UPDATE_COLS,
             err_label=f"sync_market_investor_flow ({market})",
         )
         logger.info(
             "kis_sync_market_investor_flow_done", market=market, upserted=upserted
         )
-        return upserted
+        return FlowSyncResult(upserted, stats)
 
     async def sync_short_sale(
         self, symbol: str, *, start_date: date, end_date: date

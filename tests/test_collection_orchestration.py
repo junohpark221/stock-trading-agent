@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.core.enums import ReportType
+from src.data.flow_crosscheck import CrosscheckStats, FlowSyncResult
 from src.data.collector import (
     CollectionSummary,
     OHLCVCollectionSummary,
@@ -218,7 +219,7 @@ class TestCollectInvestorFlow:
     def provider(self):
         p = AsyncMock()
         p.provider_name = "kis"
-        p.sync_investor_flow = AsyncMock(return_value=30)
+        p.sync_investor_flow = AsyncMock(return_value=FlowSyncResult(30))
         return p
 
     @pytest.mark.asyncio()
@@ -232,13 +233,19 @@ class TestCollectInvestorFlow:
         assert summary.succeeded == 3
         assert summary.failed == 0
         assert summary.total_rows == 90
+        assert summary.revision_rows == 0
+        assert summary.cross_source_rows == 0
 
     @pytest.mark.asyncio()
     async def test_middle_failure_isolated(self, provider):
         from src.data.collector import collect_investor_flow
 
         provider.sync_investor_flow = AsyncMock(
-            side_effect=[30, RuntimeError("kis down"), 30]
+            side_effect=[
+                FlowSyncResult(30),
+                RuntimeError("kis down"),
+                FlowSyncResult(30),
+            ]
         )
         with patch("src.data.collector._FLOW_CALL_PACE_SEC", 0):
             summary = await collect_investor_flow(provider, ["A", "B", "C"])
@@ -248,6 +255,28 @@ class TestCollectInvestorFlow:
         assert summary.failed_symbols == ["B"]
         assert summary.total_rows == 60
 
+    @pytest.mark.asyncio()
+    async def test_crosscheck_stats_aggregated(self, provider):
+        """단계 5: sync별 리비전/경계 카운트가 summary로 합산된다."""
+        from src.data.collector import collect_investor_flow
+
+        s1 = CrosscheckStats(
+            compared_rows=29, revision_rows=1, mismatched_cells=2
+        )
+        s2 = CrosscheckStats(
+            compared_rows=29, cross_source_rows=3, mismatched_cells=5
+        )
+        provider.sync_investor_flow = AsyncMock(
+            side_effect=[FlowSyncResult(30, s1), FlowSyncResult(30, s2)]
+        )
+        with patch("src.data.collector._FLOW_CALL_PACE_SEC", 0):
+            summary = await collect_investor_flow(provider, ["A", "B"])
+
+        assert summary.total_rows == 60
+        assert summary.revision_rows == 1
+        assert summary.cross_source_rows == 3
+        assert summary.mismatched_cells == 7
+
 
 class TestCollectMarketInvestorFlow:
     @pytest.mark.asyncio()
@@ -256,7 +285,9 @@ class TestCollectMarketInvestorFlow:
 
         provider = AsyncMock()
         provider.provider_name = "kis"
-        provider.sync_market_investor_flow = AsyncMock(return_value=300)
+        provider.sync_market_investor_flow = AsyncMock(
+            return_value=FlowSyncResult(300)
+        )
 
         summary = await collect_market_investor_flow(provider)
 
@@ -273,7 +304,7 @@ class TestCollectMarketInvestorFlow:
         provider = AsyncMock()
         provider.provider_name = "kis"
         provider.sync_market_investor_flow = AsyncMock(
-            side_effect=[300, RuntimeError("fail")]
+            side_effect=[FlowSyncResult(300), RuntimeError("fail")]
         )
 
         summary = await collect_market_investor_flow(provider)

@@ -176,6 +176,9 @@ class Settings(BaseSettings):
     INVESTOR_FLOW_COLLECTION_ENABLED: bool = True
     INVESTOR_FLOW_COLLECTION_TIME: str = "19:00"
     INVESTOR_FLOW_SHORT_INTEREST_TIME: str = "21:00"
+    # 단계 5 리비전 감지 텔레그램 경보 임계(감지·로깅은 상시, 0 이하 = 경보만 끔).
+    # 평시 ④ 새벽 보정은 0~수 건 — 임계 초과는 대량 재정정·유니버스 유입 신호.
+    INVESTOR_FLOW_REVISION_ALERT_THRESHOLD: int = 10
 
     # 배치 재구성(2026-06-29): "분석=발주" 결합을 끊어 (개장 전 준비 게이트 →
     # 개장 전 결정 → 개장 후 실행)의 3단계 파이프라인으로 분리. 모두 KST.

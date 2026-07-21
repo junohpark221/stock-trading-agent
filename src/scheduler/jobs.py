@@ -181,12 +181,18 @@ async def job_investor_flow_collect(
     symbols: list[str],
     holidays: str = "",
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    telegram_bot: TelegramBot | None = None,
+    revision_alert_threshold: int = 10,
 ) -> None:
     """PRJ-03: 종목·시장 수급 수집. 19:00 KST 평일 (KIS 확정치 17:56~18:11 이후).
 
     시장 단위(2콜)를 먼저 실행해 KIS 장애 시 조기에 드러나게 하고,
     이어서 전 종목(~2,600콜)을 순회한다. 20:00 데일리 리포트 전 완료 설계.
     휴장일 스킵은 DB 캘린더 우선(F-23), 미주입 시 KR_HOLIDAYS 폴백.
+
+    단계 5: sync 경로가 upsert 전 기존 행과 diff한 리비전(동일 소스 값 변경 —
+    ④ 새벽 보정 감시)·경계 전환(krx→kis) 카운트를 집계하고, 합이 임계 이상이면
+    텔레그램 경보 1건을 보낸다(0 이하 = 경보 비활성, 감지·로깅은 상시).
     """
     today = datetime.now(_KST).date()
     cal = (
@@ -204,6 +210,9 @@ async def job_investor_flow_collect(
 
     market_summary = await collect_market_investor_flow(provider)
     summary = await collect_investor_flow(provider, symbols)
+    revision_rows = summary.revision_rows + market_summary.revision_rows
+    cross_source_rows = summary.cross_source_rows + market_summary.cross_source_rows
+    mismatched_cells = summary.mismatched_cells + market_summary.mismatched_cells
     logger.info(
         "job.investor_flow_collect.done",
         total=summary.total_symbols,
@@ -213,7 +222,23 @@ async def job_investor_flow_collect(
         market_succeeded=market_summary.succeeded,
         market_failed=market_summary.failed,
         market_rows=market_summary.total_rows,
+        revision_rows=revision_rows,
+        cross_source_rows=cross_source_rows,
+        mismatched_cells=mismatched_cells,
     )
+
+    total_flagged = revision_rows + cross_source_rows
+    if (
+        telegram_bot is not None
+        and revision_alert_threshold > 0
+        and total_flagged >= revision_alert_threshold
+    ):
+        await telegram_bot.send_message(
+            f"⚠️ <b>수급 데이터 리비전 감지</b> — 어제 이전 행 {total_flagged}건 "
+            f"변경 (kis 재수정 {revision_rows}건 / krx→kis 경계 전환 "
+            f"{cross_source_rows}건, 임계 {revision_alert_threshold}). "
+            f"로그 이벤트 <code>kis_flow_revision</code> 확인."
+        )
 
 
 async def job_short_interest_collect(

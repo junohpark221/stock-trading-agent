@@ -824,7 +824,9 @@ class TestSyncInvestorFlow:
         sf, _ = _mock_session_factory()
         p = _make_provider(client=client, session_factory=sf)
 
-        assert await p.sync_investor_flow("005930") == 0
+        result = await p.sync_investor_flow("005930")
+        assert result.upserted == 0
+        assert result.stats is None
         assert not sf.called
 
     @pytest.mark.asyncio
@@ -839,7 +841,7 @@ class TestSyncInvestorFlow:
         p = _make_provider(client=client, session_factory=sf)
 
         result = await p.sync_investor_flow("005930")
-        assert result == 2
+        assert result.upserted == 2
         session.commit.assert_awaited_once()
 
         sql, params = _compiled_sql(session)
@@ -859,6 +861,52 @@ class TestSyncInvestorFlow:
         with pytest.raises(DatabaseError):
             await p.sync_investor_flow("005930")
 
+    @pytest.mark.asyncio
+    async def test_revision_detected_before_upsert(self):
+        """단계 5: 동일 소스(kis) 기존 행과 값이 다르면 revision으로 집계."""
+        client = AsyncMock(spec=KISClient)
+        client.get_investor_flow = AsyncMock(return_value=[_flow_record()])
+        sf, session = _mock_session_factory()
+        select_result = MagicMock()
+        select_result.mappings.return_value = [
+            {
+                "date": date(2026, 7, 15),
+                "source": "kis",
+                "frgn_net_qty": 999,  # 수신값 1000과 불일치
+                "frgn_net_amt": Decimal("72500000"),
+            }
+        ]
+        session.execute = AsyncMock(
+            side_effect=[select_result, _make_db_result(rowcount=1)]
+        )
+        session.commit = AsyncMock()
+        p = _make_provider(client=client, session_factory=sf)
+
+        result = await p.sync_investor_flow("005930")
+        assert result.upserted == 1
+        assert result.stats is not None
+        assert result.revision_rows == 1
+        assert result.cross_source_rows == 0
+        assert result.stats.diffs[0].field == "frgn_net_qty"
+        session.commit.assert_awaited_once()  # upsert 정상 진행
+
+    @pytest.mark.asyncio
+    async def test_crosscheck_failure_never_blocks_upsert(self):
+        """단계 5: 크로스체크 SELECT 실패는 흡수(stats=None), upsert는 계속."""
+        client = AsyncMock(spec=KISClient)
+        client.get_investor_flow = AsyncMock(return_value=[_flow_record()])
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(
+            side_effect=[Exception("select boom"), _make_db_result(rowcount=1)]
+        )
+        session.commit = AsyncMock()
+        p = _make_provider(client=client, session_factory=sf)
+
+        result = await p.sync_investor_flow("005930")
+        assert result.upserted == 1
+        assert result.stats is None
+        assert result.revision_rows == 0
+
 
 class TestSyncMarketInvestorFlow:
     @pytest.mark.asyncio
@@ -870,7 +918,7 @@ class TestSyncMarketInvestorFlow:
         session.commit = AsyncMock()
         p = _make_provider(client=client, session_factory=sf)
 
-        assert await p.sync_market_investor_flow("kospi") == 1
+        assert (await p.sync_market_investor_flow("kospi")).upserted == 1
 
         sql, _ = _compiled_sql(session)
         assert "INSERT INTO market_investor_flow_daily" in sql
@@ -911,7 +959,8 @@ class TestSyncMarketInvestorFlow:
         sf, _ = _mock_session_factory()
         p = _make_provider(client=client, session_factory=sf)
 
-        assert await p.sync_market_investor_flow("kosdaq") == 0
+        result = await p.sync_market_investor_flow("kosdaq")
+        assert result.upserted == 0
         assert not sf.called
 
 

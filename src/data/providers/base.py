@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.core.models import OHLCV, StockInfo
+    from src.data.flow_crosscheck import FlowSyncResult
 
 
 class DataProvider(ABC):
@@ -75,14 +76,20 @@ class DataProvider(ABC):
 
     # ── PRJ-03: investor flow (수급) sync methods ──────────────────────
 
-    async def sync_investor_flow(self, symbol: str) -> int:
-        """Fetch per-symbol investor flow and upsert to DB. Returns row count."""
+    async def sync_investor_flow(self, symbol: str) -> FlowSyncResult:
+        """Fetch per-symbol investor flow and upsert to DB.
+
+        Returns upserted row count + pre-upsert crosscheck stats (PRJ-03 단계 5).
+        """
         raise NotImplementedError(
             f"{self.provider_name} does not support sync_investor_flow"
         )
 
-    async def sync_market_investor_flow(self, market: str) -> int:
-        """Fetch market-level investor flow and upsert to DB. Returns row count."""
+    async def sync_market_investor_flow(self, market: str) -> FlowSyncResult:
+        """Fetch market-level investor flow and upsert to DB.
+
+        Returns upserted row count + pre-upsert crosscheck stats (PRJ-03 단계 5).
+        """
         raise NotImplementedError(
             f"{self.provider_name} does not support sync_market_investor_flow"
         )

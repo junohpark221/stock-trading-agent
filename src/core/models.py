@@ -550,6 +550,83 @@ class PatternSignal(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# PRJ-03: Investor flow (수급) 지표 결과 모델
+#
+# src/analysis/investor_flow.py 순수 함수의 반환 형태 (DB 미저장,
+# on-the-fly 계산 — TechnicalIndicators 전례). 라이브(에이전트 도구)·
+# 백테스트가 동일 모델을 공유하고, ``model_dump(mode="json")``으로
+# json.dumps 안전(프롬프트 주입 인터페이스).
+# ---------------------------------------------------------------------------
+
+
+class FlowWindowStat(BaseModel):
+    """단일 윈도(N일) 수급 통계.
+
+    누적치는 윈도 내 non-None 일만 합산 — 결측 정도는 ``days_covered``로
+    판독한다(krx 백필 축·수집 갭 대응, 결측이 예외를 내지 않음).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    window: int
+    days_in_window: int
+    days_covered: int
+    net_amt: Decimal | None = None
+    net_qty: int | None = None
+    intensity: Decimal | None = None
+
+
+class FlowAxisSummary(BaseModel):
+    """투자자 주체 1축 수급 요약.
+
+    ``caveat``는 신호 해석 주의 문구 — 금융투자(scrt)의 ETF LP 오염
+    표기 전용(그 외 축은 None).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    axis: str
+    label: str
+    caveat: str | None = None
+    streak: int = 0
+    windows: list[FlowWindowStat] = Field(default_factory=list)
+
+
+class InvestorFlowSummary(BaseModel):
+    """종목 단위 수급 요약 (DB 미저장, on-the-fly 계산).
+
+    compute_flow_summary() 반환 — thesis_monitor·stock_analyst
+    프롬프트 주입(_prepare_data)용 요약 통계.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    as_of: date | None = None
+    days_available: int = 0
+    axes: list[FlowAxisSummary] = Field(default_factory=list)
+
+
+class MarketFlowSummary(BaseModel):
+    """시장(kospi/kosdaq) 단위 수급 요약 + 지수 컨텍스트.
+
+    compute_market_flow_summary() 반환 — market_analyst 프롬프트 주입용.
+    ``index_window_returns``는 {윈도: 수익률%(소수 2자리)} — 수급 누적과
+    같은 창의 지수 방향을 함께 제공해 LLM이 수급·가격 배경을 대조하게 한다.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    market: str
+    as_of: date | None = None
+    days_available: int = 0
+    index_close: Decimal | None = None
+    index_change_rate: Decimal | None = None
+    index_window_returns: dict[int, Decimal | None] = Field(default_factory=dict)
+    axes: list[FlowAxisSummary] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: LLM Agent models
 # ---------------------------------------------------------------------------
 

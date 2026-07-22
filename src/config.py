@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     KIS_IS_PAPER: bool = True
     KIS_HTS_ID: str = ""
     KIS_BASE_URL: str = ""                 # 빈 값이면 KIS_IS_PAPER로 자동 결정
+    # F-23: 캘린더 동기화 전용 실전 앱키 — 휴장일 TR(CTCA0903R)이 모의(vts)
+    # 도메인 미지원(OPSQ0002 실측 2026-07-22)이라 실전 도메인으로만 호출 가능.
+    # 미설정 시 calendar_sync는 조용히 스킵(KR_HOLIDAYS 폴백 판정 유지).
+    # 조회 전용 용도 — 주문·계좌 TR에는 사용하지 않는다.
+    KIS_PROD_APP_KEY: str = ""
+    KIS_PROD_APP_SECRET: str = ""
     KIS_RATE_LIMIT_INTERVAL: float = 0.5   # paper=0.5s, prod=0.05s
     # 원장(잔고·실현손익 등) TR 전용 최소 간격. 원장 초당한도(EGW00215)는 게이트웨이
     # 한도보다 빡빡하나 KIS 공식 수치 미공개 → 보수적 5건/초(0.2s prod), 실측 후 튜닝. (F-20)

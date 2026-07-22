@@ -391,3 +391,102 @@ class TestJobCalendarSync:
             await job_calendar_sync(
                 provider=provider, session_factory=factory, settings=self._settings()
             )
+
+
+# ── _job_calendar_sync_prod (F-23 실전 도메인 래퍼) ──────────────────
+
+
+class TestJobCalendarSyncProd:
+    """CTCA0903R 모의 미지원 대응 — 실전 앱키 1회용 클라이언트 래퍼."""
+
+    def _settings(self, key: str = "PRODKEY", secret: str = "PRODSECRET"):
+        s = MagicMock()
+        s.KIS_PROD_APP_KEY = key
+        s.KIS_PROD_APP_SECRET = secret
+        s.CALENDAR_FORWARD_HORIZON_DAYS = 30
+        return s
+
+    @pytest.mark.asyncio
+    async def test_skip_without_prod_keys(self, monkeypatch):
+        from src.scheduler.factory import SchedulerFactory
+
+        from_credentials = MagicMock()
+        monkeypatch.setattr(
+            "src.broker.kis.client.KISClient.from_credentials", from_credentials
+        )
+        await SchedulerFactory._job_calendar_sync_prod(
+            settings=self._settings(key="", secret=""),
+            cache=MagicMock(),
+            session_factory=MagicMock(),
+        )
+        from_credentials.assert_not_called()  # 스킵 — 클라이언트 미생성·무예외
+
+    @pytest.mark.asyncio
+    async def test_skip_without_cache(self, monkeypatch):
+        from src.scheduler.factory import SchedulerFactory
+
+        from_credentials = MagicMock()
+        monkeypatch.setattr(
+            "src.broker.kis.client.KISClient.from_credentials", from_credentials
+        )
+        await SchedulerFactory._job_calendar_sync_prod(
+            settings=self._settings(), cache=None, session_factory=MagicMock()
+        )
+        from_credentials.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runs_sync_with_prod_credentials(self, monkeypatch):
+        import src.scheduler.factory as factory_mod
+        from src.scheduler.factory import SchedulerFactory
+
+        client = MagicMock()
+        client.connect = AsyncMock()
+        client.disconnect = AsyncMock()
+        from_credentials = MagicMock(return_value=client)
+        monkeypatch.setattr(
+            "src.broker.kis.client.KISClient.from_credentials", from_credentials
+        )
+        provider_cls = MagicMock()
+        monkeypatch.setattr(
+            "src.data.providers.kis_provider.KISDataProvider", provider_cls
+        )
+        job = AsyncMock()
+        monkeypatch.setattr(factory_mod, "job_calendar_sync", job)
+
+        await SchedulerFactory._job_calendar_sync_prod(
+            settings=self._settings(), cache=MagicMock(), session_factory=MagicMock()
+        )
+
+        creds = from_credentials.call_args.args[0]
+        assert creds.account_id == "calendar-prod"  # 토큰 캐시 키 분리
+        assert creds.is_paper is False  # 실전 도메인 자동 결정
+        assert creds.app_key == "PRODKEY"
+        client.connect.assert_awaited_once()
+        job.assert_awaited_once()
+        client.disconnect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_on_sync_failure(self, monkeypatch):
+        import src.scheduler.factory as factory_mod
+        from src.scheduler.factory import SchedulerFactory
+
+        client = MagicMock()
+        client.connect = AsyncMock()
+        client.disconnect = AsyncMock()
+        monkeypatch.setattr(
+            "src.broker.kis.client.KISClient.from_credentials",
+            MagicMock(return_value=client),
+        )
+        monkeypatch.setattr(
+            "src.data.providers.kis_provider.KISDataProvider", MagicMock()
+        )
+        job = AsyncMock(side_effect=RuntimeError("KIS down"))
+        monkeypatch.setattr(factory_mod, "job_calendar_sync", job)
+
+        with pytest.raises(RuntimeError):  # 실패는 엔진 알림으로 전파
+            await SchedulerFactory._job_calendar_sync_prod(
+                settings=self._settings(),
+                cache=MagicMock(),
+                session_factory=MagicMock(),
+            )
+        client.disconnect.assert_awaited_once()  # 세션 누수 없음

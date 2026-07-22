@@ -431,7 +431,8 @@ class SchedulerFactory:
         # ── 4-1b. F-23 거래 캘린더 부트스트랩 — 오늘 행이 없을 때만 ────
         # (재기동 반복 시 KIS "1일 1회" 제약 존중 — 오늘 행이 있으면 07:30
         # calendar_sync 잡에 맡긴다. 실패해도 비치명 — KR_HOLIDAYS 폴백.)
-        if provider is not None:
+        # CTCA0903R은 실전 도메인 전용(OPSQ0002 실측 07-22) — 실전 앱키 필요.
+        if settings.KIS_PROD_APP_KEY and settings.KIS_PROD_APP_SECRET:
             try:
                 from src.core.time import today_kst
                 from src.db.models.calendar import TradingCalendarDay
@@ -443,16 +444,20 @@ class SchedulerFactory:
                         )
                     )
                 if has_today is None:
-                    from src.scheduler.jobs import job_calendar_sync as _cal_sync
-
-                    await _cal_sync(
-                        provider=provider,
-                        session_factory=session_factory,
+                    await SchedulerFactory._job_calendar_sync_prod(
                         settings=settings,
+                        cache=cache,
+                        session_factory=session_factory,
                     )
                     logger.info("calendar_sync_on_startup_done")
             except Exception:
                 logger.exception("calendar_sync_on_startup_failed")
+        elif provider is not None:
+            logger.warning(
+                "calendar_sync_disabled_no_prod_keys",
+                hint="KIS_PROD_APP_KEY/SECRET 설정 시 캘린더 동기화 활성화 "
+                "— 그때까지 KR_HOLIDAYS 폴백 판정으로 동작",
+            )
 
         # ── 4-2. FillFinalizer + ExecutionStreamManager + OrderReconciler ─
         from src.execution.decision_queue import TradeDecisionQueueManager
@@ -555,6 +560,7 @@ class SchedulerFactory:
             telegram_bot=telegram_bot,
             settings=settings,
             session_factory=session_factory,
+            cache=cache,
             reconciler=reconciler,
             position_reconciler=position_reconciler,
             memory_manager=memory_manager,
@@ -858,6 +864,58 @@ class SchedulerFactory:
     # ── Job Registration ─────────────────────────────────────────────
 
     @staticmethod
+    async def _job_calendar_sync_prod(
+        *,
+        settings: Settings,
+        cache: RedisCache | None,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """F-23 calendar_sync 실행체 — 실전 도메인 1회용 클라이언트로 동기화.
+
+        CTCA0903R은 모의(vts) 도메인 미지원(OPSQ0002 실측 2026-07-22)이라
+        캘린더 전용 실전 앱키(KIS_PROD_APP_KEY/SECRET)로 호출한다. 키 미설정
+        시 조용히 스킵(raise 없음 → 잡 실패 알림 없음, KR_HOLIDAYS 폴백 판정
+        유지 — .env에 키 추가 + 재기동만으로 활성화).
+
+        클라이언트는 호출당 생성·종료(1콜/일 — 토큰은 Redis
+        'calendar-prod:token' 캐시로 재사용, 모의 토큰과 분리). BrokerRegistry
+        미등록 — OrderReconciler 등 계좌 순회 경로에 노출되지 않는다.
+        """
+        if not (settings.KIS_PROD_APP_KEY and settings.KIS_PROD_APP_SECRET):
+            logger.info("job.calendar_sync.skipped_no_prod_keys")
+            return
+        if cache is None:
+            logger.warning("job.calendar_sync.skipped_no_cache")
+            return
+
+        from src.broker.kis.client import KISClient
+        from src.data.providers.kis_provider import KISDataProvider
+
+        creds = AccountCredentials(
+            account_id="calendar-prod",
+            app_key=settings.KIS_PROD_APP_KEY,
+            app_secret=settings.KIS_PROD_APP_SECRET,
+            account_no="",
+            is_paper=False,
+        )
+        client = KISClient.from_credentials(creds, cache)
+        await client.connect()
+        try:
+            calendar_provider = KISDataProvider(
+                client=client,
+                cache=cache,
+                session_factory=session_factory,
+                settings=settings,
+            )
+            await job_calendar_sync(
+                provider=calendar_provider,
+                session_factory=session_factory,
+                settings=settings,
+            )
+        finally:
+            await client.disconnect()
+
+    @staticmethod
     def _register_common_jobs(
         engine: SchedulerEngine,
         *,
@@ -868,6 +926,7 @@ class SchedulerFactory:
         telegram_bot: TelegramBot,
         settings: Settings,
         session_factory: async_sessionmaker[AsyncSession],
+        cache: RedisCache | None = None,
         reconciler: OrderReconciler | None = None,
         position_reconciler: PositionReconciler | None = None,
         memory_manager: AgentMemoryManager | None = None,
@@ -887,15 +946,17 @@ class SchedulerFactory:
         # F-23 calendar_sync — 거래 캘린더 동기화. 매일(주말 포함) 07:30 KST,
         # pre_open_prep(08:00) 이전. 연휴 중에도 미래 커버리지가 유지되도록
         # day_of_week 미지정. KIS 원장 연관 TR — 1일 1회 호출 준수.
+        # CTCA0903R은 실전 도메인 전용(OPSQ0002 실측 07-22) — 실행체가 실전
+        # 앱키로 1회용 클라이언트를 만들며, 키 미설정 시 조용히 스킵한다.
         if provider is not None:
             cs_h, cs_m = SchedulerEngine._parse_time(s.CALENDAR_SYNC_TIME)
             engine.register_job(
                 "calendar_sync",
                 partial(
-                    job_calendar_sync,
-                    provider=provider,
-                    session_factory=session_factory,
+                    SchedulerFactory._job_calendar_sync_prod,
                     settings=s,
+                    cache=cache,
+                    session_factory=session_factory,
                 ),
                 CronTrigger(hour=cs_h, minute=cs_m, timezone="Asia/Seoul"),
             )

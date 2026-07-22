@@ -36,6 +36,10 @@ logger = structlog.get_logger(__name__)
 # 미래 horizon(CALENDAR_FORWARD_HORIZON_DAYS=30)을 모두 덮는다.
 _DEFAULT_WINDOW_DAYS = 45
 
+# stale 경고 dedup — 5분 주기 잡(드레인·손절)마다 로드하므로 warning은 프로세스당
+# 1회만, 이후 debug 강등(stale 해소 시 리셋 → 재발 시 다시 1회 warning).
+_stale_warned = False
+
 
 def _parse_holidays(holidays: str) -> frozenset[str]:
     """KR_HOLIDAYS 쉼표 구분 문자열 → 'YYYY-MM-DD' frozenset."""
@@ -106,13 +110,18 @@ async def load_market_calendar(
         logger.warning("market_calendar.load_failed", exc_info=True)
         return MarketCalendar.fallback_only(holidays_fallback)
 
+    global _stale_warned
     stale = today not in open_by_date
     if stale:
-        logger.warning(
+        log = logger.debug if _stale_warned else logger.warning
+        log(
             "market_calendar.stale",
             today=today.isoformat(),
             rows=len(open_by_date),
         )
+        _stale_warned = True
+    else:
+        _stale_warned = False
     return MarketCalendar(
         open_by_date=open_by_date,
         fallback_holidays=_parse_holidays(holidays_fallback),

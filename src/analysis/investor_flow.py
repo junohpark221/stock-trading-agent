@@ -14,6 +14,12 @@ N일 누적·연속 순매수 스트릭·거래대금 대비 비율을 on-the-fl
   예외는 입력 검증 실패(미지 axis·window<=0·value 오타)의 ValueError뿐.
 - 금액(*_amt)은 원(KRW)·Decimal, 수량(*_qty)은 주(株)·int. 시장 단위
   net_qty는 원천 반올림으로 ±500주 정밀도 한계 — 시장 지표는 amt 권장.
+
+⚠️ 소비 대상 = **주식만 — ETF·ETN 수급은 지표 소비에서 제외한다**(07-22 확정):
+DB에는 KIS 수집분 ETF·ETN 행이 존재하지만 ① 교차 검증 원천(pykrx 종목 수급
+API — 주식 전용) 부재로 영구 미검증 ② pykrx 5년 백필 미포함이라 과거 결손
+(KIS 증분 시작 이후 최근분뿐) ③ LP 헤지 물량 혼입으로 주식과 동일한 해석이
+왜곡된다. 단계 8 도구·프롬프트 주입 시 심볼 선별은 호출자 책임.
 """
 
 from collections.abc import Mapping, Sequence

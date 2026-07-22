@@ -48,6 +48,28 @@ class TestSplitSample:
         assert rand_half == ["B"]
 
 
+class TestFilterCovered:
+    def test_partition_preserves_order(self):
+        kept, dropped = cc.filter_covered(
+            ["069500", "005930", "122630", "000660"], {"005930", "000660"}
+        )
+        assert kept == ["005930", "000660"]
+        assert dropped == ["069500", "122630"]  # ETF는 제외 목록으로
+
+    def test_all_covered(self):
+        kept, dropped = cc.filter_covered(["A", "B"], {"A", "B", "C"})
+        assert kept == ["A", "B"]
+        assert dropped == []
+
+    def test_none_covered(self):
+        kept, dropped = cc.filter_covered(["A", "B"], set())
+        assert kept == []
+        assert dropped == ["A", "B"]
+
+    def test_empty_candidates(self):
+        assert cc.filter_covered([], {"A"}) == ([], [])
+
+
 # ── 판정 ──────────────────────────────────────────────────────────────
 
 

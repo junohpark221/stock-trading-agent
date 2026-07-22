@@ -12,6 +12,11 @@ DB에 저장된 수급 행(최근 창은 kis 잡이 덮어써 source='kis')을 p
 
 stdout = 마크다운 리포트 / stderr = 로그. exit 0=PASS, 1=FAIL, 2=환경/인자 오류.
 범위: 시장 단위(kospi/kosdaq) 창 전체 + 종목 표본(거래대금 상위 절반 + 랜덤 절반).
+
+표본은 pykrx 주식 티커 커버 종목으로 한정한다(07-22 EC2 1차 실행 교훈): DB 수급 행은
+KIS가 ETF·ETN까지 수집하지만 pykrx 종목 수급 API는 주식 전용(ETF는 ISIN 미등재 → 0행)
+— 거래대금 상위가 ETF로 채워지면 강등 감지기("DB 행 존재 + pykrx 0행")가 오탐 중단한다.
+ETF·ETN은 크로스소스 대조 원천이 없어 비교 대상이 아님(영구 미검증 — 사용자 감수 07-22).
 """
 
 from __future__ import annotations
@@ -30,10 +35,13 @@ from backfill_pykrx_common import (
     INDEX_TICKERS,
     SLEEP_SEC,
     KrxAuthError,
+    _stock,
     build_flow_rows,
     build_market_rows,
     fetch_market_frames,
     fetch_symbol_flow_frames,
+    krx_call,
+    yyyymmdd,
 )
 from probe_common import kv, report_header, section, setup_probe_logging
 from sqlalchemy import select, text
@@ -53,8 +61,17 @@ from src.db.session import close_db, get_session_factory, init_db
 KST = ZoneInfo("Asia/Seoul")
 
 # 백필 강등 감지기 미러 — 연속 N종목이 "DB 행은 있는데 pykrx flow 0행"이면
-# KRX 익명 세션 강등으로 판정하고 중단한다.
+# KRX 익명 세션 강등으로 판정하고 중단한다. 표본이 pykrx 커버 종목으로
+# 한정되므로(아래 fetch_stock_universe) 이 전제는 주식에서만 유효하게 성립.
 DEGRADATION_STREAK = 5
+
+# 기동 자격 게이트 — pykrx 주식 티커 수가 이 값 이하면 익명 세션 강등으로
+# 판정하고 즉시 중단한다(백필 스크립트 기동 게이트 미러).
+MIN_STOCK_TICKERS = 2000
+
+# 거래대금 상위 표본 후보 여유 배수 — 상위권은 ETF가 지배하므로(07-22 실측:
+# 상위 25 중 11+ ETF) 필터 후에도 목표 수를 채우도록 넉넉히 조회한다.
+TOP_CANDIDATE_MULTIPLIER = 3
 
 # 판정 임계 — verdict() 참조.
 MAX_OVERALL_MISMATCH_RATE = 0.005  # 전체 셀 0.5%
@@ -87,6 +104,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── 표본 선정 ─────────────────────────────────────────────────────────
 
 
+def fetch_stock_universe(end: date, sleep_sec: float) -> set[str]:
+    """pykrx 주식 티커 집합(KOSPI+KOSDAQ, 우선주 포함 — ETF·ETN 등 비주식 없음).
+
+    표본을 pykrx 종목 수급 API 커버리지로 한정하는 필터이자 기동 자격 게이트:
+    호출자는 반환 크기 ≤ MIN_STOCK_TICKERS면 익명 세션 강등으로 판정한다.
+    """
+    stock = _stock()
+    snap = end
+    while snap.weekday() >= 5:  # 주말이면 직전 평일로 (미래 날짜 회피 — 뒤로 보정)
+        snap -= timedelta(days=1)
+    tickers = krx_call(
+        stock.get_market_ticker_list, yyyymmdd(snap), market="ALL", sleep_sec=sleep_sec
+    )
+    return set(tickers)
+
+
+def filter_covered(candidates: list[str], covered: set[str]) -> tuple[list[str], list[str]]:
+    """pykrx 커버 종목만 유지(순서 보존). (유지, 제외) 반환 — 순수 함수."""
+    kept = [s for s in candidates if s in covered]
+    dropped = [s for s in candidates if s not in covered]
+    return kept, dropped
+
+
 def split_sample(top: list[str], pool: list[str], size: int, seed: int) -> tuple[list[str], list[str]]:
     """(거래대금 상위 절반, 랜덤 절반) — 순수 함수(시드 결정적)."""
     top_half = top[: size // 2]
@@ -96,17 +136,23 @@ def split_sample(top: list[str], pool: list[str], size: int, seed: int) -> tuple
     return top_half, rand_half
 
 
-async def pick_sample(sf: Any, start: date, end: date, size: int, seed: int) -> tuple[list[str], list[str]]:
-    """DB에서 표본 후보 조회 → split_sample. (top, random) 반환."""
+async def pick_sample(
+    sf: Any, start: date, end: date, size: int, seed: int, covered: set[str],
+) -> tuple[list[str], list[str], int, int]:
+    """DB에서 표본 후보 조회 → pykrx 커버 필터 → split_sample.
+
+    (top, random, 상위 후보 제외 수, 랜덤 풀 제외 수) 반환.
+    상위 후보는 ETF가 지배하므로 여유 배수로 조회 후 필터한다.
+    """
     async with sf() as session:
         top_rows = await session.execute(
             text(
                 "SELECT symbol FROM daily_ohlcv WHERE date BETWEEN :s AND :e "
                 "GROUP BY symbol ORDER BY sum(trading_value) DESC NULLS LAST LIMIT :n"
             ),
-            {"s": start, "e": end, "n": size // 2},
+            {"s": start, "e": end, "n": (size // 2) * TOP_CANDIDATE_MULTIPLIER},
         )
-        top = [r[0] for r in top_rows]
+        top_raw = [r[0] for r in top_rows]
         pool_rows = await session.execute(
             text(
                 "SELECT DISTINCT symbol FROM investor_flow_daily "
@@ -114,8 +160,11 @@ async def pick_sample(sf: Any, start: date, end: date, size: int, seed: int) -> 
             ),
             {"s": start, "e": end},
         )
-        pool = [r[0] for r in pool_rows]
-    return split_sample(top, pool, size, seed)
+        pool_raw = [r[0] for r in pool_rows]
+    top, top_dropped = filter_covered(top_raw, covered)
+    pool, pool_dropped = filter_covered(pool_raw, covered)
+    top_half, rand_half = split_sample(top, pool, size, seed)
+    return top_half, rand_half, len(top_dropped), len(pool_dropped)
 
 
 # ── DB 조회 ───────────────────────────────────────────────────────────
@@ -226,15 +275,45 @@ async def run(args: argparse.Namespace) -> int:
         kv("비교 창", f"{start} ~ {end} (비교는 {end} 미만 — 당일 잠정치 제외)")
         kv("허용오차", "대금 ±1e6원(KIS 백만원 절사) · 시장 수량 ±500주 · 지수 ±0.01 · 종목 수량 exact")
 
-        # 표본 선정
+        # pykrx 주식 커버 집합 — 표본 필터 + 기동 자격 게이트
+        _progress("pykrx 주식 티커 조회 (표본 커버리지 필터 + 자격 게이트)")
+        covered = await asyncio.to_thread(fetch_stock_universe, end, args.sleep)
+        if len(covered) <= MIN_STOCK_TICKERS:
+            print(
+                f"오류: pykrx 주식 티커 {len(covered)}개 (≤{MIN_STOCK_TICKERS}) "
+                "— KRX 로그인/익명 강등 확인 필요.",
+                file=sys.stderr,
+            )
+            return 2
+
+        # 표본 선정 — pykrx 커버 종목 한정 (ETF·ETN은 대조 원천 부재 — 모듈 독스트링)
+        top_dropped = pool_dropped = 0
+        dropped_symbols: list[str] = []
         if args.symbols:
-            top_half, rand_half = [s.strip().upper() for s in args.symbols.split(",") if s.strip()], []
+            requested = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+            top_half, dropped_symbols = filter_covered(requested, covered)
+            rand_half = []
         else:
-            top_half, rand_half = await pick_sample(sf, start, end, args.sample_size, args.seed)
+            top_half, rand_half, top_dropped, pool_dropped = await pick_sample(
+                sf, start, end, args.sample_size, args.seed, covered
+            )
         symbols = top_half + rand_half
         section("표본")
         kv("거래대금 상위", f"{len(top_half)}개 — {', '.join(top_half)}")
         kv(f"랜덤(seed={args.seed})", f"{len(rand_half)}개 — {', '.join(rand_half)}")
+        if dropped_symbols:
+            kv(
+                "pykrx 미커버 제외(--symbols)",
+                f"{len(dropped_symbols)}개 — {', '.join(dropped_symbols)}",
+            )
+        if top_dropped or pool_dropped:
+            kv(
+                "pykrx 미커버 제외(ETF·ETN 등)",
+                f"상위 후보 {top_dropped}개 · 랜덤 풀 {pool_dropped}개",
+            )
+        if not symbols:
+            print("오류: 표본이 비었습니다 — pykrx 커버 종목이 없습니다.", file=sys.stderr)
+            return 2
 
         # 저장 source 분포 (판독 맥락 — 창 대부분 kis여야 크로스소스 비교가 성립)
         section("저장 행 source 분포 (창 내)")

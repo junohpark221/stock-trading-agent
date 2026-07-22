@@ -20,6 +20,7 @@ def _make_ohlcv_row(
     low: Decimal,
     close: Decimal,
     volume: int,
+    trading_value: Decimal | None = None,
 ) -> MagicMock:
     """DailyOHLCV ORM 객체를 흉내내는 Mock 생성."""
     row = MagicMock()
@@ -30,6 +31,7 @@ def _make_ohlcv_row(
     row.low = low
     row.close = close
     row.volume = volume
+    row.trading_value = trading_value
     return row
 
 
@@ -234,6 +236,58 @@ async def test_get_symbols():
 
     symbols = loader.get_symbols()
     assert set(symbols) == {"005930", "000660"}
+
+
+@pytest.mark.asyncio
+async def test_get_trading_values():
+    """거래대금 매핑 반환 — Decimal 값·None 결측 유지·범위 경계."""
+    rows = [
+        _make_ohlcv_row(
+            "005930",
+            date(2025, 1, 2 + i),
+            Decimal("70000"),
+            Decimal("71000"),
+            Decimal("69000"),
+            Decimal("70500"),
+            1_000_000,
+            trading_value=(None if i == 1 else Decimal("500000000000") + i),
+        )
+        for i in range(3)
+    ]
+    factory = _mock_session_factory(rows)
+    loader = HistoricalDataLoader(factory)
+    await loader.load(
+        symbols=["005930"],
+        start_date=date(2025, 1, 2),
+        end_date=date(2025, 1, 4),
+    )
+
+    tv = loader.get_trading_values("005930", date(2025, 1, 2), date(2025, 1, 4))
+    assert tv == {
+        date(2025, 1, 2): Decimal("500000000000"),
+        date(2025, 1, 3): None,
+        date(2025, 1, 4): Decimal("500000000002"),
+    }
+    assert isinstance(tv[date(2025, 1, 2)], Decimal)
+
+    # 범위 경계 — 부분 범위는 해당 날짜만
+    partial = loader.get_trading_values("005930", date(2025, 1, 3), date(2025, 1, 3))
+    assert partial == {date(2025, 1, 3): None}
+
+
+@pytest.mark.asyncio
+async def test_get_trading_values_missing_symbol():
+    """미적재 심볼 → 빈 dict."""
+    rows = _build_sample_rows()
+    factory = _mock_session_factory(rows)
+    loader = HistoricalDataLoader(factory)
+    await loader.load(
+        symbols=["005930"],
+        start_date=date(2025, 1, 2),
+        end_date=date(2025, 1, 6),
+    )
+
+    assert loader.get_trading_values("NONEXIST", date(2025, 1, 2), date(2025, 1, 6)) == {}
 
 
 @pytest.mark.asyncio

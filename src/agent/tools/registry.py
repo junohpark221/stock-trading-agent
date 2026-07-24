@@ -89,6 +89,10 @@ class ToolRegistry:
             get_financial_statements,
             get_fundamental_score,
         )
+        from src.agent.tools.investor_flow import (
+            get_investor_flow_summary,
+            get_market_investor_flow_summary,
+        )
         from src.agent.tools.macro import get_macro_indicators
         from src.agent.tools.market_data import (
             get_current_price,
@@ -192,4 +196,25 @@ class ToolRegistry:
             get_macro_indicators,
             "macro",
             [],
+        )
+
+        # -- Investor Flow (PRJ-03) --
+        self._register(
+            "get_investor_flow_summary",
+            "종목의 투자자별(외국인/기관/개인/금융투자) 순매수 수급 요약"
+            "(5/20/60일 누적·연속 스트릭·거래대금 대비 강도)을 조회합니다. "
+            "주권·리츠 외 종목(ETF 등)은 소비 제외됩니다.",
+            get_investor_flow_summary,
+            "investor_flow",
+            [_sym, ToolParameter(name="days", type="integer", description="조회 기간 (기본 60거래일, 최대 120)", required=False)],
+        )
+        self._register(
+            "get_market_investor_flow_summary",
+            "시장(KOSPI/KOSDAQ) 단위 투자자별 순매수 수급 요약과 지수 수익률 컨텍스트를 조회합니다. market 생략 시 두 시장 모두.",
+            get_market_investor_flow_summary,
+            "investor_flow",
+            [
+                ToolParameter(name="market", type="string", description="'kospi' 또는 'kosdaq' (생략 시 둘 다)", required=False, enum=["kospi", "kosdaq"]),
+                ToolParameter(name="days", type="integer", description="조회 기간 (기본 60거래일, 최대 120)", required=False),
+            ],
         )

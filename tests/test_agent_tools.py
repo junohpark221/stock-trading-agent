@@ -1,10 +1,11 @@
-"""Agent tool functions + ToolRegistry + ToolContext 단위 테스트 (~30개).
+"""Agent tool functions + ToolRegistry + ToolContext 단위 테스트.
 
 A. Technical tools (4개)
 B. Fundamental tools (4개)
 C. Market data tools (3개)
 D. News & sentiment tools (3개)
 E. Macro tools (2개)
+E-2. Investor flow tools (PRJ-03 단계 8)
 F. ToolRegistry (4개)
 G. ToolContext (2개)
 """
@@ -12,7 +13,7 @@ G. ToolContext (2개)
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,11 +21,16 @@ import pytest
 
 from src.agent.tools.context import ToolContext
 from src.agent.tools.fundamental import get_financial_statements, get_fundamental_score
+from src.agent.tools.investor_flow import (
+    get_investor_flow_summary,
+    get_market_investor_flow_summary,
+)
 from src.agent.tools.macro import get_macro_indicators
 from src.agent.tools.market_data import get_current_price, get_market_data_summary
 from src.agent.tools.news import analyze_news_sentiment, get_disclosures, get_recent_news
 from src.agent.tools.registry import ToolRegistry
 from src.agent.tools.technical import get_technical_indicators, scan_chart_patterns
+from src.core.models import InvestorFlowRecord, MarketInvestorFlowRecord
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +100,83 @@ def _make_ctx(factory: MagicMock | None = None) -> ToolContext:
         factory = _make_mock_session_factory()
     settings = MagicMock()
     return ToolContext(session_factory=factory, settings=settings)
+
+
+# -- Investor flow helpers (PRJ-03 단계 8) ----------------------------------
+
+
+def _make_multi_result_session_factory(results: list[MagicMock]) -> MagicMock:
+    """세션 1개에서 execute를 여러 번 하는 도구용 — side_effect 순차 반환."""
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=results)
+    session.commit = AsyncMock()
+
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm)
+
+
+def _scalar_result(value: object | None) -> MagicMock:
+    """scalar_one_or_none() 결과 mock (security_group 단건 조회용)."""
+    m = MagicMock()
+    m.scalar_one_or_none.return_value = value
+    return m
+
+
+def _scalars_all_result(rows: list) -> MagicMock:
+    """scalars().all() 결과 mock (플로우 행 조회용)."""
+    m = MagicMock()
+    m.scalars.return_value.all.return_value = rows
+    return m
+
+
+def _tuples_result(tuples: list[tuple]) -> MagicMock:
+    """all() 결과 mock ((date, trading_value) 튜플 조회용)."""
+    m = MagicMock()
+    m.all.return_value = tuples
+    return m
+
+
+def _flow_days(n: int, start: date = date(2026, 6, 1)) -> list[date]:
+    """연속 평일 n개 (test_investor_flow_indicators.py 컨벤션)."""
+    out: list[date] = []
+    d = start
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def _make_flow_records(n: int = 10, symbol: str = "005930") -> list[InvestorFlowRecord]:
+    """오름차순 종목 수급 레코드 — model_validate(from_attributes)가 MagicMock의
+    auto-attribute에 오염되므로 실인스턴스를 ORM row 대용으로 사용(단계 7 확립)."""
+    return [
+        InvestorFlowRecord(
+            symbol=symbol,
+            date=d,
+            frgn_net_amt=Decimal(1_000_000) * (i + 1),
+            frgn_net_qty=100 * (i + 1),
+            orgn_net_amt=Decimal(-500_000),
+        )
+        for i, d in enumerate(_flow_days(n))
+    ]
+
+
+def _make_market_flow_records(
+    n: int = 10, market: str = "kospi"
+) -> list[MarketInvestorFlowRecord]:
+    """오름차순 시장 수급 레코드 (지수 종가 포함)."""
+    return [
+        MarketInvestorFlowRecord(
+            market=market,
+            date=d,
+            index_close=Decimal("3200.5") + i,
+            frgn_net_amt=Decimal(10_000_000) * (i + 1),
+        )
+        for i, d in enumerate(_flow_days(n))
+    ]
 
 
 # ===========================================================================
@@ -430,6 +513,175 @@ class TestMacroTools:
 
 
 # ===========================================================================
+# E-2. Investor flow tools (PRJ-03 단계 8)
+# ===========================================================================
+
+
+class TestInvestorFlowTools:
+    """get_investor_flow_summary, get_market_investor_flow_summary 테스트."""
+
+    @staticmethod
+    def _stock_ctx(
+        security_group: str | None,
+        flow_rows: list | None = None,
+        trading_values: list[tuple] | None = None,
+    ) -> ToolContext:
+        """종목 도구 3쿼리(그룹→플로우→거래대금) 순서의 ctx 구성."""
+        results: list[MagicMock] = [_scalar_result(security_group)]
+        if flow_rows is not None:
+            results.append(_scalars_all_result(flow_rows))
+        if trading_values is not None:
+            results.append(_tuples_result(trading_values))
+        return _make_ctx(_make_multi_result_session_factory(results))
+
+    @pytest.mark.asyncio
+    async def test_summary_success(self) -> None:
+        recs = _make_flow_records(10)
+        tv = [(r.date, Decimal(50_000_000)) for r in recs]
+        # DB는 최신순 반환 — 도구가 reverse로 오름차순 복원
+        ctx = self._stock_ctx("ST", list(reversed(recs)), tv)
+
+        result = await get_investor_flow_summary(ctx, "005930")
+        assert "error" not in result
+        assert result["symbol"] == "005930"
+        assert result["days_available"] == 10
+        axes = {a["axis"]: a for a in result["axes"]}
+        assert set(axes) == {"frgn", "orgn", "prsn", "scrt"}
+        # scrt caveat 분리 표기 + frgn 지속 순매수 스트릭 + intensity 산출
+        assert axes["scrt"]["caveat"]
+        assert axes["frgn"]["streak"] == 10
+        frgn_w5 = next(w for w in axes["frgn"]["windows"] if w["window"] == 5)
+        assert frgn_w5["intensity"] is not None
+
+    @pytest.mark.asyncio
+    async def test_summary_rt_allowed(self) -> None:
+        """리츠(RT)는 소비 허용 (07-24 확정: ST+RT)."""
+        recs = _make_flow_records(5, symbol="395400")
+        ctx = self._stock_ctx("RT", list(reversed(recs)), [])
+
+        result = await get_investor_flow_summary(ctx, "395400")
+        assert "excluded" not in result
+        assert result["days_available"] == 5
+
+    @pytest.mark.asyncio
+    async def test_summary_excluded_etf(self) -> None:
+        ctx = self._stock_ctx("EF")
+        result = await get_investor_flow_summary(ctx, "069500")
+        assert result["excluded"] is True
+        assert result["security_group"] == "EF"
+        assert result["tool"] == "get_investor_flow_summary"
+
+    @pytest.mark.asyncio
+    async def test_summary_excluded_null_group(self) -> None:
+        """NULL(동기화 전/마스터 부재)은 보수적 제외."""
+        ctx = self._stock_ctx(None)
+        result = await get_investor_flow_summary(ctx, "999999")
+        assert result["excluded"] is True
+        assert result["security_group"] is None
+        assert "미상" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_summary_no_data(self) -> None:
+        ctx = self._stock_ctx("ST", [])
+        result = await get_investor_flow_summary(ctx, "005930")
+        assert "error" in result
+        assert result["symbol"] == "005930"
+
+    @pytest.mark.asyncio
+    async def test_summary_db_error(self) -> None:
+        session_factory = _make_multi_result_session_factory([])
+        session_factory.return_value.__aenter__.side_effect = RuntimeError("db down")
+        ctx = _make_ctx(session_factory)
+
+        result = await get_investor_flow_summary(ctx, "005930")
+        assert "error" in result
+        assert result["tool"] == "get_investor_flow_summary"
+
+    @pytest.mark.asyncio
+    async def test_summary_days_clamped(self) -> None:
+        """days 과대 입력은 120으로 클램프 — limit 절 인자로 검증."""
+        recs = _make_flow_records(5)
+        ctx = self._stock_ctx("ST", list(reversed(recs)), [])
+
+        await get_investor_flow_summary(ctx, "005930", days=5000)
+        session = ctx.session_factory.return_value.__aenter__.return_value
+        flow_stmt = session.execute.await_args_list[1].args[0]
+        assert flow_stmt._limit_clause.value == 120
+
+    @pytest.mark.asyncio
+    async def test_market_summary_both_markets(self) -> None:
+        kospi = _make_market_flow_records(10, "kospi")
+        kosdaq = _make_market_flow_records(10, "kosdaq")
+        factory = _make_multi_result_session_factory(
+            [
+                _scalars_all_result(list(reversed(kospi))),
+                _scalars_all_result(list(reversed(kosdaq))),
+            ]
+        )
+        ctx = _make_ctx(factory)
+
+        result = await get_market_investor_flow_summary(ctx)
+        assert set(result["markets"]) == {"kospi", "kosdaq"}
+        summary = result["markets"]["kospi"]
+        assert summary["market"] == "kospi"
+        assert summary["days_available"] == 10
+        assert summary["index_close"] is not None
+        assert "index_window_returns" in summary
+
+    @pytest.mark.asyncio
+    async def test_market_summary_single_market(self) -> None:
+        kospi = _make_market_flow_records(5, "kospi")
+        factory = _make_multi_result_session_factory(
+            [_scalars_all_result(list(reversed(kospi)))]
+        )
+        ctx = _make_ctx(factory)
+
+        result = await get_market_investor_flow_summary(ctx, market="kospi")
+        assert list(result["markets"]) == ["kospi"]
+
+    @pytest.mark.asyncio
+    async def test_market_summary_invalid_market(self) -> None:
+        ctx = _make_ctx(_make_multi_result_session_factory([]))
+        result = await get_market_investor_flow_summary(ctx, market="nasdaq")
+        assert "error" in result
+        assert "Invalid market" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_market_summary_partial_success(self) -> None:
+        """한 시장 결손은 해당 키에 error, 나머지는 정상 제공."""
+        kospi = _make_market_flow_records(5, "kospi")
+        factory = _make_multi_result_session_factory(
+            [_scalars_all_result(list(reversed(kospi))), _scalars_all_result([])]
+        )
+        ctx = _make_ctx(factory)
+
+        result = await get_market_investor_flow_summary(ctx)
+        assert result["markets"]["kospi"]["days_available"] == 5
+        assert "error" in result["markets"]["kosdaq"]
+
+    @pytest.mark.asyncio
+    async def test_market_summary_all_empty(self) -> None:
+        factory = _make_multi_result_session_factory(
+            [_scalars_all_result([]), _scalars_all_result([])]
+        )
+        ctx = _make_ctx(factory)
+
+        result = await get_market_investor_flow_summary(ctx)
+        assert "error" in result
+        assert "markets" not in result
+
+    @pytest.mark.asyncio
+    async def test_market_summary_db_error(self) -> None:
+        factory = _make_multi_result_session_factory([])
+        factory.return_value.__aenter__.side_effect = RuntimeError("db down")
+        ctx = _make_ctx(factory)
+
+        result = await get_market_investor_flow_summary(ctx)
+        assert "error" in result
+        assert result["tool"] == "get_market_investor_flow_summary"
+
+
+# ===========================================================================
 # F. ToolRegistry
 # ===========================================================================
 
@@ -444,16 +696,25 @@ class TestToolRegistry:
     def test_get_tools_all(self) -> None:
         registry = self._make_registry()
         tools = registry.get_tools()
-        assert len(tools) == 10  # 2+2+2+3+1
+        assert len(tools) == 12  # 2+2+2+3+1+2
         names = {t.name for t in tools}
         assert "get_technical_indicators" in names
         assert "get_macro_indicators" in names
+        assert "get_investor_flow_summary" in names
 
     def test_get_tools_filtered(self) -> None:
         registry = self._make_registry()
         tools = registry.get_tools(modules=["macro"])
         assert len(tools) == 1
         assert tools[0].name == "get_macro_indicators"
+
+    def test_get_tools_investor_flow_module(self) -> None:
+        registry = self._make_registry()
+        tools = registry.get_tools(modules=["investor_flow"])
+        assert {t.name for t in tools} == {
+            "get_investor_flow_summary",
+            "get_market_investor_flow_summary",
+        }
 
     def test_get_tools_multiple_modules(self) -> None:
         registry = self._make_registry()

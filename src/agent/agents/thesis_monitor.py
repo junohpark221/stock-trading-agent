@@ -18,6 +18,32 @@ from src.core.enums import AgentType, DecisionStage, MessageRole
 from src.core.models import LLMMessage, ThesisMonitorResult
 
 
+def _extract_flow_signal(flow: dict[str, Any]) -> dict[str, Any] | None:
+    """수급 요약 dump에서 스냅샷용 핵심 신호(frgn/orgn 20일 축)만 압축 추출.
+
+    전체 dump(4축×3윈도)는 JSONB 낭비 — 판단 근거의 압축 스냅샷 원칙 준수.
+    """
+    if not flow:
+        return None
+    if flow.get("excluded"):
+        return {"excluded": True}
+    axes = flow.get("axes")
+    if not axes:
+        return None
+
+    signal: dict[str, Any] = {"as_of": flow.get("as_of")}
+    for axis in axes:
+        if axis.get("axis") not in ("frgn", "orgn"):
+            continue
+        key = axis["axis"]
+        signal[f"{key}_streak"] = axis.get("streak")
+        w20 = next(
+            (w for w in axis.get("windows", []) if w.get("window") == 20), None
+        )
+        signal[f"{key}_20d_net_amt"] = w20.get("net_amt") if w20 else None
+    return signal
+
+
 class ThesisMonitorAgent(BaseAgent):
     """진입 가설 ↔ 현재 뉴스/공시/펀더멘털을 대조해 훼손 여부를 판단."""
 
@@ -31,7 +57,7 @@ class ThesisMonitorAgent(BaseAgent):
 
     @property
     def tool_modules(self) -> list[str]:
-        return ["news", "fundamental"]
+        return ["news", "fundamental", "investor_flow"]
 
     @property
     def decision_stage(self) -> DecisionStage:
@@ -52,6 +78,10 @@ class ThesisMonitorAgent(BaseAgent):
         )
         result["financials"] = await self._execute_tool(
             "get_financial_statements", {"symbol": symbol}
+        )
+        # 수급 요약 (주권·리츠만 — 비대상은 excluded dict → 프롬프트 자동 생략)
+        result["investor_flow"] = await self._execute_tool(
+            "get_investor_flow_summary", {"symbol": symbol}
         )
         return result
 
@@ -83,5 +113,6 @@ class ThesisMonitorAgent(BaseAgent):
                 "news_count": news.get("count"),
                 "disclosure_count": disc.get("count"),
                 "fundamental_score": fund.get("overall_score"),
+                "investor_flow": _extract_flow_signal(data.get("investor_flow") or {}),
             },
         }

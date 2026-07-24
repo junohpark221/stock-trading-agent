@@ -29,7 +29,10 @@ SYSTEM_PROMPT = """\
 ### 시장 데이터
 - KOSPI/KOSDAQ 지수 추세 (20일/60일 이동평균)
 - 거래대금 및 거래량 추이
-- 외국인/기관 수급 동향
+- 외국인/기관 수급 동향 (주체별 5/20/60일 누적 순매수·연속 스트릭 — 같은 창의
+  지수 수익률(index_window_returns)과 대조해 수급·가격 배경을 판독)
+  - 시장 단위 수량(net_qty)은 원천 반올림 한계가 있으므로 **금액(net_amt) 우선** 판독.
+  - scrt(금융투자)는 caveat대로 방향성 단독 판독 금지, orgn(기관합계)과 합산 금지.
 - 시장 변동성 (일간 변동폭)
 
 ## 출력 규칙
@@ -68,6 +71,13 @@ def build_user_prompt(data: dict[str, Any]) -> str:
         sections.append(f"```json\n{json.dumps(market_summary, ensure_ascii=False, indent=2, default=str)}\n```\n")
     else:
         sections.append("### 시장 데이터 요약\n데이터 없음 — confidence를 낮춰 주세요.\n")
+
+    market_flow = data.get("market_flow")
+    if market_flow and market_flow.get("markets"):
+        sections.append("### 시장 수급 (투자자별 순매수, KOSPI/KOSDAQ)")
+        sections.append(f"```json\n{json.dumps(market_flow, ensure_ascii=False, indent=2, default=str)}\n```\n")
+    else:
+        sections.append("### 시장 수급\n데이터 없음 — 수급 판단은 보류하세요.\n")
 
     sections.append(
         "위 데이터를 종합 분석하여 MarketCondition JSON을 출력하세요."

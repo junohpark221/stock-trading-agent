@@ -31,7 +31,7 @@ class StockAnalyst(BaseAgent):
 
     @property
     def tool_modules(self) -> list[str]:
-        return ["technical", "fundamental", "market_data", "news"]
+        return ["technical", "fundamental", "market_data", "news", "investor_flow"]
 
     @property
     def decision_stage(self) -> DecisionStage:
@@ -59,6 +59,11 @@ class StockAnalyst(BaseAgent):
         # 현재가
         result["current_price"] = await self._execute_tool(
             "get_current_price", {"symbol": symbol}
+        )
+
+        # 수급 요약 (주권·리츠만 — 비대상은 excluded dict → 프롬프트 자동 생략)
+        result["investor_flow"] = await self._execute_tool(
+            "get_investor_flow_summary", {"symbol": symbol}
         )
 
         # 키워드 감성분석 (1차)

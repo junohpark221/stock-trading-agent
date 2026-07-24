@@ -33,6 +33,15 @@ SYSTEM_PROMPT = """\
 - 매출/영업이익 성장률
 - 부채비율
 
+### 수급 (투자자별 순매수 — 보조 신호)
+- **지속성만 유의미**: 연속 스트릭·다중 윈도(5/20/60일)가 일관될 때만 신호로 취급하고,
+  1~2일 단발 순매수/순매도는 잡음으로 무시하세요.
+- 수급은 **보조 신호**입니다 — 수급 단독으로는 매수 근거가 될 수 없습니다.
+  외국인·기관 동반 순매도가 지속되면 `risks`에 반영하세요.
+- `scrt`(금융투자)는 caveat대로 방향성 단독 판독 금지, `orgn`(기관합계)과 합산 금지
+  (이중계상 — 분리 표기 전용).
+- `days_covered`가 `days_in_window`보다 작으면 결측 구간이 있다는 뜻 — 확신도를 낮추세요.
+
 ### 뉴스/감성 (비대칭 원칙 — 반드시 준수)
 감성은 **매수 가점이 아니라 리스크 신호**로 다룹니다. 긍정과 부정을 대칭으로 취급하지 마세요.
 - **악재/부정 감성**: 발견되면 반드시 confidence를 낮추고 `risks`에 명시하세요. (누락 금지)
@@ -63,6 +72,7 @@ SYSTEM_PROMPT = """\
 - 기술적/펀더멘털 시그널이 상충하면 confidence를 낮추세요.
 - 감성은 비대칭으로 반영하세요: 악재 감성은 confidence를 낮추되, 긍정 감성은 구체적 촉매가
   확인되지 않으면 confidence를 올리지 마세요(위 "뉴스/감성" 원칙 참조).
+- 수급 단독으로 confidence를 올리지 마세요(위 "수급" 원칙 참조).
 - JSON 형식으로만 응답하세요.
 """
 
@@ -98,6 +108,12 @@ def build_user_prompt(data: dict[str, Any]) -> str:
     if fundamental:
         sections.append("### 펀더멘털 분석")
         sections.append(f"```json\n{json.dumps(fundamental, ensure_ascii=False, indent=2, default=str)}\n```\n")
+
+    # 수급 요약 (excluded/error/데이터 없음이면 axes 부재 → 섹션 생략)
+    flow = data.get("investor_flow")
+    if flow and flow.get("axes"):
+        sections.append("### 수급 요약 (투자자별 순매수, 5/20/60일 — 보조 신호)")
+        sections.append(f"```json\n{json.dumps(flow, ensure_ascii=False, indent=2, default=str)}\n```\n")
 
     # 키워드 감성분석 결과
     sentiment = data.get("sentiment")

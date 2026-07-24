@@ -26,13 +26,16 @@ SYSTEM_PROMPT = """\
   데이터에 있을 때만 true로 판단하세요.
 - 막연한 주가 하락·단기 변동성·테마 소멸·"분위기"만으로는 훼손으로 보지 마세요.
   (가격 기반 청산은 별도 손절/익절 로직이 담당합니다 — 여기서 중복 판단 금지.)
+- 수급 악화(외국인·기관 동반 순매도 지속)는 단독으로는 훼손 근거가 아니라 **보조
+  신호**입니다 — 구체적 사실(공시·실적 등)과 결합될 때만 반영하세요. 단발 순매도는
+  잡음이며, scrt(금융투자)는 방향성 단독 판독 금지(orgn과 합산 금지)입니다.
 - 근거가 약하거나 데이터가 부족하면 thesis_broken=false, confidence를 낮게.
 - confidence는 **훼손 판단의 확신도**입니다. 훼손이 명백할수록 높게, 애매하면 낮게.
   확신이 없으면 0.5 미만으로 두세요(과대평가 금지).
 
 ## 입력
 - 진입 가설: 매수 시점의 action/confidence/key_factors 요약.
-- 현재 뉴스 / DART 공시 / 펀더멘털 점수 / 재무제표.
+- 현재 뉴스 / DART 공시 / 펀더멘털 점수 / 재무제표 / 수급 요약(투자자별 순매수).
 
 ## 출력 (JSON)
 - symbol: 종목코드
@@ -77,6 +80,14 @@ def build_user_prompt(data: dict[str, Any]) -> str:
         sections.append("### 최근 재무제표")
         sections.append(
             f"```json\n{json.dumps(financials, ensure_ascii=False, indent=2, default=str)}\n```\n"
+        )
+
+    # 현재 수급 요약 (excluded/error/데이터 없음이면 axes 부재 → 섹션 생략)
+    flow = data.get("investor_flow")
+    if flow and flow.get("axes"):
+        sections.append("### 현재 수급 요약 (투자자별 순매수, 5/20/60일 — 보조 신호)")
+        sections.append(
+            f"```json\n{json.dumps(flow, ensure_ascii=False, indent=2, default=str)}\n```\n"
         )
 
     # 현재 공시 (악재 공시 탐지에 중요)

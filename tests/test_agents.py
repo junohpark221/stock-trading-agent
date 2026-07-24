@@ -17,8 +17,15 @@ from src.agent.agents.base import BaseAgent
 from src.agent.agents.market_analyst import MarketAnalyst
 from src.agent.agents.risk_manager import RiskManager
 from src.agent.agents.stock_analyst import StockAnalyst
+from src.agent.agents.thesis_monitor import ThesisMonitorAgent, _extract_flow_signal
 from src.agent.agents.trader import Trader
-from src.agent.prompts import market_analysis, risk_assessment, stock_analysis, trade_decision
+from src.agent.prompts import (
+    market_analysis,
+    risk_assessment,
+    stock_analysis,
+    thesis_monitor,
+    trade_decision,
+)
 from src.core.enums import (
     AgentType,
     DecisionAction,
@@ -37,6 +44,7 @@ from src.core.models import (
     SectorOutlook,
     SentimentResult,
     StockAnalysis,
+    ThesisMonitorResult,
     TradeDecision,
 )
 from src.llm.router import RoutingResult
@@ -280,26 +288,30 @@ class TestMarketAnalyst:
         agent = MarketAnalyst(mock_router, mock_recorder, mock_tool_registry)
         assert agent.agent_type == AgentType.MARKET_ANALYST
         assert agent.output_schema is MarketCondition
-        assert agent.tool_modules == ["macro", "market_data"]
+        assert agent.tool_modules == ["macro", "market_data", "investor_flow"]
         assert agent.decision_stage == DecisionStage.MARKET_ANALYSIS
 
     @pytest.mark.asyncio
     async def test_prepare_data_calls_tools(self, mock_router, mock_recorder, mock_tool_registry, session_id):
-        """_prepare_data에서 get_macro_indicators, get_market_data_summary 호출."""
+        """_prepare_data에서 macro/market_summary/market_flow 도구 호출."""
+        market_flow = {"markets": {"kospi": {"days_available": 10}}}
         mock_tool_registry.execute = AsyncMock(side_effect=[
             {"kr_rate": "3.5", "us_rate": "5.25"},  # macro
             {"close": 78000, "change": 1.2},  # market summary
+            market_flow,  # market investor flow
         ])
 
         agent = MarketAnalyst(mock_router, mock_recorder, mock_tool_registry)
         result = await agent._prepare_data({})
 
-        assert mock_tool_registry.execute.call_count == 2
+        assert mock_tool_registry.execute.call_count == 3
         calls = mock_tool_registry.execute.call_args_list
         assert calls[0].args[0] == "get_macro_indicators"
         assert calls[1].args[0] == "get_market_data_summary"
+        assert calls[2].args[0] == "get_market_investor_flow_summary"
         assert result["macro_data"] == {"kr_rate": "3.5", "us_rate": "5.25"}
         assert result["market_summary"] == {"close": 78000, "change": 1.2}
+        assert result["market_flow"] == market_flow
 
     @pytest.mark.asyncio
     async def test_analyze_returns_market_condition(self, mock_router, mock_recorder, mock_tool_registry, session_id):
@@ -342,37 +354,45 @@ class TestStockAnalyst:
         agent = StockAnalyst(mock_router, mock_recorder, mock_tool_registry)
         assert agent.agent_type == AgentType.STOCK_ANALYST
         assert agent.output_schema is StockAnalysis
-        assert agent.tool_modules == ["technical", "fundamental", "market_data", "news"]
+        assert agent.tool_modules == [
+            "technical", "fundamental", "market_data", "news", "investor_flow",
+        ]
         assert agent.decision_stage == DecisionStage.STOCK_ANALYSIS
 
     @pytest.mark.asyncio
     async def test_prepare_data_keyword_only(self, mock_router, mock_recorder, mock_tool_registry):
-        """needs_llm_analysis=False → 5개 도구 호출 (get_recent_news 미호출)."""
+        """needs_llm_analysis=False → 6개 도구 호출 (get_recent_news 미호출)."""
         sentiment = _sample_sentiment_data(needs_llm=False)
+        flow = {"symbol": "005930", "axes": [{"axis": "frgn"}]}
         mock_tool_registry.execute = AsyncMock(side_effect=[
             {"rsi": 55, "macd": 0.5},   # technical
             {"patterns": []},             # chart_patterns
             {"score": 68},                # fundamental
             {"price": 78000},             # current_price
+            flow,                         # investor_flow
             sentiment,                    # sentiment
         ])
 
         agent = StockAnalyst(mock_router, mock_recorder, mock_tool_registry)
         result = await agent._prepare_data({"symbol": "005930"})
 
-        assert mock_tool_registry.execute.call_count == 5
+        assert mock_tool_registry.execute.call_count == 6
+        calls = mock_tool_registry.execute.call_args_list
+        assert calls[4].args[0] == "get_investor_flow_summary"
+        assert result["investor_flow"] == flow
         assert result["_needs_llm_analysis"] is False
         assert "news_articles" not in result
 
     @pytest.mark.asyncio
     async def test_prepare_data_hybrid_llm(self, mock_router, mock_recorder, mock_tool_registry):
-        """needs_llm_analysis=True → 6개 도구 호출 (get_recent_news 추가)."""
+        """needs_llm_analysis=True → 7개 도구 호출 (get_recent_news 추가)."""
         sentiment = _sample_sentiment_data(needs_llm=True)
         mock_tool_registry.execute = AsyncMock(side_effect=[
             {"rsi": 55, "macd": 0.5},
             {"patterns": []},
             {"score": 68},
             {"price": 78000},
+            {"excluded": True},           # investor_flow (비대상 예시)
             sentiment,
             {"articles": [{"title": "삼성 실적 호조", "source": "경제신문"}]},  # news
         ])
@@ -380,7 +400,7 @@ class TestStockAnalyst:
         agent = StockAnalyst(mock_router, mock_recorder, mock_tool_registry)
         result = await agent._prepare_data({"symbol": "005930"})
 
-        assert mock_tool_registry.execute.call_count == 6
+        assert mock_tool_registry.execute.call_count == 7
         assert result["_needs_llm_analysis"] is True
         assert len(result["news_articles"]) == 1
 
@@ -411,7 +431,7 @@ class TestStockAnalyst:
         sa = _sample_stock_analysis()
         mock_router.route_structured.return_value = (sa, _sample_routing_result("stock_analyst"))
         mock_tool_registry.execute = AsyncMock(side_effect=[
-            {"rsi": 55}, {}, {"score": 68}, {"price": 78000},
+            {"rsi": 55}, {}, {"score": 68}, {"price": 78000}, {},
             _sample_sentiment_data(needs_llm=False),
         ])
 
@@ -432,7 +452,7 @@ class TestStockAnalyst:
         sa = _sample_stock_analysis()
         mock_router.route_structured.return_value = (sa, _sample_routing_result("stock_analyst"))
         mock_tool_registry.execute = AsyncMock(side_effect=[
-            {}, {}, {}, {}, _sample_sentiment_data(needs_llm=False),
+            {}, {}, {}, {}, {}, _sample_sentiment_data(needs_llm=False),
         ])
 
         agent = StockAnalyst(mock_router, mock_recorder, mock_tool_registry)
@@ -441,6 +461,85 @@ class TestStockAnalyst:
         record_kwargs = mock_recorder.record.call_args.kwargs
         assert record_kwargs["symbol"] == "005930"
         assert record_kwargs["stage"] == "stock_analysis"
+
+
+# ── 3-2. ThesisMonitor 테스트 (PRJ-03 단계 8에서 신설) ──────
+
+class TestThesisMonitorAgent:
+    """ThesisMonitorAgent 에이전트 테스트."""
+
+    def test_properties(self, mock_router, mock_recorder, mock_tool_registry):
+        agent = ThesisMonitorAgent(mock_router, mock_recorder, mock_tool_registry)
+        assert agent.agent_type == AgentType.THESIS_MONITOR
+        assert agent.tool_modules == ["news", "fundamental", "investor_flow"]
+        assert agent.decision_stage == DecisionStage.HYPOTHESIS_ALERT
+
+    @pytest.mark.asyncio
+    async def test_prepare_data_calls_tools(self, mock_router, mock_recorder, mock_tool_registry):
+        """news/disclosures/fundamental/financials/investor_flow 5개 도구 호출."""
+        flow = {"symbol": "005930", "axes": [{"axis": "frgn"}]}
+        mock_tool_registry.execute = AsyncMock(side_effect=[
+            {"articles": [], "count": 0},   # recent_news
+            {"disclosures": [], "count": 0},  # disclosures
+            {"overall_score": 70},           # fundamental
+            {"statements": []},              # financials
+            flow,                            # investor_flow
+        ])
+
+        agent = ThesisMonitorAgent(mock_router, mock_recorder, mock_tool_registry)
+        result = await agent._prepare_data({"symbol": "005930"})
+
+        assert mock_tool_registry.execute.call_count == 5
+        calls = mock_tool_registry.execute.call_args_list
+        assert calls[4].args[0] == "get_investor_flow_summary"
+        assert result["investor_flow"] == flow
+
+    def test_extract_decision(self, mock_router, mock_recorder, mock_tool_registry):
+        agent = ThesisMonitorAgent(mock_router, mock_recorder, mock_tool_registry)
+        broken = ThesisMonitorResult(
+            symbol="005930", thesis_broken=True, confidence=Decimal("0.8")
+        )
+        intact = ThesisMonitorResult(
+            symbol="005930", thesis_broken=False, confidence=Decimal("0.2")
+        )
+        assert agent._extract_decision(broken) == "hypothesis_broken"
+        assert agent._extract_decision(intact) == "thesis_intact"
+
+    def test_data_snapshot_includes_flow_signal(self, mock_router, mock_recorder, mock_tool_registry):
+        """수급 요약이 current_signals에 압축 신호로 영속된다."""
+        agent = ThesisMonitorAgent(mock_router, mock_recorder, mock_tool_registry)
+        result = ThesisMonitorResult(
+            symbol="005930", thesis_broken=False, confidence=Decimal("0.2")
+        )
+        data = {
+            "entry_snapshot": {"action": "buy"},
+            "investor_flow": {
+                "as_of": "2026-07-23",
+                "axes": [
+                    {
+                        "axis": "frgn",
+                        "streak": 5,
+                        "windows": [
+                            {"window": 5, "net_amt": "100"},
+                            {"window": 20, "net_amt": "1000"},
+                        ],
+                    },
+                    {"axis": "scrt", "streak": -2, "windows": []},
+                ],
+            },
+        }
+        snapshot = agent._build_data_snapshot(result, data)
+        signal = snapshot["current_signals"]["investor_flow"]
+        assert signal["as_of"] == "2026-07-23"
+        assert signal["frgn_streak"] == 5
+        assert signal["frgn_20d_net_amt"] == "1000"
+        assert "scrt_streak" not in signal  # frgn/orgn만 압축
+
+    def test_extract_flow_signal_edge_cases(self):
+        """excluded/빈 입력은 각각 {'excluded': True}/None."""
+        assert _extract_flow_signal({}) is None
+        assert _extract_flow_signal({"excluded": True}) == {"excluded": True}
+        assert _extract_flow_signal({"error": "boom"}) is None
 
 
 # ── 4. RiskManager 테스트 ───────────────────────────────────
@@ -630,6 +729,47 @@ class TestPromptModules:
         prompt = stock_analysis.build_user_prompt(data)
         assert "비대칭" in prompt
         assert "(참고용)" not in prompt
+
+    def test_market_analysis_renders_flow_section(self):
+        """PRJ-03 단계 8: markets 있으면 시장 수급 섹션, 없으면 보류 폴백."""
+        with_flow = market_analysis.build_user_prompt({
+            "market_flow": {"markets": {"kospi": {"days_available": 10}}},
+        })
+        assert "### 시장 수급 (투자자별 순매수, KOSPI/KOSDAQ)" in with_flow
+
+        without_flow = market_analysis.build_user_prompt({})
+        assert "수급 판단은 보류" in without_flow
+
+        error_flow = market_analysis.build_user_prompt({"market_flow": {"error": "x"}})
+        assert "수급 판단은 보류" in error_flow
+
+    def test_stock_analysis_renders_flow_section(self):
+        """PRJ-03 단계 8: axes 있으면 수급 섹션 렌더, excluded/error면 생략."""
+        with_flow = stock_analysis.build_user_prompt({
+            "symbol": "005930",
+            "investor_flow": {"symbol": "005930", "axes": [{"axis": "frgn"}]},
+        })
+        assert "### 수급 요약" in with_flow
+
+        excluded = stock_analysis.build_user_prompt({
+            "symbol": "069500",
+            "investor_flow": {"excluded": True, "reason": "ETF"},
+        })
+        assert "수급 요약" not in excluded
+
+    def test_thesis_monitor_renders_flow_section(self):
+        """PRJ-03 단계 8: thesis_monitor 프롬프트도 동일 규칙."""
+        with_flow = thesis_monitor.build_user_prompt({
+            "symbol": "005930",
+            "investor_flow": {"symbol": "005930", "axes": [{"axis": "frgn"}]},
+        })
+        assert "### 현재 수급 요약" in with_flow
+
+        excluded = thesis_monitor.build_user_prompt({
+            "symbol": "069500",
+            "investor_flow": {"excluded": True},
+        })
+        assert "수급 요약" not in excluded
 
     def test_risk_assessment_prompt(self):
         data = {

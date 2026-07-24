@@ -25,7 +25,7 @@ class MarketAnalyst(BaseAgent):
 
     @property
     def tool_modules(self) -> list[str]:
-        return ["macro", "market_data"]
+        return ["macro", "market_data", "investor_flow"]
 
     @property
     def decision_stage(self) -> DecisionStage:
@@ -41,6 +41,11 @@ class MarketAnalyst(BaseAgent):
             "get_market_data_summary", {"symbol": "005930", "days": 60}
         )
         result["market_summary"] = market_summary
+
+        # 시장 단위 수급 (KOSPI/KOSDAQ 모두 — 1콜)
+        result["market_flow"] = await self._execute_tool(
+            "get_market_investor_flow_summary", {}
+        )
 
         return result
 

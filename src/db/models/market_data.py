@@ -20,6 +20,9 @@ class StockMaster(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     market_type: Mapped[str] = mapped_column(String(20), nullable=False)
     standard_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # mst 증권그룹구분코드(ST 주권/RT 리츠/EF ETF 등). NULL = 동기화 전/mst 미수록.
+    # 수급 지표 소비 게이트는 ST·RT만 허용, NULL은 보수적 제외 (PRJ-03 단계 8).
+    security_group: Mapped[str | None] = mapped_column(String(2), nullable=True)
     sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
     listed_shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     market_cap_krw: Mapped[int | None] = mapped_column(Numeric(20, 0), nullable=True)

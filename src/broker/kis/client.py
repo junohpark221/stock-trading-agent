@@ -94,6 +94,8 @@ _MST_IDXCODE_URL = "https://new.real.download.dws.co.kr/common/master/idxcode.ms
 
 # 종목 .mst part2 내 지수업종중분류 코드 위치 (그룹코드2 + 시총규모1 + 지수업종대분류4 = 오프셋 7).
 # KOSPI(part2=228)·KOSDAQ(part2=222) 모두 선두 필드 배치가 같아 오프셋 동일.
+# part2 선두 2바이트 = 증권그룹구분코드(scrt_grp_cls_code: ST 주권/RT 리츠/EF ETF/EW ELW 등).
+_SECURITY_GROUP_LEN = 2
 _SECTOR_MID_OFFSET = 7
 _SECTOR_MID_LEN = 4
 
@@ -916,8 +918,9 @@ class KISClient(BrokerInterface):
                         # Only keep 6-char alphanumeric short codes
                         if not _CODE_PATTERN.match(short_code):
                             continue
-                        # part2: 고정폭 구간 — 지수업종중분류 코드 → 업종명 해석
+                        # part2: 고정폭 구간 — 선두 2바이트 증권그룹코드 + 지수업종중분류 코드
                         part2 = line[-part2_len:]
+                        security_group = part2[:_SECURITY_GROUP_LEN].strip() or None
                         mid_code = part2[
                             _SECTOR_MID_OFFSET : _SECTOR_MID_OFFSET + _SECTOR_MID_LEN
                         ].strip()
@@ -931,6 +934,7 @@ class KISClient(BrokerInterface):
                                 name=korean_name,
                                 market_type=market_type,
                                 sector=sector,
+                                security_group=security_group,
                             )
                         )
         except (zipfile.BadZipFile, UnicodeDecodeError) as exc:

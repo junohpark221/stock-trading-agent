@@ -1431,12 +1431,48 @@ class TestKISClientParseMst:
         assert result == []
 
     @staticmethod
-    def _build_line(mid_code: str, part2_len: int = 228) -> str:
-        """part1 + part2, where part2[7:11] holds the 지수업종중분류 code."""
+    def _build_line(
+        mid_code: str, part2_len: int = 228, security_group: str = "ZZ"
+    ) -> str:
+        """part1 + part2, where part2[0:2] = 증권그룹코드, part2[7:11] = 지수업종중분류."""
         part1 = "005930   " + "KR7005930003" + "삼성전자"
         # offset 7 = 그룹코드2 + 시총규모1 + 지수업종대분류4
-        part2 = "Z" * 7 + mid_code + "X" * (part2_len - 7 - len(mid_code))
+        part2 = (
+            security_group
+            + "Z" * (7 - len(security_group))
+            + mid_code
+            + "X" * (part2_len - 7 - len(mid_code))
+        )
         return part1 + part2
+
+    @pytest.mark.asyncio
+    async def test_security_group_parsed(self):
+        """part2 선두 2바이트 증권그룹코드가 security_group으로 추출된다 (PRJ-03 단계 8)."""
+        client = _make_kis_client()
+        line = self._build_line("0002", security_group="ST")
+        zip_bytes = _build_mst_zip([line])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        assert len(result) == 1
+        assert result[0].security_group == "ST"
+
+    @pytest.mark.asyncio
+    async def test_security_group_blank_is_none(self):
+        """그룹코드 자리가 공백이면 security_group=None (보수적 소비 제외 대상)."""
+        client = _make_kis_client()
+        line = self._build_line("0002", security_group="  ")
+        zip_bytes = _build_mst_zip([line])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        assert result[0].security_group is None
 
     @pytest.mark.asyncio
     async def test_sector_resolved_to_name(self):

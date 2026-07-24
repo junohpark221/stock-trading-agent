@@ -60,6 +60,9 @@ class StockInfo(BaseModel):
     sector: str = ""
     listed_shares: int = 0
     market_cap_krw: Decimal = Decimal(0)
+    # mst part2 선두 2바이트 증권그룹구분코드(ST 주권/RT 리츠/EF ETF/EW ELW/DR 예탁증서 등).
+    # None = 파싱 실패/미상. 수급 지표 소비 게이트는 ST·RT만 허용 (PRJ-03 단계 8).
+    security_group: str | None = None
 
 
 class PriceInfo(BaseModel):

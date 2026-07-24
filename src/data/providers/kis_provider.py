@@ -186,6 +186,7 @@ class KISDataProvider(DataProvider):
                             "name": s.name,
                             "market_type": s.market_type.value,
                             "sector": s.sector or None,
+                            "security_group": s.security_group,
                             "is_active": True,
                         }
                         for s in batch
@@ -199,6 +200,7 @@ class KISDataProvider(DataProvider):
                             "name": stmt.excluded.name,
                             "market_type": stmt.excluded.market_type,
                             "sector": stmt.excluded.sector,
+                            "security_group": stmt.excluded.security_group,
                             "is_active": stmt.excluded.is_active,
                             "updated_at": func.now(),
                         },
@@ -587,6 +589,7 @@ class KISDataProvider(DataProvider):
                 sector=row.sector or "",
                 listed_shares=row.listed_shares or 0,
                 market_cap_krw=row.market_cap_krw or 0,
+                security_group=row.security_group,
             )
             for row in rows
         ]

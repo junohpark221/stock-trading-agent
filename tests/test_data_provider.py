@@ -68,6 +68,7 @@ def _make_stock_row(**kwargs):
     row.sector = kwargs.get("sector", None)
     row.listed_shares = kwargs.get("listed_shares", None)
     row.market_cap_krw = kwargs.get("market_cap_krw", None)
+    row.security_group = kwargs.get("security_group", None)
     row.is_active = kwargs.get("is_active", True)
     return row
 
@@ -259,6 +260,36 @@ class TestSyncStockMaster:
         params = upsert_stmt.compile().params
         assert any(k.startswith("sector") for k in params)
         assert "반도체" in params.values()
+
+    @pytest.mark.asyncio
+    async def test_upsert_includes_security_group(self):
+        """PRJ-03 단계 8: 증권그룹코드가 upsert 바인딩에 실린다 (수급 소비 게이트 근거)."""
+        client = AsyncMock(spec=KISClient)
+        stocks = [
+            StockInfo(
+                symbol="005930",
+                name="삼성전자",
+                market_type=MarketType.KOSPI,
+                security_group="ST",
+            )
+        ]
+        client.get_stock_master = AsyncMock(return_value=stocks)
+
+        sf, session = _mock_session_factory()
+        session.execute = AsyncMock(
+            side_effect=[_make_db_result(rowcount=1), _make_db_result(rowcount=0)]
+        )
+        session.commit = AsyncMock()
+
+        cache = AsyncMock(spec=RedisCache)
+        p = _make_provider(client=client, cache=cache, session_factory=sf)
+
+        await p.sync_stock_master()
+
+        upsert_stmt = session.execute.call_args_list[0].args[0]
+        params = upsert_stmt.compile().params
+        assert any(k.startswith("security_group") for k in params)
+        assert "ST" in params.values()
 
     @pytest.mark.asyncio
     async def test_cache_error_logged(self):

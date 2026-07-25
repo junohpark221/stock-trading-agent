@@ -71,9 +71,11 @@ def _make_kis_client(settings=None, cache=None):
     return client
 
 
-def _build_mst_zip(lines: list[str], encoding: str = "cp949") -> bytes:
+def _build_mst_zip(
+    lines: list[str], encoding: str = "cp949", sep: str = "\n"
+) -> bytes:
     """Build an in-memory .mst.zip with given lines."""
-    content = "\n".join(lines).encode(encoding)
+    content = sep.join(lines).encode(encoding)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("test.mst", content)
@@ -1304,9 +1306,9 @@ class TestKISClientGetStockMaster:
         ):
             await client.get_stock_master()
             calls = mock.call_args_list
-            # KOSPI part2_len=228, KOSDAQ part2_len=222
-            assert calls[0].args[2] == 228
-            assert calls[1].args[2] == 222
+            # KOSPI part2_len=227, KOSDAQ part2_len=221 — SDK의 228/222는 개행 포함 폭(F-24)
+            assert calls[0].args[2] == 227
+            assert calls[1].args[2] == 221
 
 
 class TestKISClientParseMst:
@@ -1315,7 +1317,7 @@ class TestKISClientParseMst:
         client = _make_kis_client()
         # part1: short_code(9) + standard_code(12) + korean_name
         # part2: part2_len characters
-        part2_len = 228
+        part2_len = 227
         short_code = "005930   "  # 9 chars
         standard_code = "KR7005930003"  # 12 chars
         korean_name = "삼성전자"
@@ -1339,7 +1341,7 @@ class TestKISClientParseMst:
         client = _make_kis_client()
         client._session = None
         with pytest.raises(BrokerError, match="not connected"):
-            await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+            await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
 
     @pytest.mark.asyncio
     async def test_non_200_returns_empty(self):
@@ -1349,20 +1351,20 @@ class TestKISClientParseMst:
         resp.read = AsyncMock(return_value=b"")
         client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
 
-        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_network_error_returns_empty(self):
         client = _make_kis_client()
         client._session.get = MagicMock(side_effect=aiohttp.ClientError("fail"))
-        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_filters_non_6digit(self):
         client = _make_kis_client()
-        part2_len = 228
+        part2_len = 227
         # 9-digit code should be filtered
         line1 = "123456789" + "KR7005930003" + "테스트" + "X" * part2_len
         # Valid 6-digit
@@ -1382,7 +1384,7 @@ class TestKISClientParseMst:
     async def test_keeps_alphanumeric_new_style_code(self):
         """F-22: KRX 신형 영숫자 단축코드(예: 0001A0)를 유지한다."""
         client = _make_kis_client()
-        part2_len = 228
+        part2_len = 227
         line1 = "0001A0   " + "KR70001A0009" + "신형코드종목" + "X" * part2_len
         line2 = "005930   " + "KR7005930003" + "삼성전자" + "X" * part2_len
 
@@ -1400,7 +1402,7 @@ class TestKISClientParseMst:
     async def test_still_drops_non_6char_and_lowercase(self):
         """F-22: 완화 후에도 7자리(ETN)·5자리·소문자 포함 코드는 드랍된다."""
         client = _make_kis_client()
-        part2_len = 228
+        part2_len = 227
         etn_7digit = "5800115  " + "KR7580011506" + "ETN상품" + "X" * part2_len
         five_char = "12345    " + "KR7123450001" + "다섯자리" + "X" * part2_len
         lowercase = "0001a0   " + "KR70001A0009" + "소문자코드" + "X" * part2_len
@@ -1418,7 +1420,7 @@ class TestKISClientParseMst:
     @pytest.mark.asyncio
     async def test_short_lines_skipped(self):
         client = _make_kis_client()
-        part2_len = 228
+        part2_len = 227
         short_line = "X" * 10  # Too short
 
         zip_bytes = _build_mst_zip([short_line])
@@ -1432,7 +1434,7 @@ class TestKISClientParseMst:
 
     @staticmethod
     def _build_line(
-        mid_code: str, part2_len: int = 228, security_group: str = "ZZ"
+        mid_code: str, part2_len: int = 227, security_group: str = "ZZ"
     ) -> str:
         """part1 + part2, where part2[0:2] = 증권그룹코드, part2[7:11] = 지수업종중분류."""
         part1 = "005930   " + "KR7005930003" + "삼성전자"
@@ -1456,7 +1458,7 @@ class TestKISClientParseMst:
         resp.read = AsyncMock(return_value=zip_bytes)
         client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
 
-        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
         assert len(result) == 1
         assert result[0].security_group == "ST"
 
@@ -1471,7 +1473,7 @@ class TestKISClientParseMst:
         resp.read = AsyncMock(return_value=zip_bytes)
         client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
 
-        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
         assert result[0].security_group is None
 
     @pytest.mark.asyncio
@@ -1486,7 +1488,7 @@ class TestKISClientParseMst:
         client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
 
         result = await client._parse_mst(
-            "http://test.zip", MarketType.KOSPI, 228, sector_map={"0002": "반도체"}
+            "http://test.zip", MarketType.KOSPI, 227, sector_map={"0002": "반도체"}
         )
         assert len(result) == 1
         assert result[0].sector == "반도체"
@@ -1503,7 +1505,7 @@ class TestKISClientParseMst:
         client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
 
         # sector_map 없음 → 원시 코드
-        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 228)
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
         assert result[0].sector == "0002"
 
     @pytest.mark.asyncio
@@ -1518,9 +1520,67 @@ class TestKISClientParseMst:
         client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
 
         result = await client._parse_mst(
-            "http://test.zip", MarketType.KOSPI, 228, sector_map={"0002": "반도체"}
+            "http://test.zip", MarketType.KOSPI, 227, sector_map={"0002": "반도체"}
         )
         assert result[0].sector == ""
+
+    @pytest.mark.asyncio
+    async def test_name_abutting_part2_no_leak(self):
+        """F-24 회귀: 이름이 필드를 꽉 채워 part2와 맞닿아도 그룹코드에 이름 글자가 새지 않는다.
+
+        off-by-one(개행 포함 폭 228 사용) 시절엔 '…콜' + 'EW…'가 '콜E'로 파싱됐다.
+        """
+        client = _make_kis_client()
+        part1 = "58F001   " + "KR758F00119W" + "삼성전자콜"  # 이름 뒤 패딩 없음
+        part2 = "EW" + "Z" * 5 + "0002" + "X" * (227 - 7 - 4)
+        zip_bytes = _build_mst_zip([part1 + part2])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
+        assert len(result) == 1
+        assert result[0].security_group == "EW"
+        assert result[0].name == "삼성전자콜"  # 마지막 글자 무절단
+        assert result[0].sector == "0002"
+
+    @pytest.mark.asyncio
+    async def test_control_char_in_part2_does_not_split_record(self):
+        """F-24 회귀: part2 내 제어문자(\\x1c 등)로 레코드가 중간에서 쪼개지지 않는다.
+
+        splitlines()는 \\x1c-\\x1e·\\x0b 등에서도 분리해 레코드를 오염시켰다.
+        """
+        client = _make_kis_client()
+        line = self._build_line("0002", security_group="ST")
+        # part2 후미 X 패딩 한 자리를 제어문자로 치환
+        line = line[:-10] + "\x1c" + line[-9:]
+        zip_bytes = _build_mst_zip([line])
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
+        assert len(result) == 1
+        assert result[0].security_group == "ST"
+
+    @pytest.mark.asyncio
+    async def test_crlf_line_endings(self):
+        """F-24 회귀: \\r\\n 종결 파일도 \\r 잔존 없이 정상 파싱된다."""
+        client = _make_kis_client()
+        lines = [
+            self._build_line("0002", security_group="ST"),
+            self._build_line("0002", security_group="EF"),
+        ]
+        zip_bytes = _build_mst_zip(lines, sep="\r\n")
+        resp = MagicMock()
+        resp.status = 200
+        resp.read = AsyncMock(return_value=zip_bytes)
+        client._session.get = MagicMock(return_value=AsyncContextManagerMock(resp))
+
+        result = await client._parse_mst("http://test.zip", MarketType.KOSPI, 227)
+        assert [s.security_group for s in result] == ["ST", "EF"]
 
 
 class TestKISClientGetIndustryCodeMap:

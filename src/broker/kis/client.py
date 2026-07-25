@@ -93,7 +93,9 @@ _MST_KOSDAQ_URL = "https://new.real.download.dws.co.kr/common/master/kosdaq_code
 _MST_IDXCODE_URL = "https://new.real.download.dws.co.kr/common/master/idxcode.mst.zip"
 
 # 종목 .mst part2 내 지수업종중분류 코드 위치 (그룹코드2 + 시총규모1 + 지수업종대분류4 = 오프셋 7).
-# KOSPI(part2=228)·KOSDAQ(part2=222) 모두 선두 필드 배치가 같아 오프셋 동일.
+# KOSPI(part2=227)·KOSDAQ(part2=221) 모두 선두 필드 배치가 같아 오프셋 동일.
+# ⚠️ SDK 레퍼런스(stocks_info)의 228/222는 `for row in f`가 남긴 개행 1자를 포함한 폭 —
+#    field_specs 합계(실데이터 폭)는 227/221이므로 개행 제거된 라인에는 227/221을 써야 한다(F-24).
 # part2 선두 2바이트 = 증권그룹구분코드(scrt_grp_cls_code: ST 주권/RT 리츠/EF ETF/EW ELW 등).
 _SECURITY_GROUP_LEN = 2
 _SECTOR_MID_OFFSET = 7
@@ -824,12 +826,12 @@ class KISClient(BrokerInterface):
         stocks: list[StockInfo] = []
         stocks.extend(
             await self._parse_mst(
-                _MST_KOSPI_URL, MarketType.KOSPI, 228, sector_map=sector_map
+                _MST_KOSPI_URL, MarketType.KOSPI, 227, sector_map=sector_map
             )
         )
         stocks.extend(
             await self._parse_mst(
-                _MST_KOSDAQ_URL, MarketType.KOSDAQ, 222, sector_map=sector_map
+                _MST_KOSDAQ_URL, MarketType.KOSDAQ, 221, sector_map=sector_map
             )
         )
         logger.info(
@@ -906,7 +908,10 @@ class KISClient(BrokerInterface):
             with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
                 for name in zf.namelist():
                     content = zf.read(name).decode("cp949", errors="replace")
-                    for line in content.splitlines():
+                    # 개행(\n·\r\n)에서만 레코드 분리 — splitlines()는 \x1c 등
+                    # 제어문자에서도 쪼개 part2 내 제어 바이트 시 레코드가 오염된다(F-24).
+                    for line in content.split("\n"):
+                        line = line.rstrip("\r")
                         if len(line) <= part2_len:
                             continue
                         part1 = line[:-part2_len]

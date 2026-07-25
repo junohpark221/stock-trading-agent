@@ -7,7 +7,7 @@ job_investor_flow_collect / job_short_interest_collect — 휴장 가드·콜렉
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -18,6 +18,13 @@ from src.scheduler.jobs import job_investor_flow_collect, job_short_interest_col
 
 def _today_kst_iso() -> str:
     return datetime.now(KST).date().isoformat()
+
+
+def _pin_trading_weekday():
+    """잡의 '오늘'을 평일(2026-07-24 금)로 고정 — 실클럭 주말 실행 시 위양성 방지."""
+    dt_mock = MagicMock(wraps=datetime)
+    dt_mock.now.return_value = datetime(2026, 7, 24, 19, 0, tzinfo=KST)
+    return patch("src.scheduler.jobs.datetime", dt_mock)
 
 
 def _summary(**kwargs) -> CollectionSummary:
@@ -50,6 +57,7 @@ class TestJobInvestorFlowCollect:
     async def test_runs_market_then_symbols(self):
         provider = AsyncMock()
         with (
+            _pin_trading_weekday(),
             patch(
                 "src.scheduler.jobs.collect_market_investor_flow",
                 new_callable=AsyncMock,
@@ -74,6 +82,7 @@ class TestJobInvestorFlowRevisionAlert:
 
     async def _run(self, *, flagged: int, threshold: int, telegram_bot):
         with (
+            _pin_trading_weekday(),
             patch(
                 "src.scheduler.jobs.collect_market_investor_flow",
                 new_callable=AsyncMock,
@@ -137,11 +146,14 @@ class TestJobShortInterestCollect:
     @pytest.mark.asyncio
     async def test_runs_with_window_days_forwarded(self):
         provider = AsyncMock()
-        with patch(
-            "src.scheduler.jobs.collect_short_interest",
-            new_callable=AsyncMock,
-            return_value=_summary(),
-        ) as si_mock:
+        with (
+            _pin_trading_weekday(),
+            patch(
+                "src.scheduler.jobs.collect_short_interest",
+                new_callable=AsyncMock,
+                return_value=_summary(),
+            ) as si_mock,
+        ):
             await job_short_interest_collect(
                 provider=provider,
                 symbols=["005930"],

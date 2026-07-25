@@ -170,6 +170,13 @@ async def get_market_investor_flow_summary(
 
         if all("error" in m for m in markets.values()):
             return {"error": "No market investor flow data", "tool": tool_name}
+        # EC2 로그 grep 검증용 성공 마커 — error 로그만 있으면 실행 여부 판독 불가(단계 8)
+        logger.info(
+            "tool.get_market_investor_flow_summary.ok",
+            markets={
+                t: ("error" if "error" in m else "ok") for t, m in markets.items()
+            },
+        )
         return {"markets": markets, "tool": tool_name}
     except Exception as exc:
         logger.error(

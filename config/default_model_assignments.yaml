@@ -1,37 +1,33 @@
 agents:
   trader:
-    routing_mode: escalation
-    primary_model: "google/gemini-3.1-pro-preview"
-    escalation_model: "openai/gpt-5.2-2025-12-11"
-    confidence_threshold: 0.60
+    routing_mode: fixed
+    primary_model: "openai/gpt-5.2-2025-12-11"
   risk_manager:
-    routing_mode: escalation
-    primary_model: "google/gemini-3.1-pro-preview"
-    escalation_model: "openai/gpt-4o"
-    confidence_threshold: 0.60
+    routing_mode: fixed
+    primary_model: "openai/gpt-5.2-2025-12-11"
   stock_analyst:
     routing_mode: escalation
-    primary_model: "google/gemini-3-flash-preview"
+    primary_model: "openai/gpt-4.1-mini"
     escalation_model: "openai/gpt-5.2-2025-12-11"
     confidence_threshold: 0.60
   market_analyst:
     routing_mode: escalation
-    primary_model: "google/gemini-3.1-flash-lite-preview"
-    escalation_model: "openai/gpt-4.1-mini"
+    primary_model: "openai/gpt-4.1-mini"
+    escalation_model: "openai/gpt-5.2-2025-12-11"
     confidence_threshold: 0.60
   sentiment_analyzer:
     routing_mode: escalation
-    primary_model: "google/gemini-3.1-flash-lite-preview"
-    escalation_model: "openai/gpt-4.1-mini"
+    primary_model: "openai/gpt-4.1-mini"
+    escalation_model: "openai/gpt-5.2-2025-12-11"
     confidence_threshold: 0.60
   report_generator:
     routing_mode: escalation
-    primary_model: "google/gemini-3-flash-preview"
-    escalation_model: "openai/gpt-4.1-mini"
+    primary_model: "openai/gpt-4.1-mini"
+    escalation_model: "openai/gpt-5.2-2025-12-11"
     confidence_threshold: 0.60
   thesis_monitor:
     routing_mode: escalation
-    primary_model: "google/gemini-3-flash-preview"
+    primary_model: "openai/gpt-4.1-mini"
     escalation_model: "openai/gpt-5.2-2025-12-11"
     confidence_threshold: 0.60
   web_verifier:

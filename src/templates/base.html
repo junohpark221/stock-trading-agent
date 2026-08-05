@@ -16,12 +16,12 @@
         ('dashboard', '대시보드', '/admin/', ['/admin/']),
         ('portfolio', '계좌·포트폴리오', '/admin/accounts', ['/admin/accounts', '/admin/performance', '/admin/trades']),
         ('analysis', '의사결정·분석', '/admin/decisions', ['/admin/decisions', '/admin/decision-queue', '/admin/entry-snapshots', '/admin/memory', '/admin/news']),
-        ('operations', '실행·운영', '/admin/exec-monitor', ['/admin/exec-monitor', '/admin/scheduler', '/admin/backtest', '/admin/stock-master']),
+        ('operations', '실행·운영', '/admin/exec-monitor', ['/admin/exec-monitor', '/admin/scheduler', '/admin/backtest', '/admin/stock-master', '/admin/llm-config']),
     ] %}
     {% set subtabs = {
         'portfolio': [('계좌관리', '/admin/accounts'), ('성과·거래', '/admin/performance')],
         'analysis': [('의사결정', '/admin/decisions'), ('결정 큐', '/admin/decision-queue'), ('진입 스냅샷', '/admin/entry-snapshots'), ('학습 메모리', '/admin/memory'), ('뉴스', '/admin/news')],
-        'operations': [('실행 모니터', '/admin/exec-monitor'), ('스케줄러', '/admin/scheduler'), ('백테스트', '/admin/backtest'), ('종목마스터', '/admin/stock-master')],
+        'operations': [('실행 모니터', '/admin/exec-monitor'), ('스케줄러', '/admin/scheduler'), ('백테스트', '/admin/backtest'), ('종목마스터', '/admin/stock-master'), ('LLM 설정', '/admin/llm-config')],
     } %}
     {# active domain: exact match for dashboard root, else longest prefix match #}
     {% set ns = namespace(active='') %}

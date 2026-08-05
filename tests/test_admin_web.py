@@ -1316,3 +1316,79 @@ class TestExecMonitor:
                 r = await c.get("/admin/exec-monitor/status")
         assert r.status_code == 200
         assert "005930" in r.text
+
+
+# ── LLM Config ───────────────────────────────────────────────────────
+
+
+def _mock_llm_config(**kwargs):
+    """AgentModelConfigDB ORM mock."""
+    from decimal import Decimal
+
+    row = MagicMock()
+    row.agent_type = kwargs.get("agent_type", "trader")
+    row.routing_mode = kwargs.get("routing_mode", "fixed")
+    row.primary_model = kwargs.get("primary_model", "openai/gpt-5.2-2025-12-11")
+    row.escalation_model = kwargs.get("escalation_model", None)
+    threshold = kwargs.get("confidence_threshold", None)
+    row.confidence_threshold = Decimal(threshold) if threshold else None
+    row.is_active = kwargs.get("is_active", True)
+    row.updated_by = kwargs.get("updated_by", "system")
+    return row
+
+
+class TestLLMConfigView:
+    @pytest.mark.asyncio
+    async def test_llm_config_page_200(self, mock_session):
+        """DB 행이 YAML 기본값과 일치 → 드리프트 경고 없음."""
+        mock_session.execute.side_effect = _make_execute_results([
+            _mock_llm_config(agent_type="trader"),
+        ])
+        async with _client() as c:
+            r = await c.get("/admin/llm-config")
+        assert r.status_code == 200
+        assert "trader" in r.text
+        assert "openai/gpt-5.2-2025-12-11" in r.text
+        assert "덮어씁니다" not in r.text  # 드리프트 배너 없음
+        # DB 미시드 에이전트도 YAML 기본값으로 표에 노출
+        assert "web_verifier" in r.text
+
+    @pytest.mark.asyncio
+    async def test_llm_config_page_drift_marker(self, mock_session):
+        """DB 값 ≠ YAML 기본값 → ⚠ + 드리프트 배너 렌더."""
+        mock_session.execute.side_effect = _make_execute_results([
+            _mock_llm_config(
+                agent_type="trader",
+                routing_mode="escalation",
+                primary_model="google/gemini-3.1-pro-preview",
+                escalation_model="openai/gpt-5.2-2025-12-11",
+                confidence_threshold="0.60",
+            ),
+        ])
+        async with _client() as c:
+            r = await c.get("/admin/llm-config")
+        assert r.status_code == 200
+        assert "⚠" in r.text
+        assert "덮어씁니다" in r.text
+        assert "google/gemini-3.1-pro-preview" in r.text
+
+    @pytest.mark.asyncio
+    async def test_llm_config_reset_redirects(self, mock_session):
+        """POST reset → YAML 재시드 후 303 + msg 쿼리."""
+        with patch("src.api.admin.llm_config.get_cache") as mock_cache:
+            mock_cache.return_value.clear_namespace = AsyncMock()
+            async with _client() as c:
+                r = await c.post("/admin/llm-config/reset", follow_redirects=False)
+        assert r.status_code == 303
+        assert "/admin/llm-config" in r.headers.get("location", "")
+        assert "msg=" in r.headers.get("location", "")
+        assert mock_session.commit.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_llm_api_requires_admin(self):
+        """/api/admin/llm/* 무인증 호출 → 로그인 리다이렉트(303)."""
+        main_mod.app.dependency_overrides.pop(require_admin)
+        async with _client() as c:
+            r = await c.get("/api/admin/llm/config", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers.get("location") == "/admin/login"

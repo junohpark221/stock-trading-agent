@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis
@@ -316,7 +316,10 @@ app.include_router(data_router)
 app.include_router(analysis_router)
 app.include_router(pipeline_router)
 app.include_router(decisions_router)
-app.include_router(admin_llm_router)
+# 어드민 API — 백오피스와 동일한 세션 쿠키 인증(무인증 노출 차단)
+from src.api.auth import require_admin  # noqa: E402
+
+app.include_router(admin_llm_router, dependencies=[Depends(require_admin)])
 app.include_router(strategy_router)
 app.include_router(portfolio_router)
 app.include_router(orders_router)

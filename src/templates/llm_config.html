@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}LLM 설정 - Trading Agent{% endblock %}
+
+{% macro cell(field) %}
+    {% if field.db is not none %}{{ field.db }}{% else %}-{% endif %}
+    {% if field.drift %}
+    <br><small style="color:#c62828;">⚠ YAML: {{ field.yaml if field.yaml is not none else '-' }}</small>
+    {% endif %}
+{% endmacro %}
+
+{% block content %}
+<h2>LLM 모델 배분</h2>
+<p><small>실효 설정은 DB(<code>agent_model_config</code>)이며 Redis → DB → YAML 순으로 해석된다. YAML 배포 후에는 아래 재시드로 반영한다.</small></p>
+
+{% if msg %}
+<article style="background:#e8f5e9;border-left:3px solid #2e7d32;padding:0.5rem 1rem;">{{ msg }}</article>
+{% endif %}
+
+{% if has_drift %}
+<article style="background:#fff3e0;border-left:3px solid #e65100;padding:0.5rem 1rem;">
+    ⚠ DB 현행값이 YAML 기본값과 다른 항목이 있습니다. 재시드하면 YAML 값으로 덮어씁니다.
+</article>
+{% endif %}
+
+<div style="overflow-x:auto;">
+<table>
+    <thead>
+        <tr>
+            <th>에이전트</th>
+            <th>모드</th>
+            <th>1차(primary) 모델</th>
+            <th>에스컬레이션 모델</th>
+            <th>threshold</th>
+            <th>활성</th>
+            <th>수정자</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td><strong>{{ row.agent_type }}</strong>{% if row.drift %} <span style="color:#c62828;">⚠</span>{% endif %}</td>
+            {% if row.db_row %}
+            <td>{{ cell(row.fields.routing_mode) }}</td>
+            <td>{{ cell(row.fields.primary_model) }}</td>
+            <td>{{ cell(row.fields.escalation_model) }}</td>
+            <td>{{ cell(row.fields.confidence_threshold) }}</td>
+            <td>{{ '✅' if row.db_row.is_active else '⛔' }}</td>
+            <td><small>{{ row.db_row.updated_by }}</small></td>
+            {% else %}
+            <td colspan="5"><small>DB 미시드 — YAML 기본값으로 동작 중
+                ({{ row.fields.routing_mode.yaml }} / {{ row.fields.primary_model.yaml }}
+                {%- if row.fields.escalation_model.yaml %} → {{ row.fields.escalation_model.yaml }}{% endif %})</small></td>
+            <td>-</td>
+            {% endif %}
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<form method="post" action="/admin/llm-config/reset">
+    <button type="submit" class="outline"
+            onclick="return confirm('DB 설정을 YAML 기본값으로 재시드하고 Redis 캐시를 비웁니다. 진행할까요?')">
+        YAML 기본값으로 재시드
+    </button>
+</form>
+<p><small>재시드 = <code>config/default_model_assignments.yaml</code> → DB upsert + <code>llm_config</code> 캐시 클리어. 재기동 불필요, 다음 LLM 호출부터 반영.</small></p>
+{% endblock %}

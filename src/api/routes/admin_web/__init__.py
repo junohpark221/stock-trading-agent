@@ -16,6 +16,7 @@ from . import (
     decisions,
     entry_snapshots,
     exec_monitor,
+    llm_config_view,
     memory,
     news,
     performance,
@@ -41,6 +42,7 @@ for _mod in (
     memory,
     news,
     exec_monitor,
+    llm_config_view,
 ):
     router.include_router(_mod.router)
 

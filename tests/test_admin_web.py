@@ -1055,6 +1055,115 @@ class TestManualOrderHandler:
         assert "order_success" in loc
         assert "체결 대기" in loc
 
+    # ── 매도 경로 (F-28: 공용 resolve_manual_sell 위임) ─────────────
+
+    @pytest.mark.asyncio
+    async def test_sell_without_position_id_rejected(self, mock_session):
+        """어드민 매도는 대상 포지션 선택이 필수."""
+        from urllib.parse import unquote
+
+        mock_session.get.return_value = _mock_account()
+        async with _client() as c:
+            r = await c.post(
+                "/admin/accounts/acc-1/orders",
+                data={"symbol": "005930", "quantity": "1", "side": "sell"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 303
+        assert "대상 포지션" in unquote(r.headers.get("location", ""))
+
+    @pytest.mark.asyncio
+    async def test_sell_closed_position_rejected(self, mock_session):
+        """closed 포지션은 공용 해석기가 거부 — 브로커 접속 전에 차단."""
+        from urllib.parse import unquote
+
+        pos = _mock_position(id=42)
+        pos.status = "closed"
+        pos.account_id = "acc-1"
+        mock_session.get = AsyncMock(side_effect=[_mock_account(), pos])
+
+        async with _client() as c:
+            r = await c.post(
+                "/admin/accounts/acc-1/orders",
+                data={
+                    "symbol": "005930", "quantity": "1",
+                    "side": "sell", "position_id": "42",
+                },
+                follow_redirects=False,
+            )
+        assert r.status_code == 303
+        assert "open 상태가 아닙니다" in unquote(r.headers.get("location", ""))
+
+    @pytest.mark.asyncio
+    async def test_sell_foreign_account_position_rejected(self, mock_session):
+        """다른 계좌의 포지션도 거부."""
+        from urllib.parse import unquote
+
+        pos = _mock_position(id=42)
+        pos.status = "open"
+        pos.account_id = "acc-9"
+        mock_session.get = AsyncMock(side_effect=[_mock_account(), pos])
+
+        async with _client() as c:
+            r = await c.post(
+                "/admin/accounts/acc-1/orders",
+                data={
+                    "symbol": "005930", "quantity": "1",
+                    "side": "sell", "position_id": "42",
+                },
+                follow_redirects=False,
+            )
+        assert r.status_code == 303
+        assert "이 계좌" in unquote(r.headers.get("location", ""))
+
+    @pytest.mark.asyncio
+    async def test_sell_happy_path_uses_execute_exit(self, mock_session):
+        """유효 포지션 매도 → execute_exit(MANUAL) 호출."""
+        from decimal import Decimal
+        from urllib.parse import unquote
+
+        from src.core.enums import ApprovalStatus, ExitReason, OrderSide
+        from src.core.models import ExecutionResult
+
+        pos = _mock_position(id=42, quantity=10)
+        pos.status = "open"
+        pos.account_id = "acc-1"
+        mock_session.get = AsyncMock(side_effect=[_mock_account(), pos])
+
+        broker = AsyncMock()
+        broker.disconnect = AsyncMock()
+        executor = AsyncMock()
+        executor.execute_entry = AsyncMock()
+        executor.execute_exit = AsyncMock(return_value=ExecutionResult(
+            success=True, order_id=42, broker_order_id="KIS42", symbol="005930",
+            side=OrderSide.SELL, quantity=4, fill_price=Decimal("72000"),
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+        ))
+
+        with (
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트")),
+        ):
+            async with _client() as c:
+                r = await c.post(
+                    "/admin/accounts/acc-1/orders",
+                    data={
+                        "symbol": "005930", "quantity": "4",
+                        "price": "72000", "side": "sell", "position_id": "42",
+                    },
+                    follow_redirects=False,
+                )
+
+        assert r.status_code == 303
+        assert "order_success" in unquote(r.headers.get("location", ""))
+        executor.execute_entry.assert_not_awaited()
+        kwargs = executor.execute_exit.await_args.kwargs
+        assert kwargs["position"] is pos
+        assert kwargs["exit_quantity"] == 4
+        assert kwargs["exit_signal"].reason == ExitReason.MANUAL
+
 
 class TestSyncOrders:
     """POST /admin/accounts/{id}/sync-orders — 미체결 정리 (B-05 브로커 취소)."""

@@ -359,8 +359,13 @@ async def account_manual_order(
         _resolve_account_label,
     )
     from src.config import get_settings
-    from src.core.enums import DecisionAction, ExitReason, OrderStatus, OrderType
-    from src.core.models import ExitSignal, TradeDecision
+    from src.core.enums import DecisionAction, OrderStatus, OrderType
+    from src.core.models import TradeDecision
+    from src.execution.manual_sell import (
+        ManualSellRejection,
+        build_manual_exit_signal,
+        resolve_manual_sell,
+    )
 
     account = await session.get(Account, account_id)
     if account is None:
@@ -405,6 +410,7 @@ async def account_manual_order(
 
     # B-01: 매도는 진입 경로(execute_entry) 오용을 막고, 선택한 기존 포지션을
     # 정식 청산 경로(execute_exit)로 청산한다. position_id 필수.
+    # 검증 자체는 텔레그램·REST와 공용인 resolve_manual_sell에 위임한다(F-28).
     position: PositionRecord | None = None
     if side_raw == "sell":
         if not position_id_raw:
@@ -413,18 +419,17 @@ async def account_manual_order(
             position_id = int(position_id_raw)
         except ValueError:
             return _redirect_error(f"포지션 ID가 올바르지 않습니다: {position_id_raw}")
-        position = await session.get(PositionRecord, position_id)
-        if (
-            position is None
-            or position.status != "open"
-            or position.account_id != account_id
-        ):
-            return _redirect_error("유효한 open 포지션이 아닙니다")
-        symbol = position.symbol  # 포지션 기준으로 종목 확정
-        if quantity > position.quantity:
-            return _redirect_error(
-                f"매도 수량({quantity:,})이 보유 수량({position.quantity:,})을 초과합니다"
-            )
+        resolution = await resolve_manual_sell(
+            session=session,
+            account_id=account_id,
+            symbol=None,  # 폼 종목이 아니라 포지션 기준으로 확정
+            quantity=quantity,
+            position_id=position_id,
+        )
+        if isinstance(resolution, ManualSellRejection):
+            return _redirect_error(resolution.message)
+        position = resolution.position
+        symbol = resolution.symbol  # 포지션 기준으로 종목 확정
 
     broker = None
     owned = False
@@ -449,19 +454,9 @@ async def account_manual_order(
 
         if side_raw == "sell":
             assert position is not None
-            avg_cost = position.avg_cost or price
-            pnl_pct = (
-                (price - avg_cost) / avg_cost * Decimal("100")
-                if avg_cost > 0
-                else Decimal("0")
-            )
-            exit_signal = ExitSignal(
-                symbol=symbol,
-                reason=ExitReason.MANUAL,
-                urgency="immediate",
-                current_price=price,
-                unrealized_pnl_pct=pnl_pct,
-                recommended_action=DecisionAction.SELL,
+            exit_signal = build_manual_exit_signal(
+                position=position,
+                price=price,
                 reasoning=f"Backoffice manual exit by admin ({account_id})",
             )
             result = await executor.execute_exit(

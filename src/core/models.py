@@ -1067,6 +1067,10 @@ class ExecuteOrderRequest(BaseModel):
 
     price를 비우면 서버가 브로커 현재가를 조회해 채운다.
     manual=True면 OrderExecutor에서 웹검증/승인을 생략하고 즉시 브로커에 제출한다.
+
+    side=sell(F-28)은 진입이 아니라 **기존 포지션 청산**(execute_exit)으로 처리된다.
+    이때 strategy_type·stop_loss_price·take_profit_price는 무시되고(포지션 자신의 값이
+    기준), order_type은 청산 주문유형으로 그대로 반영된다.
     """
 
     symbol: str
@@ -1080,6 +1084,10 @@ class ExecuteOrderRequest(BaseModel):
     skip_web_verify: bool = False
     account_id: str = "default"
     manual: bool = False
+    # F-28: 매도 대상 포지션. 지정 시 해당 포지션을 검증 후 청산하고,
+    # 미지정 시 symbol+account_id로 가장 오래된 open 포지션을 자동 매칭한다.
+    # side=buy에서는 무시된다.
+    position_id: int | None = Field(None, gt=0)
 
 
 class ApprovalResponse(BaseModel):

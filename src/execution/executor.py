@@ -915,6 +915,56 @@ class OrderExecutor:
             executed_at=now,
         )
 
+        # F-28 방어: 진입 경로로 유입된 매도 체결은 절대 포지션을 만들지 않는다.
+        # 수동 매도는 execute_exit(포지션 해석 + position_id 부착)로 통일됐으므로
+        # 여기에 SELL이 도달하면 배선 결함이다. 브로커 체결은 되돌릴 수 없으니
+        # executions/orders 기록은 남기고 포지션 생성만 차단한 뒤 실패로 반환해
+        # 사람 개입을 유도한다(포지션 생성 실패 핸들러와 동일한 원칙).
+        if side != OrderSide.BUY:
+            logger.critical(
+                "executor.entry_finalize_sell_side",
+                order_id=order.id, symbol=symbol, account_id=account_id,
+                fill_quantity=fill_quantity, fill_price=str(fill_price),
+            )
+            await self._notify_safe(
+                f"<b>[긴급] 진입 경로에 매도 체결 유입(F-28)</b>\n"
+                f"종목: {symbol}\n수량: {fill_quantity}주 @ {fill_price:,}원\n"
+                f"포지션 생성을 차단했습니다. 브로커 체결은 완료 — 즉시 수동 확인 필요"
+            )
+            await self._update_order(
+                order.id,
+                status=final_status,
+                broker_order_id=order_result.order_id,
+                filled_quantity=fill_quantity,
+                filled_price=fill_price,
+                commission=commission,
+                executed_at=now,
+                rejection_reason="진입 경로 매도 체결 — 포지션 미생성(F-28), 수동 확인 필요",
+            )
+            did = await self._record_decision_safe(
+                session_id=session_id,
+                stage=DecisionStage.EXECUTION,
+                decision=DecisionAction.REJECT,
+                symbol=symbol,
+                reasoning="진입 경로로 유입된 매도 체결 — 포지션 생성 차단(F-28)",
+                parent_id=parent_decision_id,
+                account_id=account_id,
+                data_snapshot={
+                    "order_id": order.id,
+                    "broker_order_id": order_result.order_id,
+                    "fill_quantity": fill_quantity,
+                    "fill_price": str(fill_price),
+                },
+            )
+            if did:
+                decision_ids.append(did)
+            return self._fail_result(
+                order=order, symbol=symbol, side=side, quantity=fill_quantity,
+                approval_status=approval_status,
+                web_verify_result=verification.result, decision_ids=decision_ids,
+                error="진입 경로 매도 체결 — 포지션 생성 차단(F-28), 수동 확인 필요",
+            )
+
         # 손절/익절가: 체결가 기준 비율 재적용(F-16) > 명시적 값 > 설정 기반 기본값.
         # reference_price가 주어지면 실제 체결가(fill_price) 대비 원래 비율로 손절/익절을
         # 재산정해 갭/체결가 괴리에서도 의도한 R:R·리스크%를 보존한다.
@@ -1075,6 +1125,7 @@ class OrderExecutor:
         account_label: str = "",
         broker: BrokerInterface | None = None,
         exit_quantity: int | None = None,
+        order_type_override: OrderType | None = None,
         manual: bool = False,
     ) -> ExecutionResult:
         """청산 주문 실행.
@@ -1088,6 +1139,8 @@ class OrderExecutor:
         position: 청산 대상 포지션 (DB ORM).
         session_id: 파이프라인 세션 ID.
         parent_decision_id: 부모 decision_log ID.
+        order_type_override: 주문유형 강제(F-28 수동 매도의 시장가 지원). 손절+즉시의
+            MARKET은 안전 하한이라 override로 낮추지 않는다.
         """
         symbol = exit_signal.symbol
         reason = exit_signal.reason
@@ -1095,12 +1148,12 @@ class OrderExecutor:
         side = OrderSide.SELL
         is_stop_loss = reason == ExitReason.STOP_LOSS
 
-        # 손절+즉시 → MARKET, 나머지 → LIMIT
-        order_type = (
-            OrderType.MARKET
-            if is_stop_loss and exit_signal.urgency == "immediate"
-            else OrderType.LIMIT
-        )
+        # 손절+즉시 → MARKET(미체결 방치 방지용 안전 하한. override로 낮추지 않는다),
+        # 그 외 → 호출자 override(F-28 REST 수동 시장가 매도) > LIMIT(기본).
+        if is_stop_loss and exit_signal.urgency == "immediate":
+            order_type = OrderType.MARKET
+        else:
+            order_type = order_type_override or OrderType.LIMIT
         price = exit_signal.current_price
         # 부분 청산 지원(B-01 수동 매도): 지정 수량이 없거나 잔량 초과면 전량.
         quantity = position.quantity

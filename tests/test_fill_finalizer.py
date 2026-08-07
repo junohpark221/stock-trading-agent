@@ -114,3 +114,41 @@ async def test_create_entry_position_threads_snapshot() -> None:
     )
 
     assert pm.create.call_args.kwargs["entry_analysis_snapshot"] == snapshot
+
+
+@pytest.mark.asyncio
+async def test_mark_expired_closes_orphan_for_buy_order() -> None:
+    """진입(BUY) 미체결 만료 — 조기 생성된 고아 포지션은 닫는다(기존 동작)."""
+    factory, _ = _make_factory(rowcount=1)
+    finalizer = _make_finalizer(factory)
+    finalizer._close_orphaned_position = AsyncMock()
+    finalizer._notify_safe = AsyncMock()
+    finalizer._get_account_label = AsyncMock(return_value="테스트")
+
+    order = MagicMock(
+        id=1, side="buy", symbol="005930", account_id="default", position_id=42,
+        status=OrderStatus.SUBMITTED.value,
+    )
+    await finalizer.mark_expired(order)
+
+    finalizer._close_orphaned_position.assert_awaited_once_with(42, "005930")
+
+
+@pytest.mark.asyncio
+async def test_mark_expired_sell_order_does_not_close_position() -> None:
+    """F-31: 청산(SELL) 주문의 position_id는 실보유 포지션 — 만료로 닫으면 안 된다."""
+    factory, _ = _make_factory(rowcount=1)
+    finalizer = _make_finalizer(factory)
+    finalizer._close_orphaned_position = AsyncMock()
+    finalizer._notify_safe = AsyncMock()
+    finalizer._get_account_label = AsyncMock(return_value="테스트")
+
+    order = MagicMock(
+        id=1, side="sell", symbol="005930", account_id="default", position_id=42,
+        status=OrderStatus.SUBMITTED.value,
+    )
+    await finalizer.mark_expired(order)
+
+    finalizer._close_orphaned_position.assert_not_awaited()
+    # 만료 알림 자체는 정상 발송
+    finalizer._notify_safe.assert_awaited_once()

@@ -437,19 +437,45 @@ async def get_order_detail(
 
 
 @router.post("/execute", dependencies=[Depends(require_admin)])
-async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
+async def execute_order(
+    req: ExecuteOrderRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> JSONResponse:
     """수동 주문 실행 — Web 검증 → 승인 → 브로커 주문 → 포지션 관리.
 
-    OrderExecutor.execute_entry()의 전체 파이프라인을 실행한다.
+    매수(side=buy): OrderExecutor.execute_entry()의 전체 파이프라인.
+    매도(side=sell): 기존 open 포지션을 해석해 execute_exit()로 청산한다(F-28).
+      position_id를 주면 그 포지션을, 없으면 symbol+account의 가장 오래된 open
+      포지션을 대상으로 한다. 대상이 없으면 422로 거부한다(진입 경로 오용 금지).
     manual=True면 웹검증/승인을 생략하고 즉시 브로커로 접수한다.
     price가 None이면 브로커 현재가로 지정가 주문을 낸다.
     """
     from src.config import get_settings
+    from src.execution.manual_sell import (
+        ManualSellRejection,
+        build_manual_exit_signal,
+        resolve_manual_sell,
+    )
 
     broker = None
     owned = False
     try:
         executor, broker, owned, finalizer = await _build_executor(req.account_id)
+
+        # F-28: 매도는 반드시 기존 포지션 청산 경로(execute_exit). 진입 경로로 내면
+        # phantom 포지션이 생기거나(인라인 확정) 포지션이 안 닫힌다(비동기 확정).
+        # 시세 조회 전에 먼저 해석해 불가한 매도를 외부 호출 없이 차단한다.
+        resolution = None
+        if req.side == OrderSide.SELL:
+            resolution = await resolve_manual_sell(
+                session=session,
+                account_id=req.account_id,
+                symbol=req.symbol,
+                quantity=req.quantity,
+                position_id=req.position_id,
+            )
+            if isinstance(resolution, ManualSellRejection):
+                raise HTTPException(status_code=422, detail=resolution.message)
 
         # 가격 자동 보정 — 빈 값이면 현재가 조회
         price = req.price
@@ -468,30 +494,49 @@ async def execute_order(req: ExecuteOrderRequest) -> JSONResponse:
                     detail=f"현재가가 유효하지 않습니다: {price}",
                 )
 
-        # TradeDecision 구성
-        action = DecisionAction.BUY if req.side == OrderSide.BUY else DecisionAction.SELL
-        trade_decision = TradeDecision(
-            symbol=req.symbol,
-            action=action,
-            confidence=Decimal("1.0"),
-            order_type=req.order_type,
-            quantity=req.quantity,
-            price=price,
-            stop_loss_price=req.stop_loss_price,
-            take_profit_price=req.take_profit_price,
-            reasoning="Manual order via API" if req.manual else "Manual order via API (with approval)",
-        )
-
         session_id = uuid4()
         account_label = await _resolve_account_label(req.account_id)
-        result = await executor.execute_entry(
-            trade_decision=trade_decision,
-            session_id=session_id,
-            strategy_type=req.strategy_type.value,
-            account_id=req.account_id,
-            account_label=account_label,
-            manual=req.manual,
-        )
+
+        if resolution is not None:
+            exit_signal = build_manual_exit_signal(
+                position=resolution.position,
+                price=price,
+                reasoning=f"Manual exit via API ({req.account_id})",
+            )
+            result = await executor.execute_exit(
+                exit_signal=exit_signal,
+                position=resolution.position,
+                session_id=session_id,
+                account_id=req.account_id,
+                account_label=account_label,
+                broker=broker,
+                exit_quantity=resolution.quantity,
+                order_type_override=req.order_type,
+                manual=req.manual,
+            )
+        else:
+            trade_decision = TradeDecision(
+                symbol=req.symbol,
+                action=DecisionAction.BUY,
+                confidence=Decimal("1.0"),
+                order_type=req.order_type,
+                quantity=req.quantity,
+                price=price,
+                stop_loss_price=req.stop_loss_price,
+                take_profit_price=req.take_profit_price,
+                reasoning=(
+                    "Manual order via API" if req.manual
+                    else "Manual order via API (with approval)"
+                ),
+            )
+            result = await executor.execute_entry(
+                trade_decision=trade_decision,
+                session_id=session_id,
+                strategy_type=req.strategy_type.value,
+                account_id=req.account_id,
+                account_label=account_label,
+                manual=req.manual,
+            )
 
         # B-08: 접수분(pending)은 동기로 짧게 체결을 확인해 응답에 반영
         if result.pending and result.broker_order_id:

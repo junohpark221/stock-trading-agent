@@ -335,7 +335,7 @@ class PositionManager:
         status: str = "open",
         account_id: str | None = None,
     ) -> PositionRecord | None:
-        """종목별 포지션 조회.
+        """종목별 포지션 조회 (동일 종목 다중 행이면 가장 오래된 1건).
 
         Parameters
         ----------
@@ -358,7 +358,10 @@ class PositionManager:
                         PositionRecord.account_id == account_id
                     )
 
-                stmt = stmt.limit(1)
+                # F-27 중복 행에서 임의의 행이 뽑히지 않도록 결정론적 정렬 후 1건.
+                stmt = stmt.order_by(
+                    PositionRecord.entry_date.asc(), PositionRecord.id.asc()
+                ).limit(1)
                 result = await session.execute(stmt)
                 return result.scalar_one_or_none()
         except Exception as exc:

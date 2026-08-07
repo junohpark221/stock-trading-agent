@@ -521,7 +521,8 @@ _BUY_USAGE = (
 )
 _SELL_USAGE = (
     "사용법: <code>/sell SYMBOL QTY [PRICE] [계좌명]</code>\n"
-    "예: <code>/sell 005930 5</code>"
+    "예: <code>/sell 005930 5</code>\n"
+    "※ 기존 open 포지션만 청산합니다(동일 종목 중복 시 가장 오래된 포지션 대상)."
 )
 
 
@@ -572,12 +573,22 @@ def _parse_order_args(args: str) -> tuple[str, int, "Decimal | None", str] | Non
 
 
 async def _run_manual_order(message: Message, side: str) -> None:
-    """Shared handler for /buy and /sell."""
+    """Shared handler for /buy and /sell.
+
+    매도는 진입 경로(execute_entry)를 쓰지 않고 기존 open 포지션을 해석해
+    execute_exit로 청산한다(F-28). 대상 포지션이 없으면 발주 전에 거부한다.
+    """
     from decimal import Decimal
+    from uuid import uuid4
 
     from src.api.routes.orders import _build_executor, _resolve_account_label
-    from src.core.enums import DecisionAction, OrderSide
+    from src.core.enums import DecisionAction
     from src.core.models import TradeDecision
+    from src.execution.manual_sell import (
+        ManualSellRejection,
+        build_manual_exit_signal,
+        resolve_manual_sell,
+    )
 
     session_factory = _deps["session_factory"]
     usage = _BUY_USAGE if side == "buy" else _SELL_USAGE
@@ -601,6 +612,28 @@ async def _run_manual_order(message: Message, side: str) -> None:
         return
     account_id, account_label = account
 
+    # F-28: 매도 대상 포지션을 브로커 접속 전에 먼저 해석·검증한다.
+    position = None
+    multi_note = ""
+    if side == "sell":
+        async with session_factory() as session:
+            resolution = await resolve_manual_sell(
+                session=session, account_id=account_id, symbol=symbol, quantity=qty,
+            )
+        if isinstance(resolution, ManualSellRejection):
+            await message.answer(
+                f"❌ <b>매도 불가</b>\n{html.escape(resolution.message)}",
+                parse_mode="HTML",
+            )
+            return
+        position = resolution.position
+        symbol = resolution.symbol  # 포지션 기준으로 종목 확정
+        if resolution.is_ambiguous:
+            multi_note = (
+                f"\n⚠️ 동일 종목 open 포지션 {len(resolution.candidates)}건 — "
+                f"가장 오래된 #{position.id} 대상"
+            )
+
     broker = None
     owned = False
     try:
@@ -620,28 +653,44 @@ async def _run_manual_order(message: Message, side: str) -> None:
                 await message.answer("❌ 현재가가 유효하지 않습니다.", parse_mode="HTML")
                 return
 
-        order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
-        action = DecisionAction.BUY if order_side == OrderSide.BUY else DecisionAction.SELL
-
-        td = TradeDecision(
-            symbol=symbol,
-            action=action,
-            confidence=Decimal("1.0"),
-            quantity=qty,
-            price=price,
-            reasoning=f"Telegram manual /{side} by admin",
-        )
         # account_label은 여기서 broker label 대신 resolve_account 라벨을 쓰려면
         # 일관성 위해 _resolve_account_label 사용
         display_label = await _resolve_account_label(account_id)
-        result = await executor.execute_entry(
-            trade_decision=td,
-            session_id=__import__("uuid").uuid4(),
-            strategy_type="manual",
-            account_id=account_id,
-            account_label=display_label or account_label,
-            manual=True,
-        )
+
+        if position is not None:
+            # 매도 = 기존 포지션 청산(F-28). 주문유형은 LIMIT(execute_exit 기본).
+            exit_signal = build_manual_exit_signal(
+                position=position,
+                price=price,
+                reasoning=f"Telegram manual /sell by admin ({account_id})",
+            )
+            result = await executor.execute_exit(
+                exit_signal=exit_signal,
+                position=position,
+                session_id=uuid4(),
+                account_id=account_id,
+                account_label=display_label or account_label,
+                broker=broker,
+                exit_quantity=qty,
+                manual=True,
+            )
+        else:
+            td = TradeDecision(
+                symbol=symbol,
+                action=DecisionAction.BUY,
+                confidence=Decimal("1.0"),
+                quantity=qty,
+                price=price,
+                reasoning=f"Telegram manual /{side} by admin",
+            )
+            result = await executor.execute_entry(
+                trade_decision=td,
+                session_id=uuid4(),
+                strategy_type="manual",
+                account_id=account_id,
+                account_label=display_label or account_label,
+                manual=True,
+            )
     except Exception as exc:
         logger.exception(
             "telegram_manual_order_failed", side=side, symbol=symbol,
@@ -659,21 +708,23 @@ async def _run_manual_order(message: Message, side: str) -> None:
                 logger.exception("telegram_manual_order_broker_disconnect_failed")
 
     side_ko = "매수" if side == "buy" else "매도"
-    if result.success:
+    # 접수분(pending)은 success=True를 동반하므로 success보다 먼저 검사한다
+    # (그러지 않으면 체결 미확정 주문이 "체결"로 표시된다).
+    if result.pending:
+        text = (
+            f"⏳ <b>{side_ko} 접수</b> (체결 대기)\n"
+            f"계좌: {html.escape(display_label or account_label)}\n"
+            f"종목: <code>{symbol}</code>\n"
+            f"수량: {result.quantity:,}주 @ {price:,}원\n"
+            f"주문번호: <code>{result.broker_order_id or '-'}</code>{multi_note}"
+        )
+    elif result.success:
         fill_price = result.fill_price or price
         text = (
             f"✅ <b>{side_ko} 체결</b>\n"
             f"계좌: {html.escape(display_label or account_label)}\n"
             f"종목: <code>{symbol}</code>\n"
-            f"수량: {result.quantity:,}주 @ {fill_price:,}원"
-        )
-    elif result.pending:
-        text = (
-            f"⏳ <b>{side_ko} 접수</b> (체결 대기)\n"
-            f"계좌: {html.escape(display_label or account_label)}\n"
-            f"종목: <code>{symbol}</code>\n"
-            f"수량: {qty:,}주 @ {price:,}원\n"
-            f"주문번호: <code>{result.broker_order_id or '-'}</code>"
+            f"수량: {result.quantity:,}주 @ {fill_price:,}원{multi_note}"
         )
     else:
         text = (

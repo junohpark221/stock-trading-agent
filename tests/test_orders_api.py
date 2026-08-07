@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 
 import src.main as main_mod
 from src.api.auth import require_admin
-from src.core.enums import ApprovalStatus, OrderSide, OrderStatus
+from src.core.enums import ApprovalStatus, ExitReason, OrderSide, OrderStatus, OrderType
 from src.core.models import ExecutionResult
 from src.db.session import get_db_session
 
@@ -319,6 +319,151 @@ async def test_execute_order_failure(mock_build, client):
     data = resp.json()
     assert data["success"] is False
     assert "차단" in data["error"]
+
+
+# ── F-28: 매도는 execute_exit 경로 ───────────────────────────────────
+
+
+def _mock_position(**kwargs) -> MagicMock:
+    pos = MagicMock()
+    pos.id = kwargs.get("id", 7)
+    pos.symbol = kwargs.get("symbol", "005930")
+    pos.quantity = kwargs.get("quantity", 10)
+    pos.avg_cost = kwargs.get("avg_cost", Decimal("70000"))
+    pos.status = "open"
+    pos.account_id = kwargs.get("account_id", "default")
+    return pos
+
+
+@pytest.mark.asyncio
+@patch("src.execution.manual_sell.resolve_manual_sell")
+@patch("src.api.routes.orders._build_executor")
+async def test_execute_order_sell_uses_execute_exit(mock_build, mock_resolve, client):
+    """F-28: side=sell은 execute_entry가 아니라 execute_exit로 청산한다."""
+    from src.execution.manual_sell import ManualSellPlan
+
+    pos = _mock_position(quantity=10)
+    mock_resolve.return_value = ManualSellPlan(
+        position=pos, symbol="005930", quantity=4, candidates=[pos],
+    )
+    mock_executor = MagicMock()
+    mock_executor.execute_entry = AsyncMock()
+    mock_executor.execute_exit = AsyncMock(
+        return_value=_execution_result(success=True, side=OrderSide.SELL, quantity=4)
+    )
+    mock_build.return_value = (mock_executor, AsyncMock(), True, AsyncMock())
+
+    resp = await client.post("/api/orders/execute", json={
+        "symbol": "005930", "side": "sell", "quantity": 4, "price": "78000",
+    })
+
+    assert resp.status_code == 200
+    mock_executor.execute_entry.assert_not_awaited()
+    kwargs = mock_executor.execute_exit.call_args.kwargs
+    assert kwargs["position"] is pos
+    assert kwargs["exit_quantity"] == 4
+    assert kwargs["order_type_override"] == OrderType.LIMIT
+    assert kwargs["exit_signal"].reason == ExitReason.MANUAL
+
+
+@pytest.mark.asyncio
+@patch("src.execution.manual_sell.resolve_manual_sell")
+@patch("src.api.routes.orders._build_executor")
+async def test_execute_order_sell_no_position_422(mock_build, mock_resolve, client):
+    """대상 포지션이 없으면 발주 전에 422로 거부한다(동기화 안내 포함)."""
+    from src.execution.manual_sell import ManualSellRejection
+
+    mock_resolve.return_value = ManualSellRejection(
+        code="no_open_position", message="005930 open 포지션이 없습니다. 포지션 동기화 후 재시도",
+    )
+    mock_executor = MagicMock()
+    mock_executor.execute_exit = AsyncMock()
+    mock_executor.execute_entry = AsyncMock()
+    mock_broker = AsyncMock()
+    mock_build.return_value = (mock_executor, mock_broker, True, AsyncMock())
+
+    resp = await client.post("/api/orders/execute", json={
+        "symbol": "005930", "side": "sell", "quantity": 4, "price": "78000",
+    })
+
+    assert resp.status_code == 422
+    assert "포지션 동기화" in resp.json()["detail"]
+    mock_executor.execute_exit.assert_not_awaited()
+    mock_executor.execute_entry.assert_not_awaited()
+    # 해석 실패는 시세 조회(외부 호출) 전에 차단
+    mock_broker.get_price.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("src.execution.manual_sell.resolve_manual_sell")
+@patch("src.api.routes.orders._build_executor")
+async def test_execute_order_sell_explicit_position_id(mock_build, mock_resolve, client):
+    """position_id를 주면 그대로 해석기에 전달된다."""
+    from src.execution.manual_sell import ManualSellPlan
+
+    pos = _mock_position(id=42)
+    mock_resolve.return_value = ManualSellPlan(
+        position=pos, symbol="005930", quantity=1, candidates=[pos],
+    )
+    mock_executor = MagicMock()
+    mock_executor.execute_exit = AsyncMock(
+        return_value=_execution_result(success=True, side=OrderSide.SELL, quantity=1)
+    )
+    mock_build.return_value = (mock_executor, AsyncMock(), True, AsyncMock())
+
+    resp = await client.post("/api/orders/execute", json={
+        "symbol": "005930", "side": "sell", "quantity": 1, "price": "78000",
+        "position_id": 42,
+    })
+
+    assert resp.status_code == 200
+    assert mock_resolve.call_args.kwargs["position_id"] == 42
+
+
+@pytest.mark.asyncio
+@patch("src.execution.manual_sell.resolve_manual_sell")
+@patch("src.api.routes.orders._build_executor")
+async def test_execute_order_sell_market_override(mock_build, mock_resolve, client):
+    """REST의 order_type=market이 청산 주문유형으로 보존된다."""
+    from src.execution.manual_sell import ManualSellPlan
+
+    pos = _mock_position()
+    mock_resolve.return_value = ManualSellPlan(
+        position=pos, symbol="005930", quantity=2, candidates=[pos],
+    )
+    mock_executor = MagicMock()
+    mock_executor.execute_exit = AsyncMock(
+        return_value=_execution_result(success=True, side=OrderSide.SELL, quantity=2)
+    )
+    mock_build.return_value = (mock_executor, AsyncMock(), True, AsyncMock())
+
+    resp = await client.post("/api/orders/execute", json={
+        "symbol": "005930", "side": "sell", "quantity": 2, "price": "78000",
+        "order_type": "market",
+    })
+
+    assert resp.status_code == 200
+    assert mock_executor.execute_exit.call_args.kwargs["order_type_override"] == (
+        OrderType.MARKET
+    )
+
+
+@pytest.mark.asyncio
+@patch("src.api.routes.orders._build_executor")
+async def test_execute_order_buy_still_uses_execute_entry(mock_build, client):
+    """매수 경로는 그대로 진입 파이프라인(회귀 고정)."""
+    mock_executor = MagicMock()
+    mock_executor.execute_entry = AsyncMock(return_value=_execution_result(success=True))
+    mock_executor.execute_exit = AsyncMock()
+    mock_build.return_value = (mock_executor, AsyncMock(), True, AsyncMock())
+
+    resp = await client.post("/api/orders/execute", json={
+        "symbol": "005930", "side": "buy", "quantity": 10, "price": "78000",
+    })
+
+    assert resp.status_code == 200
+    mock_executor.execute_entry.assert_awaited_once()
+    mock_executor.execute_exit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

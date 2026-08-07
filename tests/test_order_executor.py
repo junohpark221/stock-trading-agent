@@ -415,8 +415,10 @@ async def test_execute_entry_manual_approved(executor, mock_approval_manager):
 
 
 @pytest.mark.asyncio
-async def test_execute_entry_sell_action(executor, mock_broker):
-    """매도 진입 주문."""
+async def test_execute_entry_sell_action_blocked_by_guard(
+    executor, mock_broker, mock_position_manager, mock_bot, fake_session,
+):
+    """F-28: 진입 경로로 들어온 매도 체결은 포지션을 만들지 않고 실패로 반환한다."""
     td = _make_trade_decision(action=DecisionAction.SELL)
 
     result = await executor.execute_entry(
@@ -424,12 +426,17 @@ async def test_execute_entry_sell_action(executor, mock_broker):
         strategy_type=StrategyType.SWING.value,
     )
 
-    assert result.success is True
-    assert result.side == OrderSide.SELL
-    # place_order에 전달된 OrderRequest 확인
-    call_args = mock_broker.place_order.call_args
-    order_req = call_args[0][0]
+    # 브로커 발주 자체는 정상 수행(체결은 되돌릴 수 없음)
+    order_req = mock_broker.place_order.call_args[0][0]
     assert order_req.side == OrderSide.SELL
+    # 체결 기록은 남는다
+    assert any(isinstance(o, Execution) for o in fake_session.added)
+    # phantom 포지션 생성 차단 + 실패 반환 + 긴급 알림
+    mock_position_manager.create.assert_not_awaited()
+    assert result.success is False
+    assert result.position_id is None
+    assert "F-28" in result.error
+    mock_bot.send_message.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +797,50 @@ async def test_execute_exit_normal(executor, mock_approval_manager):
     assert td.action == DecisionAction.SELL
     # LIMIT 주문 (non-stop-loss)
     assert td.order_type == OrderType.LIMIT
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_order_type_override_market(executor, mock_broker):
+    """F-28: order_type_override로 수동 시장가 매도를 낼 수 있다."""
+    es = _make_exit_signal(reason=ExitReason.MANUAL, urgency="immediate")
+    pos = _make_fake_position()
+
+    await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(),
+        order_type_override=OrderType.MARKET, manual=True,
+    )
+
+    order_req = mock_broker.place_order.call_args[0][0]
+    assert order_req.order_type == OrderType.MARKET
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_override_cannot_downgrade_stop_loss(executor, mock_broker):
+    """손절+즉시의 MARKET은 안전 하한 — override로 LIMIT으로 낮출 수 없다."""
+    es = _make_exit_signal(reason=ExitReason.STOP_LOSS, urgency="immediate")
+    pos = _make_fake_position()
+
+    await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(),
+        order_type_override=OrderType.LIMIT,
+    )
+
+    order_req = mock_broker.place_order.call_args[0][0]
+    assert order_req.order_type == OrderType.MARKET
+
+
+@pytest.mark.asyncio
+async def test_execute_exit_default_order_type_unchanged(executor, mock_broker):
+    """override 미지정 시 기존 동작(LIMIT) 유지 — 회귀 고정."""
+    es = _make_exit_signal(reason=ExitReason.MANUAL, urgency="immediate")
+    pos = _make_fake_position()
+
+    await executor.execute_exit(
+        exit_signal=es, position=pos, session_id=uuid.uuid4(), manual=True,
+    )
+
+    order_req = mock_broker.place_order.call_args[0][0]
+    assert order_req.order_type == OrderType.LIMIT
 
 
 # ---------------------------------------------------------------------------
@@ -1286,18 +1337,22 @@ async def test_cash_gate_off_mode_skips_check(
 async def test_cash_gate_sell_skips_check(
     executor, mock_broker, mock_settings,
 ):
-    """SELL 주문은 현금 체크 생략 (리스크 감소 방향)."""
+    """SELL 주문은 현금 체크 생략 (리스크 감소 방향).
+
+    체결 확정은 F-28 가드가 막지만(success=False), 현금 게이트 자체는 발주 전 단계라
+    SELL에서 호출되지 않아야 한다.
+    """
     mock_settings.ORDER_CASH_GATE_MODE = "reject"
     mock_broker.get_buyable_cash = AsyncMock(return_value=Decimal("0"))
 
     td = _make_trade_decision(action=DecisionAction.SELL, quantity=10,
                               price=Decimal("72000"))
-    result = await executor.execute_entry(
+    await executor.execute_entry(
         trade_decision=td, session_id=uuid.uuid4(),
         strategy_type=StrategyType.POSITION.value,
     )
 
-    assert result.success is True
+    mock_broker.place_order.assert_awaited_once()
     mock_broker.get_buyable_cash.assert_not_awaited()
 
 

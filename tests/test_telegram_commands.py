@@ -399,3 +399,200 @@ class TestCmdBuySell:
         text = mock_message.answer.call_args[0][0]
         # usage 메시지 형태
         assert "/sell" in text or "사용법" in text
+
+    # ── F-28: /sell은 execute_exit 경로 ──────────────────────────────
+
+    @staticmethod
+    def _sell_mocks(result):
+        """(broker, executor) — /sell 경로용 공용 모의."""
+        from decimal import Decimal
+
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(
+            return_value=MagicMock(current_price=Decimal("70000")),
+        )
+        broker.disconnect = AsyncMock()
+
+        executor = AsyncMock()
+        executor.execute_exit = AsyncMock(return_value=result)
+        executor.execute_entry = AsyncMock()
+        return broker, executor
+
+    @staticmethod
+    def _sell_result(**kwargs):
+        from decimal import Decimal
+
+        from src.core.enums import ApprovalStatus, OrderSide
+        from src.core.models import ExecutionResult
+
+        return ExecutionResult(
+            success=kwargs.get("success", True),
+            order_id=1,
+            broker_order_id=kwargs.get("broker_order_id", "KIS1"),
+            symbol="005930",
+            side=OrderSide.SELL,
+            quantity=kwargs.get("quantity", 5),
+            fill_price=kwargs.get("fill_price", Decimal("70000")),
+            approval_status=ApprovalStatus.AUTO_APPROVED,
+            pending=kwargs.get("pending", False),
+            error=kwargs.get("error", ""),
+        )
+
+    @staticmethod
+    def _position(**kwargs):
+        from decimal import Decimal
+
+        pos = MagicMock()
+        pos.id = kwargs.get("id", 7)
+        pos.symbol = "005930"
+        pos.quantity = kwargs.get("quantity", 10)
+        pos.avg_cost = Decimal("68000")
+        pos.status = "open"
+        pos.account_id = "acc-1"
+        return pos
+
+    @pytest.mark.asyncio
+    async def test_sell_happy_path_uses_execute_exit(self, mock_message):
+        """F-28: /sell은 진입 경로가 아니라 포지션 청산(execute_exit)으로 간다."""
+        from src.execution.manual_sell import ManualSellPlan
+
+        mock_message.text = "/sell 005930 5"
+        pos = self._position()
+        broker, executor = self._sell_mocks(self._sell_result())
+
+        with (
+            patch("src.notification.commands.resolve_account",
+                  AsyncMock(return_value=("acc-1", "테스트"))),
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트 (1234)")),
+            patch("src.execution.manual_sell.resolve_manual_sell",
+                  AsyncMock(return_value=ManualSellPlan(
+                      position=pos, symbol="005930", quantity=5, candidates=[pos],
+                  ))),
+        ):
+            await cmd_sell(mock_message)
+
+        executor.execute_entry.assert_not_awaited()
+        kwargs = executor.execute_exit.await_args.kwargs
+        assert kwargs["position"] is pos
+        assert kwargs["exit_quantity"] == 5
+        assert kwargs["manual"] is True
+        assert "order_type_override" not in kwargs  # 텔레그램은 LIMIT 기본
+        assert "매도 체결" in mock_message.answer.call_args[0][0]
+        broker.disconnect.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sell_no_position_rejected(self, mock_message):
+        """대상 포지션이 없으면 브로커 접속·발주 없이 거부한다."""
+        from src.execution.manual_sell import ManualSellRejection
+
+        mock_message.text = "/sell 005930 5"
+        broker, executor = self._sell_mocks(self._sell_result())
+
+        with (
+            patch("src.notification.commands.resolve_account",
+                  AsyncMock(return_value=("acc-1", "테스트"))),
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))) as build,
+            patch("src.execution.manual_sell.resolve_manual_sell",
+                  AsyncMock(return_value=ManualSellRejection(
+                      code="no_open_position",
+                      message="open 포지션이 없습니다. 포지션 동기화 후 다시 시도하세요.",
+                  ))),
+        ):
+            await cmd_sell(mock_message)
+
+        text = mock_message.answer.call_args[0][0]
+        assert "매도 불가" in text
+        assert "포지션 동기화" in text
+        executor.execute_exit.assert_not_awaited()
+        build.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sell_multi_position_note(self, mock_message):
+        """동일 종목 open 포지션이 여러 건이면 대상 선택을 안내한다(F-27)."""
+        from src.execution.manual_sell import ManualSellPlan
+
+        mock_message.text = "/sell 005930 5"
+        older, newer = self._position(id=12), self._position(id=19)
+        broker, executor = self._sell_mocks(self._sell_result())
+
+        with (
+            patch("src.notification.commands.resolve_account",
+                  AsyncMock(return_value=("acc-1", "테스트"))),
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트 (1234)")),
+            patch("src.execution.manual_sell.resolve_manual_sell",
+                  AsyncMock(return_value=ManualSellPlan(
+                      position=older, symbol="005930", quantity=5,
+                      candidates=[older, newer],
+                  ))),
+        ):
+            await cmd_sell(mock_message)
+
+        text = mock_message.answer.call_args[0][0]
+        assert "동일 종목 open 포지션 2건" in text
+        assert "#12" in text
+
+    @pytest.mark.asyncio
+    async def test_sell_pending_renders_as_accepted(self, mock_message):
+        """pending은 success=True를 동반 — '체결'이 아니라 '접수'로 표시돼야 한다."""
+        from src.execution.manual_sell import ManualSellPlan
+
+        mock_message.text = "/sell 005930 5"
+        pos = self._position()
+        broker, executor = self._sell_mocks(
+            self._sell_result(pending=True, fill_price=None)
+        )
+
+        with (
+            patch("src.notification.commands.resolve_account",
+                  AsyncMock(return_value=("acc-1", "테스트"))),
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트 (1234)")),
+            patch("src.execution.manual_sell.resolve_manual_sell",
+                  AsyncMock(return_value=ManualSellPlan(
+                      position=pos, symbol="005930", quantity=5, candidates=[pos],
+                  ))),
+        ):
+            await cmd_sell(mock_message)
+
+        text = mock_message.answer.call_args[0][0]
+        assert "매도 접수" in text
+        assert "체결 대기" in text
+
+    @pytest.mark.asyncio
+    async def test_sell_preflight_failure_message(self, mock_message):
+        """F-12 매도가능수량 부족(실패)은 사유와 함께 노출된다."""
+        from src.execution.manual_sell import ManualSellPlan
+
+        mock_message.text = "/sell 005930 5"
+        pos = self._position()
+        broker, executor = self._sell_mocks(self._sell_result(
+            success=False, fill_price=None,
+            error="매도가능수량 부족 — 매도가능=0, 요청=5주",
+        ))
+
+        with (
+            patch("src.notification.commands.resolve_account",
+                  AsyncMock(return_value=("acc-1", "테스트"))),
+            patch("src.api.routes.orders._build_executor",
+                  AsyncMock(return_value=(executor, broker, True, AsyncMock()))),
+            patch("src.api.routes.orders._resolve_account_label",
+                  AsyncMock(return_value="테스트 (1234)")),
+            patch("src.execution.manual_sell.resolve_manual_sell",
+                  AsyncMock(return_value=ManualSellPlan(
+                      position=pos, symbol="005930", quantity=5, candidates=[pos],
+                  ))),
+        ):
+            await cmd_sell(mock_message)
+
+        text = mock_message.answer.call_args[0][0]
+        assert "매도 실패" in text
+        assert "매도가능수량 부족" in text

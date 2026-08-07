@@ -151,8 +151,11 @@ class FillFinalizer:
         ):
             return
 
-        # 고아 포지션 정리: WS/reconciler가 조기 생성한 포지션이 있으면 닫기
-        if order.position_id:
+        # 고아 포지션 정리: WS/reconciler가 조기 생성한 포지션이 있으면 닫기.
+        # F-31: 진입(BUY) 주문 전용이다. 청산(SELL) 주문의 position_id는 고아가 아니라
+        # 살아있는 실보유 포지션(execute_exit이 생성 시점에 부착)이므로, 미체결 만료로
+        # 닫으면 주식은 그대로인데 DB 포지션만 PnL 0으로 사라진다.
+        if order.position_id and OrderSide(order.side) == OrderSide.BUY:
             try:
                 await self._close_orphaned_position(order.position_id, order.symbol)
             except Exception:

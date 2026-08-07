@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -38,6 +39,15 @@ class PositionRecord(TimestampMixin, Base):
         Index("ix_positions_account_id", "account_id"),
         # F-14: 진입 트리거 태그(text[]) 멤버십 조회(= ANY)용 GIN 인덱스.
         Index("ix_positions_entry_trigger", "entry_trigger", postgresql_using="gin"),
+        # PRJ-04 §2: 계좌·종목당 open 포지션은 1행(MTS식 병합). 추가매수는 새 행이
+        # 아니라 기존 행 UPDATE로 처리되며, 이 부분 유니크 인덱스가 불변식을 강제한다.
+        Index(
+            "uq_positions_account_symbol_open",
+            "account_id",
+            "symbol",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

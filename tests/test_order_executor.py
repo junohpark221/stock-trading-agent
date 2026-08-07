@@ -280,6 +280,8 @@ def mock_risk_manager():
 def mock_position_manager():
     mgr = AsyncMock()
     mgr.create = AsyncMock(return_value=_make_fake_position())
+    # PRJ-04: 진입 확정은 merge_or_create 경유 — (record, merged) 튜플 반환.
+    mgr.merge_or_create = AsyncMock(return_value=(_make_fake_position(), False))
     mgr.close = AsyncMock(return_value=_make_fake_position())
     return mgr
 
@@ -371,7 +373,7 @@ async def test_execute_entry_full_success(executor, mock_broker, mock_position_m
     assert result.approval_status == ApprovalStatus.AUTO_APPROVED
     assert result.web_verify_result == WebVerifyResult.SAFE
     mock_broker.place_order.assert_awaited_once()
-    mock_position_manager.create.assert_awaited_once()
+    mock_position_manager.merge_or_create.assert_awaited_once()
     mock_bot.send_message.assert_awaited()
 
 
@@ -395,7 +397,7 @@ async def test_execute_entry_threads_analysis_snapshot(
         entry_analysis_snapshot=snapshot,
     )
 
-    create_kwargs = mock_position_manager.create.call_args.kwargs
+    create_kwargs = mock_position_manager.merge_or_create.call_args.kwargs
     assert create_kwargs["entry_analysis_snapshot"] == snapshot
 
 
@@ -432,7 +434,7 @@ async def test_execute_entry_sell_action_blocked_by_guard(
     # 체결 기록은 남는다
     assert any(isinstance(o, Execution) for o in fake_session.added)
     # phantom 포지션 생성 차단 + 실패 반환 + 긴급 알림
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
     assert result.success is False
     assert result.position_id is None
     assert "F-28" in result.error
@@ -575,7 +577,8 @@ async def test_execute_entry_modified_quantity_passes(
 
     async def mock_execute(stmt):
         # select(Order) 쿼리일 때만 modified_order 반환
-        if hasattr(stmt, "whereclause") or "orders" in str(stmt):
+        # PRJ-04: positions 조회(부분익절 러너 게이트)까지 삼키지 않도록 orders만 매칭.
+        if "orders" in str(stmt):
             return _FakeResult([modified_order])
         return await original_execute(stmt)
 
@@ -606,7 +609,8 @@ async def test_execute_entry_modified_quantity_risk_fails(
     modified_order.id = 1
 
     async def mock_execute(stmt):
-        if hasattr(stmt, "whereclause") or "orders" in str(stmt):
+        # PRJ-04: positions 조회(부분익절 러너 게이트)까지 삼키지 않도록 orders만 매칭.
+        if "orders" in str(stmt):
             return _FakeResult([modified_order])
         return _FakeResult([])
 
@@ -662,7 +666,7 @@ async def test_execute_entry_broker_rejected(executor, mock_broker, mock_positio
 
     assert result.success is False
     assert "브로커 주문 실패" in result.error
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +692,7 @@ async def test_execute_entry_unexpected_exception(executor, mock_web_verifier):
 @pytest.mark.asyncio
 async def test_execute_entry_position_create_fails(executor, mock_position_manager):
     """브로커 성공 + 포지션 생성 실패 → success=False, 긴급 알림."""
-    mock_position_manager.create = AsyncMock(side_effect=Exception("DB error"))
+    mock_position_manager.merge_or_create = AsyncMock(side_effect=Exception("DB error"))
     td = _make_trade_decision()
 
     result = await executor.execute_entry(
@@ -1159,7 +1163,7 @@ async def test_execute_entry_account_id_propagation(
     assert approval_call.kwargs["account_id"] == acct
 
     # position_manager에 account_id 전달 확인
-    pos_call = mock_position_manager.create.call_args
+    pos_call = mock_position_manager.merge_or_create.call_args
     assert pos_call.kwargs["account_id"] == acct
 
     # recorder에 account_id 전달 확인 (최소 1회 호출)
@@ -1398,7 +1402,7 @@ async def test_execute_entry_submitted_without_stream_returns_pending(
     assert result.broker_order_id == "KIS123"
     assert result.position_id is None
     assert result.fill_price is None
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
 
     # orders 테이블에 SUBMITTED로 저장되었는지 확인 (rejection_reason 미기록)
     from src.db.models.execution import Order
@@ -1444,7 +1448,7 @@ async def test_execute_entry_submitted_with_ws_filled_finalizes(
     assert result.pending is False
     assert result.fill_price == Decimal("72100")
     assert result.position_id == 1
-    mock_position_manager.create.assert_awaited_once()
+    mock_position_manager.merge_or_create.assert_awaited_once()
     stream.wait_for_fill.assert_awaited_once()
 
 
@@ -1473,7 +1477,7 @@ async def test_execute_entry_submitted_ws_timeout_returns_pending(
     assert result.success is True
     assert result.pending is True
     assert result.position_id is None
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1513,7 +1517,7 @@ async def test_execute_entry_submitted_ws_rejected(
     assert result.success is False
     assert result.pending is False
     assert "잔고부족" in result.error
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1534,7 +1538,7 @@ async def test_execute_entry_broker_hard_fail_marks_failed(
     assert result.success is False
     assert result.pending is False
     assert "rejected" in result.error
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1567,7 +1571,7 @@ async def test_execute_entry_manual_skips_web_verify_and_approval(
     mock_approval_manager.request_approval.assert_not_awaited()
     mock_portfolio_service.get_current_state.assert_not_awaited()
     mock_broker.place_order.assert_awaited_once()
-    mock_position_manager.create.assert_awaited_once()
+    mock_position_manager.merge_or_create.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1588,7 +1592,7 @@ async def test_execute_entry_manual_still_enforces_cash_gate(
     assert result.success is False
     assert "현금" in result.error or "cash" in result.error.lower()
     mock_broker.place_order.assert_not_awaited()
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1646,7 +1650,7 @@ async def test_batch_reservation_accumulates_on_pending(
 
     assert result.success is True
     assert result.pending is True
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
     # in-flight 진입이 예약에 누적
     assert reservation.trade_count == 1
     assert "005930" in reservation.new_symbols
@@ -1673,7 +1677,7 @@ async def test_batch_reservation_not_accumulated_on_immediate_fill(
     )
 
     assert result.success is True
-    mock_position_manager.create.assert_awaited()  # DB 포지션 생성됨
+    mock_position_manager.merge_or_create.assert_awaited()  # DB 포지션 생성됨
     # DB가 카운트를 이어받으므로 예약은 누적되지 않음
     assert reservation.trade_count == 0
     assert reservation.new_symbols == set()
@@ -1765,7 +1769,7 @@ async def test_finalize_rescales_stop_tp_preserving_ratio(
         reference_price=Decimal("72000"),
     )
 
-    kwargs = mock_position_manager.create.call_args.kwargs
+    kwargs = mock_position_manager.merge_or_create.call_args.kwargs
     fill = Decimal("74000")
     p_stop = (Decimal("72000") - Decimal("68000")) / Decimal("72000")
     p_tp = (Decimal("80000") - Decimal("72000")) / Decimal("72000")
@@ -1784,7 +1788,7 @@ async def test_no_reference_price_keeps_decision_stop_tp(
         strategy_type=StrategyType.POSITION.value,
     )
 
-    kwargs = mock_position_manager.create.call_args.kwargs
+    kwargs = mock_position_manager.merge_or_create.call_args.kwargs
     assert kwargs["stop_loss_price"] == Decimal("68000")
     assert kwargs["take_profit_price"] == Decimal("80000")
 
@@ -1804,7 +1808,7 @@ async def test_entry_injects_trailing_params_position(
         strategy_type=StrategyType.POSITION.value,
     )
 
-    kwargs = mock_position_manager.create.call_args.kwargs
+    kwargs = mock_position_manager.merge_or_create.call_args.kwargs
     assert kwargs["trailing_stop_pct"] is not None
     assert kwargs["max_holding_days"] == 60
 
@@ -1819,6 +1823,86 @@ async def test_entry_injects_trailing_params_swing(
         strategy_type=StrategyType.SWING.value,
     )
 
-    kwargs = mock_position_manager.create.call_args.kwargs
+    kwargs = mock_position_manager.merge_or_create.call_args.kwargs
     assert kwargs["trailing_stop_pct"] == Decimal("5.0")
     assert kwargs["max_holding_days"] == 10
+
+
+# ---------------------------------------------------------------------------
+# PRJ-04 — 포지션 병합 + 부분익절 러너 추가매수 게이트
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_entry_merges_into_existing_position(
+    executor, mock_position_manager, mock_bot,
+):
+    """병합 시 기존 행 id가 주문에 붙고 체결 알림에 병합 문구가 붙는다."""
+    merged_pos = _make_fake_position()
+    merged_pos.id = 7
+    merged_pos.quantity = 20
+    merged_pos.avg_cost = Decimal("75000")
+    mock_position_manager.merge_or_create = AsyncMock(return_value=(merged_pos, True))
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(), session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is True
+    assert result.position_id == 7
+    messages = [c.args[0] for c in mock_bot.send_message.await_args_list if c.args]
+    assert any("추가매수 병합" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_runner_blocks_auto_buy(
+    executor, mock_broker, mock_position_manager, mock_bot,
+):
+    """부분익절 러너(open + realized_pnl>0)가 있으면 자동 매수를 terminal 거부한다."""
+    runner = _make_fake_position()
+    runner.id = 3
+    runner.realized_pnl = Decimal("120000")
+    runner.quantity = 5
+    executor._find_partial_exit_runner = AsyncMock(return_value=runner)
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(), session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value,
+    )
+
+    assert result.success is False
+    assert result.terminal is True
+    assert "부분익절 러너" in (result.error or "")
+    mock_broker.place_order.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
+    mock_bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_runner_gate_skipped_for_manual_order(
+    executor, mock_broker, mock_position_manager,
+):
+    """수동 주문은 사람의 명시적 판단 — 게이트를 타지 않는다."""
+    executor._find_partial_exit_runner = AsyncMock(
+        return_value=_make_fake_position()
+    )
+
+    result = await executor.execute_entry(
+        trade_decision=_make_trade_decision(), session_id=uuid.uuid4(),
+        strategy_type=StrategyType.POSITION.value, manual=True,
+    )
+
+    assert result.success is True
+    mock_broker.place_order.assert_awaited_once()
+    mock_position_manager.merge_or_create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_runner_lookup_failure_does_not_block(executor):
+    """조회 실패는 매수를 막지 않는다(게이트는 과도기 안전장치)."""
+    executor._session_factory = MagicMock(side_effect=RuntimeError("db down"))
+
+    runner = await executor._find_partial_exit_runner("default", "005930")
+
+    assert runner is None

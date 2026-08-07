@@ -267,6 +267,8 @@ def mock_risk_manager():
 def mock_position_manager():
     mgr = AsyncMock()
     mgr.create = AsyncMock(return_value=_fake_position())
+    # PRJ-04: 진입 확정은 merge_or_create 경유 — (record, merged) 튜플 반환.
+    mgr.merge_or_create = AsyncMock(return_value=(_fake_position(), False))
     mgr.close = AsyncMock(return_value=_fake_position())
     return mgr
 
@@ -387,7 +389,7 @@ async def test_full_entry_auto_approved(
     mock_web_verifier.verify.assert_awaited_once()
     mock_approval_manager.request_approval.assert_awaited_once()
     mock_broker.place_order.assert_awaited_once()
-    mock_position_manager.create.assert_awaited_once()
+    mock_position_manager.merge_or_create.assert_awaited_once()
     mock_recorder.record.assert_awaited()  # decision_log 기록
     mock_bot.send_message.assert_awaited()  # 체결 통보
 
@@ -425,7 +427,7 @@ async def test_full_entry_manual_approved(
 
     # 수동 승인이어도 전체 파이프라인 동일하게 실행
     mock_broker.place_order.assert_awaited_once()
-    mock_position_manager.create.assert_awaited_once()
+    mock_position_manager.merge_or_create.assert_awaited_once()
     mock_recorder.record.assert_awaited()
 
 
@@ -457,8 +459,8 @@ async def test_entry_quantity_modification(
     )
 
     # 포지션 생성: 10주
-    mock_position_manager.create = AsyncMock(
-        return_value=_fake_position(quantity=10),
+    mock_position_manager.merge_or_create = AsyncMock(
+        return_value=(_fake_position(quantity=10), False),
     )
 
     td = _trade_decision(quantity=20)
@@ -669,7 +671,7 @@ async def test_approval_timeout_cancels_order(
 
     # 브로커/포지션 미호출 (승인 실패로 조기 종료)
     mock_broker.place_order.assert_not_awaited()
-    mock_position_manager.create.assert_not_awaited()
+    mock_position_manager.merge_or_create.assert_not_awaited()
 
     # 거부 기록
     mock_recorder.record.assert_awaited()

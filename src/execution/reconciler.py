@@ -321,7 +321,9 @@ class PositionReconciler:
                     else today
                 )
                 stop_loss = bp.average_cost * (Decimal("1") - _DEFAULT_STOP_PCT)
-                await self._position_manager.create(
+                # PRJ-04: db_by_symbol에 없어 신규 생성 대상이지만, 경합으로 그 사이
+                # open 행이 생겼다면 병합으로 안전 착지한다(유니크 인덱스 충돌 방지).
+                await self._position_manager.merge_or_create(
                     symbol=symbol,
                     strategy_type=StrategyType.MANUAL.value,
                     quantity=bp.quantity,

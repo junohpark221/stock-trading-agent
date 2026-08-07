@@ -133,6 +133,50 @@ class ExitPriceCalculator:
         return stop_loss, take_profit
 
     @staticmethod
+    def rebase(
+        *,
+        reference_price: Decimal,
+        stop0: Decimal | None,
+        tp0: Decimal | None,
+        target_price: Decimal,
+    ) -> tuple[Decimal, Decimal | None] | None:
+        """손절·익절을 기준가 대비 **비율 그대로** 다른 가격에 재적용.
+
+        ``reference_price``(전략 공식이 stop0/tp0를 산출한 기준가) 대비 손절/익절
+        비율을 ``target_price`` 에 곱한다. 비율을 보존하므로 손절 *폭(%)* 은 변하지
+        않고 절대가만 따라간다. 두 곳에서 쓴다:
+
+        - **F-16** — 체결가 괴리 시 진입 손절/익절 재적용 (target = 체결가)
+        - **PRJ-04 §4** — 추가매수 병합 시 새 평단 기준 재산정 (target = 새 avg_cost)
+
+        입력이 비정상(기준가/목표가 비양수, 손절가 결측, 손절 비율이 0..1 밖)이면
+        ``None`` 을 반환해 호출자가 원본을 유지하게 한다.
+
+        Returns
+        -------
+        (new_stop, new_tp) — new_tp는 익절가 결측/비정상이면 None.
+        """
+        if (
+            reference_price <= _ZERO
+            or target_price <= _ZERO
+            or stop0 is None
+            or stop0 <= _ZERO
+        ):
+            return None
+        p_stop = (reference_price - stop0) / reference_price
+        # 정상 롱 진입은 0 < p_stop < 1 (손절가가 기준가보다 낮음). 벗어나면 보류.
+        if not (_ZERO < p_stop < _ONE):
+            return None
+        new_stop = target_price * (_ONE - p_stop)
+
+        new_tp: Decimal | None = None
+        if tp0 is not None and tp0 > _ZERO:
+            p_tp = (tp0 - reference_price) / reference_price
+            if p_tp > _ZERO:
+                new_tp = target_price * (_ONE + p_tp)
+        return new_stop, new_tp
+
+    @staticmethod
     def trailing_stop_price(
         highest_since_entry: Decimal,
         trailing_pct: Decimal,

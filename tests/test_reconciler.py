@@ -101,7 +101,7 @@ def _make_broker(positions: list) -> MagicMock:
 
 def _make_position_manager() -> MagicMock:
     pm = AsyncMock()
-    pm.create = AsyncMock(return_value=MagicMock(id=99))
+    pm.merge_or_create = AsyncMock(return_value=(MagicMock(id=99), False))
     pm.update_quantity = AsyncMock(return_value=MagicMock())
     return pm
 
@@ -226,8 +226,8 @@ async def test_reconcile_creates_missing_position():
     assert result.closed_count == 0
     assert result.qty_updated_count == 0
 
-    pm.create.assert_awaited_once()
-    call_kwargs = pm.create.call_args.kwargs
+    pm.merge_or_create.assert_awaited_once()
+    call_kwargs = pm.merge_or_create.call_args.kwargs
     assert call_kwargs["symbol"] == "005930"
     assert call_kwargs["strategy_type"] == StrategyType.MANUAL.value
     assert call_kwargs["quantity"] == 5

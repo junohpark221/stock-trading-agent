@@ -76,7 +76,7 @@ async def test_create_entry_position_threads_snapshot() -> None:
 
     factory, _ = _make_factory(rowcount=1)
     pm = AsyncMock()
-    pm.create = AsyncMock(return_value=MagicMock(id=10))
+    pm.merge_or_create = AsyncMock(return_value=(MagicMock(id=10), False))
     settings = MagicMock()
     settings.STOP_LOSS_PERCENT = 5.0
     finalizer = FillFinalizer(
@@ -113,7 +113,7 @@ async def test_create_entry_position_threads_snapshot() -> None:
         account_label="",
     )
 
-    assert pm.create.call_args.kwargs["entry_analysis_snapshot"] == snapshot
+    assert pm.merge_or_create.call_args.kwargs["entry_analysis_snapshot"] == snapshot
 
 
 @pytest.mark.asyncio

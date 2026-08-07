@@ -492,7 +492,7 @@ class PositionTradingStrategy(Strategy):
 
         return trailing_stop_price(
             self.strategy_type.value,
-            entry_price=position.entry_price,
+            entry_price=position.avg_cost,  # PRJ-04 §3: 판정 기준은 평단
             baseline_high=highest_since_entry,
             stored_pct=position.trailing_stop_pct,
             atr=atr,

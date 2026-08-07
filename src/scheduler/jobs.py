@@ -980,9 +980,11 @@ async def job_stop_loss_check(
             current_price = price_info.current_price
 
             # 미실현 손익률 계산
-            if position.entry_price > _ZERO:
+            # PRJ-04 §3: 판정 기준은 avg_cost(평단). 추가매수 병합으로 entry_price(최초
+            # 체결가)와 갈라지며, 실현손익 계산(position_manager)도 avg_cost 기준이다.
+            if position.avg_cost > _ZERO:
                 unrealized_pnl_pct = (
-                    (current_price - position.entry_price) / position.entry_price * _HUNDRED
+                    (current_price - position.avg_cost) / position.avg_cost * _HUNDRED
                 ).quantize(_Q2, rounding=ROUND_HALF_UP)
             else:
                 unrealized_pnl_pct = _ZERO
@@ -1043,10 +1045,10 @@ async def job_stop_loss_check(
             # SWING/ATR 결측은 저장된 trailing_stop_pct(고정/폴백) 사용.
             if trailing_on:
                 atr = await _position_trailing_atr(broker, position)
-                baseline = position.highest_price or position.entry_price
+                baseline = position.highest_price or position.avg_cost
                 ts_price = trailing_stop_price(
                     position.strategy_type,
-                    entry_price=position.entry_price,
+                    entry_price=position.avg_cost,  # PRJ-04 §3: 평단 기준
                     baseline_high=baseline,
                     stored_pct=position.trailing_stop_pct,
                     atr=atr,

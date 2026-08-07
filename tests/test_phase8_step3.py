@@ -178,49 +178,38 @@ class TestPositionManagerAccountId:
     async def test_create_with_account_id(self):
         """create(account_id='acct-1') → PositionRecord에 전달."""
         factory, session = _mock_session_factory()
+        session.execute.return_value = _mock_scalar_result(None)
         mgr = PositionManager(factory)
 
-        with patch(
-            "src.strategy.position_manager.PositionRecord"
-        ) as MockRecord:
-            mock_record = MagicMock(id=1, symbol="005930", quantity=10)
-            MockRecord.return_value = mock_record
+        await mgr.create(
+            symbol="005930",
+            strategy_type="position",
+            quantity=10,
+            entry_price=Decimal("70000"),
+            stop_loss_price=Decimal("67000"),
+            account_id="acct-1",
+        )
 
-            await mgr.create(
-                symbol="005930",
-                strategy_type="position",
-                quantity=10,
-                entry_price=Decimal("70000"),
-                stop_loss_price=Decimal("67000"),
-                account_id="acct-1",
-            )
-
-            # PositionRecord 생성자에 account_id='acct-1' 전달 확인
-            _, kwargs = MockRecord.call_args
-            assert kwargs["account_id"] == "acct-1"
+        record = session.add.call_args[0][0]
+        assert record.account_id == "acct-1"
 
     @pytest.mark.asyncio
     async def test_create_default_account_id(self):
         """create() account_id 미지정 시 'default'."""
         factory, session = _mock_session_factory()
+        session.execute.return_value = _mock_scalar_result(None)
         mgr = PositionManager(factory)
 
-        with patch(
-            "src.strategy.position_manager.PositionRecord"
-        ) as MockRecord:
-            mock_record = MagicMock(id=1, symbol="005930", quantity=10)
-            MockRecord.return_value = mock_record
+        await mgr.create(
+            symbol="005930",
+            strategy_type="position",
+            quantity=10,
+            entry_price=Decimal("70000"),
+            stop_loss_price=Decimal("67000"),
+        )
 
-            await mgr.create(
-                symbol="005930",
-                strategy_type="position",
-                quantity=10,
-                entry_price=Decimal("70000"),
-                stop_loss_price=Decimal("67000"),
-            )
-
-            _, kwargs = MockRecord.call_args
-            assert kwargs["account_id"] == "default"
+        record = session.add.call_args[0][0]
+        assert record.account_id == "default"
 
     @pytest.mark.asyncio
     async def test_get_open_with_account_filter(self):

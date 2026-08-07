@@ -40,12 +40,15 @@ def _make_position(
     stop: Decimal = Decimal("67000"),
     trailing: Decimal | None = None,
     highest: Decimal | None = None,
+    avg_cost: Decimal | None = None,
 ) -> MagicMock:
     pos = MagicMock()
     pos.id = pid
     pos.symbol = symbol
     pos.account_id = account_id
     pos.entry_price = entry
+    # PRJ-04 §3: 판정 기준은 avg_cost. 미지정이면 최초 체결가와 동일(병합 전 상태).
+    pos.avg_cost = avg_cost if avg_cost is not None else entry
     pos.stop_loss_price = stop
     pos.take_profit_price = None
     pos.trailing_stop_pct = trailing
@@ -315,3 +318,26 @@ async def test_swing_take_profit_full_exit_unchanged():
     signal = exit_service.process_exit_signals.call_args[0][0][0]
     assert signal.reason == ExitReason.TAKE_PROFIT
     assert signal.exit_quantity is None  # 전량
+
+
+@pytest.mark.asyncio
+async def test_pnl_basis_is_avg_cost_not_entry_price():
+    """PRJ-04 §3 — 병합 후 평단(avg_cost) 기준으로 손익률을 판정한다.
+
+    최초 체결가 60,000 / 병합 평단 80,000 포지션에서 현재가 77,000의 손익률은
+    entry_price 기준이면 +28.3%(수익)지만, 실제 평단 기준으로는 -3.75%(손실)다.
+    실현손익(position_manager)이 avg_cost 기준이므로 판정도 같은 기준이어야 한다.
+    """
+    svc, exit_service, _pm, _coord = _make_service()
+    pos = _make_position(
+        entry=Decimal("60000"), avg_cost=Decimal("80000"), stop=Decimal("78000")
+    )
+    svc._positions = [pos]
+
+    await svc._on_tick(
+        PriceTick(symbol="005930", price=Decimal("77000"), time="093045")
+    )
+
+    exit_service.process_exit_signals.assert_awaited_once()
+    signal = exit_service.process_exit_signals.await_args.args[0][0]
+    assert signal.unrealized_pnl_pct == Decimal("-3.75")

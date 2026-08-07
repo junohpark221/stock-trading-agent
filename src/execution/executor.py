@@ -46,7 +46,9 @@ from src.core.models import (
 )
 from src.db.models.execution import Execution, Order
 from src.db.models.market_data import StockMaster
+from src.db.models.strategy import PositionRecord
 from src.notification.templates import MessageTemplates
+from src.strategy.exit_calculator import ExitPriceCalculator
 from src.strategy.sizing import PositionSizer
 from src.strategy.trailing import entry_trailing_params
 
@@ -56,7 +58,6 @@ if TYPE_CHECKING:
     from src.agent.decision_recorder import DecisionRecorder
     from src.broker.base import BrokerInterface
     from src.config import Settings
-    from src.db.models.strategy import PositionRecord
     from src.execution.approval import ApprovalManager
     from src.execution.execution_stream import ExecutionStreamManager
     from src.execution.web_verify import WebSearchVerifier
@@ -385,6 +386,49 @@ class OrderExecutor:
                         update={"quantity": quantity}
                     )
                     await self._update_order(order.id, quantity=quantity)
+
+            # 2-c. 부분익절 러너 추가매수 차단 (PRJ-04 §5 과도기 게이트).
+            # 추가매수 병합은 트레일링 상태를 리셋(본전 플로어 해제·고점 초기화)하므로,
+            # LLM이 보유 사실을 모른 채(§8 미반영) 내리는 매수로 부분익절로 확보한
+            # '무위험 러너'가 조용히 풀릴 수 있다. 부분 청산 이력(open + realized_pnl>0)이
+            # 있는 포지션만 자동 매수를 막는다. 수동 주문은 사람의 명시적 판단이므로 통과.
+            # ⚠️ §8(LLM 보유 컨텍스트 주입) 반영 시 이 게이트를 제거한다.
+            if not manual and side == OrderSide.BUY:
+                runner = await self._find_partial_exit_runner(account_id, symbol)
+                if runner is not None:
+                    reason = (
+                        f"부분익절 러너 추가매수 차단 — 포지션 #{runner.id} "
+                        f"(실현손익 {runner.realized_pnl:,.0f}원, 잔량 {runner.quantity:,}주). "
+                        "병합 시 트레일링 보호가 해제되므로 자동 매수를 보류합니다."
+                    )
+                    await self._update_order(
+                        order.id, status=OrderStatus.CANCELLED, rejection_reason=reason,
+                    )
+                    await self._notify_safe(MessageTemplates.rejection_notification(
+                        account_label=account_label,
+                        symbol=symbol, name=symbol, side=side,
+                        reason=reason, stage="risk_blocked",
+                    ))
+                    did = await self._record_decision_safe(
+                        session_id=session_id, stage=DecisionStage.EXECUTION,
+                        decision=DecisionAction.REJECT, symbol=symbol,
+                        reasoning=reason,
+                        parent_id=parent_decision_id,
+                        account_id=account_id,
+                        data_snapshot={
+                            "order_id": order.id,
+                            "position_id": runner.id,
+                            "realized_pnl": str(runner.realized_pnl),
+                        },
+                    )
+                    if did:
+                        decision_ids.append(did)
+                    return self._fail_result(
+                        order=order, symbol=symbol, side=side, quantity=quantity,
+                        web_verify_result=verification.result, decision_ids=decision_ids,
+                        error=reason,
+                        terminal=True,
+                    )
 
             # 3-4-5. 포트폴리오 상태 + 승인 요청 + 수량 변경 — manual=True면 전체 생략
             if manual:
@@ -853,25 +897,13 @@ class OrderExecutor:
         -------
         (new_stop, new_tp) — new_tp는 익절가 결측/비정상이면 None.
         """
-        if (
-            reference_price <= 0
-            or target_price <= 0
-            or stop0 is None
-            or stop0 <= 0
-        ):
-            return None
-        p_stop = (reference_price - stop0) / reference_price
-        # 정상 롱 진입은 0 < p_stop < 1 (손절가가 기준가보다 낮음). 벗어나면 보류.
-        if not (Decimal("0") < p_stop < Decimal("1")):
-            return None
-        new_stop = target_price * (Decimal("1") - p_stop)
-
-        new_tp: Decimal | None = None
-        if tp0 is not None and tp0 > 0:
-            p_tp = (tp0 - reference_price) / reference_price
-            if p_tp > 0:
-                new_tp = target_price * (Decimal("1") + p_tp)
-        return new_stop, new_tp
+        # 공식은 ExitPriceCalculator.rebase 한 곳에만 둔다(PRJ-04 병합 재산정과 공유).
+        return ExitPriceCalculator.rebase(
+            reference_price=reference_price,
+            stop0=stop0,
+            tp0=tp0,
+            target_price=target_price,
+        )
 
     async def _finalize_entry_fill(
         self,
@@ -997,8 +1029,11 @@ class OrderExecutor:
         )
 
         position_id: int | None = None
+        merge_note = ""
         try:
-            pos = await self._position_manager.create(
+            # PRJ-04: 동일 종목 open 포지션이 있으면 새 행을 만들지 않고 병합한다
+            # (가중평균 평단·손절 재산정). 없으면 기존과 동일하게 신규 생성.
+            pos, merged = await self._position_manager.merge_or_create(
                 symbol=symbol,
                 strategy_type=strategy_type,
                 quantity=fill_quantity,
@@ -1012,6 +1047,11 @@ class OrderExecutor:
                 entry_analysis_snapshot=order.entry_analysis_snapshot,
             )
             position_id = pos.id
+            if merged:
+                merge_note = (
+                    f"\n🔗 추가매수 병합 — 평단 {pos.avg_cost:,.0f}원 / "
+                    f"총 {pos.quantity:,}주"
+                )
         except Exception:
             logger.critical(
                 "executor.position_create_failed",
@@ -1056,7 +1096,7 @@ class OrderExecutor:
             symbol=symbol, name=symbol, side=side,
             quantity=fill_quantity, fill_price=fill_price,
             commission=commission, approval_status=approval_status,
-        ))
+        ) + merge_note)
 
         action = DecisionAction.BUY if side == OrderSide.BUY else DecisionAction.SELL
         did = await self._record_decision_safe(
@@ -1756,6 +1796,37 @@ class OrderExecutor:
         except Exception:
             logger.warning("executor.sector_lookup_failed", symbol=symbol)
             return ""
+
+    async def _find_partial_exit_runner(
+        self, account_id: str, symbol: str
+    ) -> PositionRecord | None:
+        """부분 청산 이력이 있는 open 포지션 조회 (PRJ-04 §5 과도기 게이트).
+
+        `open` 상태에서 `realized_pnl > 0`이 되는 경로는 `PositionManager.reduce()`
+        (부분익절·부분 수동매도)뿐이라, 트레일링 전환 러너를 정확히 집어낸다.
+        `take_profit_price is None`은 진입 시 익절가가 없던 포지션까지 오탐하므로 쓰지 않는다.
+        조회 실패는 매수를 막지 않는다(게이트 자체가 과도기 안전장치).
+        """
+        try:
+            async with self._session_factory() as session:
+                row = await session.execute(
+                    select(PositionRecord)
+                    .where(
+                        PositionRecord.account_id == account_id,
+                        PositionRecord.symbol == symbol,
+                        PositionRecord.status == "open",
+                        PositionRecord.realized_pnl > 0,
+                    )
+                    .order_by(PositionRecord.entry_date.asc(), PositionRecord.id.asc())
+                    .limit(1)
+                )
+                return row.scalar_one_or_none()
+        except Exception:
+            logger.warning(
+                "executor.partial_exit_runner_lookup_failed",
+                symbol=symbol, account_id=account_id, exc_info=True,
+            )
+            return None
 
     async def _record_execution(
         self,

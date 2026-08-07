@@ -225,6 +225,7 @@ def _ws_position(trailing=None):
     pos.account_id = "acct-1"
     pos.symbol = "005930"
     pos.entry_price = Decimal("70000")
+    pos.avg_cost = Decimal("70000")  # PRJ-04 §3: 판정 기준은 평단
     pos.highest_price = None
     pos.trailing_stop_pct = trailing
     return pos

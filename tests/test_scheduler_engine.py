@@ -523,6 +523,7 @@ class TestJobStopLossCheck:
         position = MagicMock()
         position.symbol = "005930"
         position.entry_price = Decimal("50000")
+        position.avg_cost = Decimal("50000")  # PRJ-04 §3: 판정 기준은 평단
         position.stop_loss_price = Decimal("45000")
         position.trailing_stop_pct = None
         position.max_holding_days = None
@@ -596,6 +597,7 @@ class TestJobStopLossCheck:
         position.id = 1
         position.symbol = "005930"
         position.entry_price = Decimal("70000")
+        position.avg_cost = Decimal("70000")  # PRJ-04 §3: 판정 기준은 평단
         position.stop_loss_price = Decimal("66000")
         position.take_profit_price = Decimal("76000")
         position.trailing_stop_pct = None
@@ -646,6 +648,56 @@ class TestJobStopLossCheck:
         assert await coordinator.is_claimed(1, PHASE_PARTIAL_TP) is True
 
     @pytest.mark.asyncio
+    async def test_pnl_basis_is_avg_cost(self):
+        """PRJ-04 §3 — 폴링 손익률도 평단(avg_cost) 기준.
+
+        최초 체결가 50,000 / 병합 평단 80,000 포지션에서 현재가 76,000은
+        entry_price 기준이면 +52%지만 평단 기준으로는 -5%다.
+        """
+        from datetime import UTC, datetime
+
+        from src.core.models import PriceInfo
+
+        position = MagicMock()
+        position.id = 1
+        position.symbol = "005930"
+        position.entry_price = Decimal("50000")
+        position.avg_cost = Decimal("80000")
+        position.stop_loss_price = Decimal("70000")
+        position.take_profit_price = None
+        position.trailing_stop_pct = None
+        position.highest_price = None
+        position.max_holding_days = None
+        position.strategy_type = "position"
+        position.quantity = 10
+
+        position_manager = AsyncMock()
+        position_manager.get_open = AsyncMock(return_value=[position])
+        broker = AsyncMock()
+        broker.get_price = AsyncMock(return_value=PriceInfo(
+            symbol="005930", current_price=Decimal("76000"),
+            previous_close=Decimal("80000"), timestamp=datetime.now(UTC),
+        ))
+        exit_checker = MagicMock()
+        exit_checker.check_stop_loss = MagicMock(return_value=None)
+        exit_checker.check_take_profit = MagicMock(return_value=None)
+        exit_checker.check_time_based = MagicMock(return_value=None)
+
+        monitor = AsyncMock()
+        monitor.check_all = AsyncMock(return_value=[])
+
+        with patch("src.scheduler.jobs._is_market_open", return_value=True):
+            await job_stop_loss_check(
+                exit_checker=exit_checker, exit_service=AsyncMock(),
+                position_manager=position_manager, portfolio_service=AsyncMock(),
+                broker=broker, monitor=monitor,
+                market_open="00:00", market_close="23:59",
+            )
+
+        # 체커에 전달된 손익률이 평단 기준인지 확인
+        assert exit_checker.check_stop_loss.call_args[0][2] == Decimal("-5.00")
+
+    @pytest.mark.asyncio
     async def test_coordinator_skips_inflight_position(self):
         """coordinator가 이미 선점한 포지션은 청산에서 스킵된다 (F-05 이중 청산 방지)."""
         from datetime import UTC, datetime
@@ -658,6 +710,7 @@ class TestJobStopLossCheck:
         position.id = 1
         position.symbol = "005930"
         position.entry_price = Decimal("50000")
+        position.avg_cost = Decimal("50000")  # PRJ-04 §3: 판정 기준은 평단
         position.stop_loss_price = Decimal("45000")
         position.trailing_stop_pct = None
         position.max_holding_days = None
@@ -709,6 +762,7 @@ class TestJobStopLossCheck:
         position.id = 2
         position.symbol = "005930"
         position.entry_price = Decimal("50000")
+        position.avg_cost = Decimal("50000")  # PRJ-04 §3: 판정 기준은 평단
         position.stop_loss_price = Decimal("45000")
         position.trailing_stop_pct = None
         position.max_holding_days = None

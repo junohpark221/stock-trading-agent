@@ -286,8 +286,11 @@ class FillFinalizer:
         stop_loss = fill_price * (Decimal("1") - default_sl_pct / Decimal("100"))
 
         position_id: int | None = None
+        merge_note = ""
         try:
-            pos = await self._position_manager.create(
+            # PRJ-04: 동일 종목 open 포지션이 있으면 병합(가중평균). 이 폴백 경로는
+            # 손절폭이 설정 기본값이고 익절가가 없어, 병합 시 기존 포지션 폭이 유지된다.
+            pos, merged = await self._position_manager.merge_or_create(
                 symbol=order.symbol,
                 strategy_type=strategy_type,
                 quantity=fill_quantity,
@@ -299,6 +302,11 @@ class FillFinalizer:
                 entry_analysis_snapshot=order.entry_analysis_snapshot,
             )
             position_id = pos.id
+            if merged:
+                merge_note = (
+                    f"\n🔗 추가매수 병합 — 평단 {pos.avg_cost:,.0f}원 / "
+                    f"총 {pos.quantity:,}주"
+                )
         except Exception:
             logger.critical(
                 "fill_finalizer.position_create_failed",
@@ -326,7 +334,7 @@ class FillFinalizer:
             quantity=fill_quantity, fill_price=fill_price,
             commission=commission,
             approval_status=ApprovalStatus(order.approval_status),
-        ))
+        ) + merge_note)
 
     async def _close_exit_position(
         self,

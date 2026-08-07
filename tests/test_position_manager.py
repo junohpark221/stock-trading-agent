@@ -6,7 +6,7 @@ mock async session 패턴 사용.
 
 from datetime import date
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -78,92 +78,76 @@ def _mock_scalars_result(values: list) -> MagicMock:
 
 
 class TestCreate:
-    """포지션 생성 테스트."""
+    """포지션 생성 테스트 (기존 open 행 없음 → INSERT 경로)."""
 
     @pytest.mark.asyncio
     async def test_create_position_success(self) -> None:
         """정상 생성 — 필드가 올바르게 설정됨."""
         factory, session = _mock_session_factory()
+        session.execute.return_value = _mock_scalar_result(None)
         manager = PositionManager(factory)
 
-        with patch(
-            "src.strategy.position_manager.PositionRecord"
-        ) as MockRecord:
-            mock_instance = MagicMock()
-            mock_instance.id = 1
-            mock_instance.symbol = "005930"
-            mock_instance.quantity = 100
-            mock_instance.strategy_type = "position"
-            MockRecord.return_value = mock_instance
+        result = await manager.create(
+            symbol="005930",
+            strategy_type="position",
+            quantity=100,
+            entry_price=Decimal("70000"),
+            stop_loss_price=Decimal("67000"),
+            take_profit_price=Decimal("77000"),
+        )
 
-            result = await manager.create(
-                symbol="005930",
-                strategy_type="position",
-                quantity=100,
-                entry_price=Decimal("70000"),
-                stop_loss_price=Decimal("67000"),
-                take_profit_price=Decimal("77000"),
-            )
+        session.add.assert_called_once()
+        record = session.add.call_args[0][0]
+        assert record.symbol == "005930"
+        assert record.avg_cost == Decimal("70000")
+        assert record.entry_price == Decimal("70000")
+        assert record.status == "open"
+        assert record.stop_loss_price == Decimal("67000")
 
-            # PositionRecord 생성자에 올바른 값 전달 확인
-            call_kwargs = MockRecord.call_args[1]
-            assert call_kwargs["symbol"] == "005930"
-            assert call_kwargs["avg_cost"] == Decimal("70000")
-            assert call_kwargs["entry_price"] == Decimal("70000")
-            assert call_kwargs["status"] == "open"
-            assert call_kwargs["stop_loss_price"] == Decimal("67000")
-
-            session.add.assert_called_once_with(mock_instance)
-            session.commit.assert_awaited_once()
-            session.refresh.assert_awaited_once_with(mock_instance)
-            assert result is mock_instance
+        session.commit.assert_awaited_once()
+        session.refresh.assert_awaited_once_with(record)
+        assert result is record
 
     @pytest.mark.asyncio
     async def test_create_with_optional_fields(self) -> None:
         """선택 필드 (trailing_stop_pct, max_holding_days, session_id)."""
         factory, session = _mock_session_factory()
+        session.execute.return_value = _mock_scalar_result(None)
         manager = PositionManager(factory)
         session_id = uuid4()
 
-        with patch(
-            "src.strategy.position_manager.PositionRecord"
-        ) as MockRecord:
-            MockRecord.return_value = MagicMock(
-                id=1, symbol="005930", quantity=50, strategy_type="swing"
-            )
+        await manager.create(
+            symbol="005930",
+            strategy_type="swing",
+            quantity=50,
+            entry_price=Decimal("50000"),
+            stop_loss_price=Decimal("48500"),
+            trailing_stop_pct=Decimal("3.0"),
+            max_holding_days=10,
+            entry_session_id=session_id,
+        )
 
-            await manager.create(
-                symbol="005930",
-                strategy_type="swing",
-                quantity=50,
-                entry_price=Decimal("50000"),
-                stop_loss_price=Decimal("48500"),
-                trailing_stop_pct=Decimal("3.0"),
-                max_holding_days=10,
-                entry_session_id=session_id,
-            )
-
-            call_kwargs = MockRecord.call_args[1]
-            assert call_kwargs["trailing_stop_pct"] == Decimal("3.0")
-            assert call_kwargs["max_holding_days"] == 10
-            assert call_kwargs["entry_session_id"] == session_id
+        record = session.add.call_args[0][0]
+        assert record.trailing_stop_pct == Decimal("3.0")
+        assert record.max_holding_days == 10
+        assert record.entry_session_id == session_id
 
     @pytest.mark.asyncio
     async def test_create_raises_database_error(self) -> None:
         """DB 예외 → DatabaseError 변환."""
         factory, session = _mock_session_factory()
+        session.execute.return_value = _mock_scalar_result(None)
         session.commit.side_effect = RuntimeError("connection lost")
         manager = PositionManager(factory)
 
-        with patch("src.strategy.position_manager.PositionRecord"):
-            with pytest.raises(DatabaseError, match="Position create failed"):
-                await manager.create(
-                    symbol="005930",
-                    strategy_type="position",
-                    quantity=100,
-                    entry_price=Decimal("70000"),
-                    stop_loss_price=Decimal("67000"),
-                )
+        with pytest.raises(DatabaseError, match="Position create failed"):
+            await manager.create(
+                symbol="005930",
+                strategy_type="position",
+                quantity=100,
+                entry_price=Decimal("70000"),
+                stop_loss_price=Decimal("67000"),
+            )
 
 
 # ===========================================================================

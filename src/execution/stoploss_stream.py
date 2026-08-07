@@ -207,9 +207,10 @@ class StopLossStreamService:
         if deps is None:
             return
 
-        if position.entry_price > _ZERO:
+        # PRJ-04 §3: 판정 기준은 avg_cost(평단) — 폴링 잡·실현손익 계산과 동일 기준.
+        if position.avg_cost > _ZERO:
             unrealized_pnl_pct = (
-                (current_price - position.entry_price) / position.entry_price * _HUNDRED
+                (current_price - position.avg_cost) / position.avg_cost * _HUNDRED
             ).quantize(_Q2, rounding=ROUND_HALF_UP)
         else:
             unrealized_pnl_pct = _ZERO
@@ -253,10 +254,10 @@ class StopLossStreamService:
             elif trailing_on:
                 # 트레일링 활성 → 익절가 도달은 즉시 매도가 아니라 고점 추적 계속.
                 # 트레일링 스톱가만 평가한다(폴링 잡과 동일).
-                baseline = position.highest_price or position.entry_price
+                baseline = position.highest_price or position.avg_cost
                 ts_price = trailing_stop_price(
                     position.strategy_type,
-                    entry_price=position.entry_price,
+                    entry_price=position.avg_cost,  # PRJ-04 §3: 평단 기준
                     baseline_high=baseline,
                     stored_pct=position.trailing_stop_pct,
                 )

@@ -180,6 +180,55 @@ class TestTrailingStop:
 
 
 # ---------------------------------------------------------------------------
+# rebase (F-16 체결가 재적용 / PRJ-04 병합 재산정 공용)
+# ---------------------------------------------------------------------------
+
+
+class TestRebase:
+    def test_preserves_widths(self):
+        """손절 3% / 익절 5% 폭이 목표가에 그대로 재적용된다."""
+        result = ExitPriceCalculator.rebase(
+            reference_price=Decimal("80000"),
+            stop0=Decimal("77600"),
+            tp0=Decimal("84000"),
+            target_price=Decimal("75000"),
+        )
+        assert result == (Decimal("72750.00"), Decimal("78750.00"))
+
+    def test_no_take_profit_returns_none_tp(self):
+        result = ExitPriceCalculator.rebase(
+            reference_price=Decimal("80000"),
+            stop0=Decimal("77600"),
+            tp0=None,
+            target_price=Decimal("75000"),
+        )
+        assert result is not None
+        assert result[1] is None
+
+    @pytest.mark.parametrize(
+        ("reference", "stop0", "target"),
+        [
+            (Decimal("0"), Decimal("70000"), Decimal("75000")),  # 기준가 비양수
+            (Decimal("80000"), None, Decimal("75000")),  # 손절가 결측
+            (Decimal("80000"), Decimal("0"), Decimal("75000")),  # 손절가 0
+            (Decimal("80000"), Decimal("90000"), Decimal("75000")),  # 손절가 역전
+            (Decimal("80000"), Decimal("77600"), Decimal("0")),  # 목표가 비양수
+        ],
+    )
+    def test_invalid_input_returns_none(self, reference, stop0, target):
+        """비정상 입력이면 None → 호출자가 원본 유지."""
+        assert (
+            ExitPriceCalculator.rebase(
+                reference_price=reference,
+                stop0=stop0,
+                tp0=Decimal("84000"),
+                target_price=target,
+            )
+            is None
+        )
+
+
+# ---------------------------------------------------------------------------
 # risk_reward_ratio
 # ---------------------------------------------------------------------------
 

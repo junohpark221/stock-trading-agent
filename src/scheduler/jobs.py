@@ -30,6 +30,7 @@ from src.db.models.calendar import TradingCalendarDay
 from src.db.models.market_data import DailyOHLCV, StockMaster
 from src.execution.exit_coordinator import exit_phase
 from src.notification.templates import MessageTemplates
+from src.strategy.position_manager import open_by_symbol
 from src.strategy.risk_manager import BatchReservation
 from src.strategy.trailing import (
     calculate_atr,
@@ -1083,7 +1084,9 @@ async def job_stop_loss_check(
     # 청산 시그널 실행
     if exit_signals:
         session_id = uuid.uuid4()
-        sym_to_pos = {p.symbol: p for p in positions}
+        # PRJ-04 §10: 계좌 스코프 리스트라 symbol 인덱스가 손실 없이 성립한다
+        # (중복이 있으면 헬퍼가 최고령 행을 남기고 warning).
+        sym_to_pos = open_by_symbol(positions, context="job.stop_loss_check")
 
         # 이중 청산 방지: WS(StopLossStreamService)/이전 사이클이 in-flight로 잡은
         # 포지션은 스킵하고, 선점 성공한 것만 발주한다(coordinator 미주입 시 전량 발주).
@@ -1197,6 +1200,12 @@ async def job_hypothesis_invalidation_check(
             "job.hypothesis_check.skip", reason="no_open_positions", account_id=account_id
         )
         return
+
+    # PRJ-04 §10: 종목당 1행 전제 — 중복 행이 있어도 LLM 대조는 종목당 1회만 한다
+    # (경보는 어차피 account:symbol:date로 dedup되어 나머지 호출은 버려진다).
+    positions = list(
+        open_by_symbol(positions, context="job.hypothesis_check").values()
+    )
 
     async with session_factory() as session:
         names = await resolve_symbol_names(session, [p.symbol for p in positions])

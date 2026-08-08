@@ -28,6 +28,7 @@ import structlog
 from src.broker.kis.ws_price import KISPriceStream
 from src.core.enums import ExitReason
 from src.execution.exit_coordinator import exit_phase
+from src.strategy.position_manager import unique_open_positions
 from src.strategy.trailing import (
     is_trailing_active,
     partial_tp_quantity,
@@ -182,7 +183,13 @@ class StopLossStreamService:
     async def _sync_symbols(self) -> None:
         """오픈 포지션 스냅샷 갱신 + 구독 종목 합집합 동기화."""
         positions = await self._position_manager.get_open()
-        self._positions = [p for p in positions if p.account_id in self._deps]
+        # PRJ-04 §10: 스냅샷 유입 경계에서 (account_id, symbol) 중복을 제거한다.
+        # 같은 종목이라도 계좌가 다르면 별개 포지션이므로 둘 다 남는다 —
+        # 틱당 발주가 계좌당 1건을 넘지 않는 것이 목적.
+        self._positions = unique_open_positions(
+            [p for p in positions if p.account_id in self._deps],
+            context="stoploss_stream",
+        )
         symbols = {p.symbol for p in self._positions}
         if self._stream is not None:
             await self._stream.set_symbols(symbols)

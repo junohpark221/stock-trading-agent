@@ -477,7 +477,8 @@ class SimulatedBroker(BrokerInterface):
             unrealized = Decimal("0")
             pnl_pct = Decimal("0")
         else:
-            status = PositionStatus.PARTIALLY_CLOSED
+            # PRJ-04 §10: 부분 매도는 별도 상태가 아니라 open + 수량 감소.
+            status = PositionStatus.OPEN
             market_value = fill_price * new_qty
             unrealized = (fill_price - existing.average_cost) * new_qty
             pnl_pct = (

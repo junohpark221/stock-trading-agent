@@ -6,6 +6,7 @@ Strategy.save_position/close_position/get_open_positions를 대체하여
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
@@ -35,6 +36,63 @@ _ONE = Decimal("1")
 def _q2(value: Decimal) -> Decimal:
     """positions 금액 컬럼(Numeric(15,2)) 정밀도로 반올림."""
     return value.quantize(_Q2, rounding=ROUND_HALF_UP)
+
+
+# ── 오픈 포지션 스냅샷 인덱싱 (PRJ-04 §10) ────────────────────────────────
+#
+# 알렘빅 018 부분 유니크 인덱스가 `(account_id, symbol) WHERE status='open'` 을
+# DB에서 강제하므로 "계좌·종목당 open 1행"은 불변식이다. 아래 헬퍼는 그 전제로
+# 스냅샷을 인덱싱하되, 인덱스가 없어지거나 스냅샷이 꼬인 이상 상황에서 조용히
+# 임의의 행을 집지 않도록 **최고령 행 승 + warning 로그**로 수렴시킨다.
+# (경보·예외는 두지 않는다 — 발생 확률이 사실상 0이고, 청산 잡을 죽이는 편이 더 위험하다.)
+
+
+def unique_open_positions(
+    positions: Iterable[PositionRecord],
+    *,
+    context: str,
+) -> list[PositionRecord]:
+    """`(account_id, symbol)` 중복을 제거한 오픈 포지션 스냅샷.
+
+    같은 종목이라도 **계좌가 다르면 별개 포지션**이므로 둘 다 보존한다.
+    중복이 발견되면 먼저 온 행(호출자가 `get_open()` 정렬을 유지하면 최고령 행)을
+    남기고 나머지는 버리며, 그 사실을 warning으로 남긴다.
+    """
+    kept: dict[tuple[str, str], PositionRecord] = {}
+    dropped: dict[tuple[str, str], list[int]] = {}
+
+    for position in positions:
+        key = (position.account_id, position.symbol)
+        winner = kept.get(key)
+        if winner is None:
+            kept[key] = position
+        else:
+            dropped.setdefault(key, []).append(position.id)
+
+    for (account_id, symbol), dropped_ids in dropped.items():
+        logger.warning(
+            "position.duplicate_open_snapshot",
+            context=context,
+            account_id=account_id,
+            symbol=symbol,
+            kept_id=kept[(account_id, symbol)].id,
+            dropped_ids=dropped_ids,
+        )
+
+    return list(kept.values())
+
+
+def open_by_symbol(
+    positions: Iterable[PositionRecord],
+    *,
+    context: str,
+) -> dict[str, PositionRecord]:
+    """계좌 스코프 오픈 포지션 리스트 → `symbol` 인덱스.
+
+    호출자가 **단일 계좌로 스코프된** 리스트를 넘긴다는 전제다(전 계좌 합집합에는
+    `unique_open_positions()` 를 쓸 것 — 계좌가 다른 동일 종목이 서로를 덮는다).
+    """
+    return {p.symbol: p for p in unique_open_positions(positions, context=context)}
 
 
 class PositionManager:
@@ -545,7 +603,11 @@ class PositionManager:
                         PositionRecord.account_id == account_id
                     )
 
-                stmt = stmt.order_by(PositionRecord.entry_date.asc())
+                # PRJ-04 §10: id 2차 키로 결정론적 정렬 — 스냅샷 인덱싱의
+                # "최고령 행 승"이 merge_or_create가 잠그는 행과 같아진다.
+                stmt = stmt.order_by(
+                    PositionRecord.entry_date.asc(), PositionRecord.id.asc()
+                )
                 result = await session.execute(stmt)
                 return list(result.scalars().all())
         except Exception as exc:

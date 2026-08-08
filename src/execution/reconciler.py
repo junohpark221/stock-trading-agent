@@ -31,6 +31,7 @@ from sqlalchemy import select, update
 from src.core.enums import ApprovalStatus, ExitReason, OrderStatus, StrategyType
 from src.db.models.execution import Order
 from src.db.models.strategy import PositionRecord
+from src.strategy.position_manager import open_by_symbol
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -263,7 +264,10 @@ class PositionReconciler:
 
         result.db_open_count += len(open_positions)
         today = datetime.now(UTC).date()
-        db_by_symbol = {pos.symbol: pos for pos in open_positions}
+        # PRJ-04 §10: 계좌 스코프 조회라 symbol 인덱스가 손실 없이 성립한다.
+        # (Case 1 고아 청산은 아래에서 open_positions 전량을 그대로 순회한다 —
+        #  잔존 중복이 있더라도 정리 대상에서 빠지지 않게.)
+        db_by_symbol = open_by_symbol(open_positions, context="position_reconciler")
 
         # Case 1: DB에 있지만 브로커에 없는 포지션 → closed
         for pos in open_positions:

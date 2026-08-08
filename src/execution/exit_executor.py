@@ -22,6 +22,7 @@ from src.core.enums import (
 )
 from src.core.models import ExecutionResult, ExitSignal
 from src.notification.templates import MessageTemplates
+from src.strategy.position_manager import open_by_symbol
 
 if TYPE_CHECKING:
     from src.agent.decision_recorder import DecisionRecorder
@@ -95,6 +96,13 @@ class ExitExecutionService:
             key=lambda s: _URGENCY_ORDER.get(s.urgency, 99),
         )
 
+        # PRJ-04 §10: positions는 계좌 스코프 리스트이고 DB가 종목당 open 1행을
+        # 강제하므로 symbol 인덱스 1회 생성으로 매칭이 끝난다.
+        open_positions = open_by_symbol(
+            [p for p in positions if p.status == "open"],
+            context="exit_executor",
+        )
+
         results: list[ExecutionResult] = []
         executed_count = 0
         alert_count = 0
@@ -102,7 +110,7 @@ class ExitExecutionService:
 
         for signal in sorted_signals:
             # 시그널-포지션 매칭
-            position = await self._match_signal_to_position(signal, positions)
+            position = open_positions.get(signal.symbol)
             if position is None:
                 skipped_count += 1
                 logger.warning(
@@ -144,17 +152,6 @@ class ExitExecutionService:
         return results
 
     # ── Private Helpers ───────────────────────────────────────────────────
-
-    async def _match_signal_to_position(
-        self,
-        signal: ExitSignal,
-        positions: list[PositionRecord],
-    ) -> PositionRecord | None:
-        """시그널 symbol과 매칭되는 열린 포지션 찾기."""
-        for pos in positions:
-            if pos.symbol == signal.symbol and pos.status == "open":
-                return pos
-        return None
 
     async def _execute_signal(
         self,

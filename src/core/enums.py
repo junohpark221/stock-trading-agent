@@ -48,11 +48,14 @@ class OrderStatus(StrEnum):
 
 
 class PositionStatus(StrEnum):
-    """Position status."""
+    """Position status.
+
+    PRJ-04 §10: ``partially_closed`` 는 폐기했다 — 부분 매도는 별도 상태가 아니라
+    ``open`` + 수량 감소로 표현한다(DB `positions.status` 도 open/closed 2값).
+    """
 
     OPEN = "open"
     CLOSED = "closed"
-    PARTIALLY_CLOSED = "partially_closed"
 
 
 class SignalAction(StrEnum):

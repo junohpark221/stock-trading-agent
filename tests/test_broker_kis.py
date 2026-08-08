@@ -2544,7 +2544,8 @@ class TestInMemoryBrokerPlaceOrder:
         await broker.place_order(sell)
 
         pos = broker._positions["005930"]
-        assert pos.status == PositionStatus.PARTIALLY_CLOSED
+        # PRJ-04 §10: 부분 매도 후에도 상태는 open(수량만 감소)
+        assert pos.status == PositionStatus.OPEN
         assert pos.quantity == 5
 
     @pytest.mark.asyncio

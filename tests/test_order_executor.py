@@ -577,7 +577,7 @@ async def test_execute_entry_modified_quantity_passes(
 
     async def mock_execute(stmt):
         # select(Order) 쿼리일 때만 modified_order 반환
-        # PRJ-04: positions 조회(부분익절 러너 게이트)까지 삼키지 않도록 orders만 매칭.
+        # 다른 테이블 조회까지 삼키지 않도록 orders 쿼리만 매칭.
         if "orders" in str(stmt):
             return _FakeResult([modified_order])
         return await original_execute(stmt)
@@ -609,7 +609,7 @@ async def test_execute_entry_modified_quantity_risk_fails(
     modified_order.id = 1
 
     async def mock_execute(stmt):
-        # PRJ-04: positions 조회(부분익절 러너 게이트)까지 삼키지 않도록 orders만 매칭.
+        # 다른 테이블 조회까지 삼키지 않도록 orders 쿼리만 매칭.
         if "orders" in str(stmt):
             return _FakeResult([modified_order])
         return _FakeResult([])
@@ -1829,7 +1829,7 @@ async def test_entry_injects_trailing_params_swing(
 
 
 # ---------------------------------------------------------------------------
-# PRJ-04 — 포지션 병합 + 부분익절 러너 추가매수 게이트
+# PRJ-04 — 포지션 병합
 # ---------------------------------------------------------------------------
 
 
@@ -1856,53 +1856,25 @@ async def test_entry_merges_into_existing_position(
 
 
 @pytest.mark.asyncio
-async def test_partial_exit_runner_blocks_auto_buy(
-    executor, mock_broker, mock_position_manager, mock_bot,
+async def test_partial_exit_runner_no_longer_blocks_auto_buy(
+    executor, mock_broker, mock_position_manager,
 ):
-    """부분익절 러너(open + realized_pnl>0)가 있으면 자동 매수를 terminal 거부한다."""
+    """PRJ-04 3단계 — 부분익절 러너여도 자동 매수가 차단되지 않는다.
+
+    과도기 게이트(§5)는 §8 보유 컨텍스트 주입으로 대체됐다. 러너 여부는 이제
+    프롬프트 경고로 LLM에 전달되고, 실행 계층은 병합 경로를 그대로 태운다.
+    """
+    assert not hasattr(executor, "_find_partial_exit_runner")
+
     runner = _make_fake_position()
-    runner.id = 3
     runner.realized_pnl = Decimal("120000")
-    runner.quantity = 5
-    executor._find_partial_exit_runner = AsyncMock(return_value=runner)
+    mock_position_manager.get_open = AsyncMock(return_value=[runner])
 
     result = await executor.execute_entry(
         trade_decision=_make_trade_decision(), session_id=uuid.uuid4(),
         strategy_type=StrategyType.POSITION.value,
     )
 
-    assert result.success is False
-    assert result.terminal is True
-    assert "부분익절 러너" in (result.error or "")
-    mock_broker.place_order.assert_not_awaited()
-    mock_position_manager.merge_or_create.assert_not_awaited()
-    mock_bot.send_message.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_partial_exit_runner_gate_skipped_for_manual_order(
-    executor, mock_broker, mock_position_manager,
-):
-    """수동 주문은 사람의 명시적 판단 — 게이트를 타지 않는다."""
-    executor._find_partial_exit_runner = AsyncMock(
-        return_value=_make_fake_position()
-    )
-
-    result = await executor.execute_entry(
-        trade_decision=_make_trade_decision(), session_id=uuid.uuid4(),
-        strategy_type=StrategyType.POSITION.value, manual=True,
-    )
-
     assert result.success is True
     mock_broker.place_order.assert_awaited_once()
     mock_position_manager.merge_or_create.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_partial_exit_runner_lookup_failure_does_not_block(executor):
-    """조회 실패는 매수를 막지 않는다(게이트는 과도기 안전장치)."""
-    executor._session_factory = MagicMock(side_effect=RuntimeError("db down"))
-
-    runner = await executor._find_partial_exit_runner("default", "005930")
-
-    assert runner is None

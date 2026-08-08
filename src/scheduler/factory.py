@@ -353,8 +353,15 @@ class SchedulerFactory:
 
         # 학습 메모리 매니저 — 에이전트(조회)·포지션 매니저(청산 기록)·cleanup 잡이 공유.
         from src.strategy.memory_manager import AgentMemoryManager
+        from src.strategy.position_manager import PositionManager
 
         memory_manager = AgentMemoryManager(session_factory)
+
+        # 포지션 매니저는 여기서 만들어 아래 실행 계층(4-2)과 공유한다.
+        # PRJ-04 §8: orchestrator도 이 인스턴스로 보유 컨텍스트를 조회한다.
+        shared_position_manager = PositionManager(
+            session_factory, memory_manager=memory_manager
+        )
 
         orchestrator = PipelineOrchestrator(
             market_analyst=MarketAnalyst(
@@ -368,6 +375,7 @@ class SchedulerFactory:
             ),
             trader=Trader(llm_router, recorder, tool_registry, memory_manager),
             recorder=recorder,
+            position_manager=shared_position_manager,
         )
 
         # F-11: 가설훼손 판단 에이전트(경보형). 공유 라우터/레코더/툴레지스트리 재사용.
@@ -466,16 +474,12 @@ class SchedulerFactory:
         from src.execution.fill_finalizer import FillFinalizer
         from src.execution.reconciler import OrderReconciler, PositionReconciler
         from src.execution.stoploss_stream import StopLossStreamService
-        from src.strategy.position_manager import PositionManager
 
         # 결정/실행 분리: 개장 전 결정 잡이 적재하고 개장 후 드레인이 소비하는 큐.
         decision_queue = TradeDecisionQueueManager(session_factory)
 
-        # memory_manager는 위 에이전트 구성 시점에 이미 생성됨. 포지션 매니저에도
-        # 주입해, 전량 청산 시 학습 메모리(record_trade_outcome)가 자동 기록되게 한다.
-        shared_position_manager = PositionManager(
-            session_factory, memory_manager=memory_manager
-        )
+        # shared_position_manager는 위 3(공유 의존성)에서 memory_manager와 함께 생성했다
+        # — 전량 청산 시 학습 메모리(record_trade_outcome)가 자동 기록된다.
         fill_finalizer = FillFinalizer(
             session_factory=session_factory,
             position_manager=shared_position_manager,

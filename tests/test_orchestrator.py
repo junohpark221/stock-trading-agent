@@ -1,4 +1,4 @@
-"""PipelineOrchestrator 단위 테스트 (9개).
+"""PipelineOrchestrator 단위 테스트.
 
 4개 에이전트를 mock으로 주입하여 오케스트레이션 로직을 검증한다.
 """
@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -448,3 +449,137 @@ async def test_default_params_backward_compatible(
     ma_kwargs = mock_market_analyst.analyze.call_args.kwargs
     assert "investment_prompt" not in ma_kwargs
     assert ma_kwargs["account_id"] == "default"
+
+
+# ── PRJ-04 §8: 보유 컨텍스트 주입 ────────────────────────────
+
+def _fake_position(symbol: str, account_id: str = "default", pid: int = 1) -> MagicMock:
+    pos = MagicMock()
+    pos.id = pid
+    pos.account_id = account_id
+    pos.symbol = symbol
+    pos.strategy_type = "position"
+    pos.quantity = 10
+    pos.avg_cost = Decimal("70000")
+    pos.entry_date = date(2026, 8, 1)
+    pos.max_holding_days = 30
+    pos.stop_loss_price = Decimal("67900")
+    pos.take_profit_price = Decimal("77000")
+    pos.trailing_stop_pct = None
+    pos.highest_price = None
+    pos.realized_pnl = Decimal("0")
+    pos.entry_trigger = ["rsi_oversold_reversal"]
+    pos.entry_analysis_snapshot = {"action": "buy", "confidence": "0.8"}
+    return pos
+
+
+def _with_positions(orchestrator: PipelineOrchestrator, positions: list) -> MagicMock:
+    pm = MagicMock()
+    pm.get_open = AsyncMock(return_value=positions)
+    orchestrator._position_manager = pm
+    return pm
+
+
+@pytest.mark.asyncio
+async def test_holding_context_injected_into_all_three_agents(
+    orchestrator: PipelineOrchestrator,
+    mock_stock_analyst: MagicMock,
+    mock_risk_manager: MagicMock,
+    mock_trader: MagicMock,
+) -> None:
+    """보유 종목이면 Stock/Risk/Trade 3개 data 전부에 보유 컨텍스트가 실린다."""
+    _with_positions(orchestrator, [_fake_position("005930")])
+
+    await orchestrator.execute(["005930"])
+
+    for agent in (mock_stock_analyst, mock_risk_manager, mock_trader):
+        ctx = agent.analyze.call_args.kwargs["data"]["holding_context"]
+        assert ctx["known"] is True
+        assert ctx["position"]["quantity"] == 10
+        assert ctx["position"]["avg_cost"] == Decimal("70000")
+        assert ctx["position"]["is_runner"] is False
+
+    # 포트폴리오 요약은 RiskManager에만.
+    pf = mock_risk_manager.analyze.call_args.kwargs["data"]["portfolio_context"]
+    assert pf["known"] is True
+    assert pf["count"] == 1
+    assert pf["total_cost_krw"] == Decimal("700000")
+
+
+@pytest.mark.asyncio
+async def test_runner_flag_set_for_partially_exited_position(
+    orchestrator: PipelineOrchestrator,
+    mock_stock_analyst: MagicMock,
+) -> None:
+    """부분익절 이력(realized_pnl>0)은 is_runner=True로 프롬프트에 전달된다."""
+    pos = _fake_position("005930")
+    pos.realized_pnl = Decimal("120000")
+    _with_positions(orchestrator, [pos])
+
+    await orchestrator.execute(["005930"])
+
+    ctx = mock_stock_analyst.analyze.call_args.kwargs["data"]["holding_context"]
+    assert ctx["position"]["is_runner"] is True
+
+
+@pytest.mark.asyncio
+async def test_not_held_symbol_is_known_but_empty(
+    orchestrator: PipelineOrchestrator,
+    mock_stock_analyst: MagicMock,
+) -> None:
+    """미보유는 known=True + position=None — 미조회와 구분된다."""
+    _with_positions(orchestrator, [_fake_position("000660")])
+
+    await orchestrator.execute(["005930"])
+
+    ctx = mock_stock_analyst.analyze.call_args.kwargs["data"]["holding_context"]
+    assert ctx["known"] is True
+    assert ctx["position"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_position_manager_means_unknown(
+    orchestrator: PipelineOrchestrator,
+    mock_stock_analyst: MagicMock,
+    mock_risk_manager: MagicMock,
+) -> None:
+    """position_manager 미주입이면 미조회(known=False)로 나간다."""
+    result = await orchestrator.execute(["005930"])
+
+    assert result.success is True
+    assert mock_stock_analyst.analyze.call_args.kwargs["data"]["holding_context"] == {
+        "known": False, "position": None,
+    }
+    assert mock_risk_manager.analyze.call_args.kwargs["data"]["portfolio_context"] == {
+        "known": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_holdings_lookup_failure_does_not_break_pipeline(
+    orchestrator: PipelineOrchestrator,
+    mock_stock_analyst: MagicMock,
+) -> None:
+    """조회 장애는 삼키고 미조회로 계속한다(best-effort)."""
+    pm = MagicMock()
+    pm.get_open = AsyncMock(side_effect=RuntimeError("db down"))
+    orchestrator._position_manager = pm
+
+    result = await orchestrator.execute(["005930"])
+
+    assert result.success is True
+    assert len(result.trade_decisions) == 1
+    ctx = mock_stock_analyst.analyze.call_args.kwargs["data"]["holding_context"]
+    assert ctx["known"] is False
+
+
+@pytest.mark.asyncio
+async def test_holdings_queried_once_per_account(
+    orchestrator: PipelineOrchestrator,
+) -> None:
+    """종목 수와 무관하게 계좌당 1회만 조회한다."""
+    pm = _with_positions(orchestrator, [_fake_position("005930")])
+
+    await orchestrator.execute(["005930", "000660", "035420"], account_id="acct-9")
+
+    pm.get_open.assert_awaited_once_with(account_id="acct-9")

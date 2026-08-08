@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from src.agent.prompts.holding_context import close_price, render_holding_section
+
 
 SYSTEM_PROMPT = """\
 당신은 최종 매매 결정을 내리는 Trader입니다.
@@ -34,6 +36,17 @@ Stock Analyst의 분석과 Risk Manager의 승인을 바탕으로
 ### 손절/익절
 - stop_loss_price: Risk Manager 권고 반영, 변동성 고려
 - take_profit_price: 목표가의 80~100% 수준
+
+## 보유 종목 추가매수 (PRJ-04)
+"이 종목의 보유 현황"이 **보유 중**이면 이번 주문은 신규 진입이 아니라 **기존 포지션에
+병합되는 추가매수**입니다.
+
+- `quantity`는 총 보유 수량이 아니라 **이번에 추가로 매수할 수량**입니다.
+- 손절가·익절가는 체결 후 **새 평균단가 기준으로 재산정**되므로, 지금은 이번 주문의
+  진입가(현재가) 기준으로 합리적인 폭(%)이 나오도록 제시하세요. 기존 포지션의 손절가를
+  그대로 옮겨 적지 마세요.
+- 병합은 진입일·시간손절 시계를 리셋하고, 트레일링 상태였다면 일반 상태로 되돌립니다.
+- 보유 현황이 **미조회**이면 보유가 없다고 단정하지 마세요.
 
 ## 출력 규칙
 - action: "buy" | "sell" | "hold"
@@ -118,6 +131,13 @@ def build_user_prompt(data: dict[str, Any]) -> str:
     if current_price:
         sections.append("### 현재가")
         sections.append(f"```json\n{json.dumps(current_price, ensure_ascii=False, indent=2)}\n```\n")
+
+    # 보유 현황 (PRJ-04 §8) — 추가매수 수량·손절폭 판단용.
+    sections.append(
+        render_holding_section(
+            data.get("holding_context"), current_price=close_price(data)
+        )
+    )
 
     sections.append(
         f"위 데이터를 기반으로 종목 {symbol_line}의 최종 매매 결정을 내리고 "

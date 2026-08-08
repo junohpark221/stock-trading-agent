@@ -70,12 +70,16 @@ def _build_orchestrator() -> PipelineOrchestrator:
     tool_ctx = ToolContext(session_factory=session_factory, settings=settings)
     tool_registry = ToolRegistry(tool_ctx)
 
+    # PRJ-04 §8: 보유 컨텍스트 주입용 (조회 전용, 무상태 래퍼).
+    from src.strategy.position_manager import PositionManager
+
     return PipelineOrchestrator(
         market_analyst=MarketAnalyst(llm_router, recorder, tool_registry),
         stock_analyst=StockAnalyst(llm_router, recorder, tool_registry),
         risk_manager=RiskManager(llm_router, recorder, tool_registry),
         trader=Trader(llm_router, recorder, tool_registry),
         recorder=recorder,
+        position_manager=PositionManager(session_factory),
     )
 
 

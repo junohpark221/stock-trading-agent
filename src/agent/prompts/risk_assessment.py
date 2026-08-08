@@ -9,6 +9,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from src.agent.prompts.holding_context import (
+    close_price,
+    render_holding_section,
+    render_portfolio_section,
+)
+
 
 SYSTEM_PROMPT = """\
 당신은 리스크 관리 전문가 Risk Manager입니다.
@@ -48,6 +54,19 @@ Stock Analyst의 매매 시그널을 **정성적으로** 검증하여, 승인 �
 - 뉴스 감성 + 시장 심리 종합 판단
 - 투자 심리 과열/공포 수준
 - 애널리스트 컨센서스와의 괴리
+
+## 보유 종목 추가매수 (PRJ-04)
+"이 종목의 보유 현황"이 **보유 중**이면 이번 매수는 신규 진입이 아니라 **기존 포지션에
+병합되는 추가매수**입니다.
+
+- 추가매수는 **단일 종목 집중도를 키웁니다.** "현재 포트폴리오" 섹션의 보유 비중을 보고
+  `portfolio_concentration_ok` / `sector_exposure_ok`를 판단하세요.
+- `recommended_quantity`는 총 보유 수량이 아니라 **이번에 추가로 살 수량**입니다.
+  기존 보유분을 감안해 산정하세요.
+- 병합은 손절가·익절가를 새 평균단가 기준으로 재산정하므로, 평가손실 중 추가매수는
+  손절가가 내려가 **총 손실 노출이 커집니다.** `max_loss_krw`에 기존 보유분까지 반영하세요.
+- 부분익절 러너 경고(⚠️)가 있으면 트레일링 보호 해제를 `risk_factors`에 명시하세요.
+- 보유 현황·포트폴리오가 **미조회**이면 보유가 없다고 단정하지 말고 확신도를 낮추세요.
 
 ## 리스크 허용 수준별 판단 기준
 
@@ -153,13 +172,16 @@ def build_user_prompt(data: dict[str, Any]) -> str:
         sections.append("### 변동성 데이터 (최근 60일)")
         sections.append(f"```json\n{json.dumps(volatility, ensure_ascii=False, indent=2)}\n```\n")
 
-    # 포트폴리오
-    portfolio = data.get("portfolio")
-    if portfolio:
-        sections.append("### 현재 포트폴리오")
-        sections.append(f"```json\n{json.dumps(portfolio, ensure_ascii=False, indent=2, default=str)}\n```\n")
-    else:
-        sections.append("### 현재 포트폴리오\n신규 포트폴리오 — 기존 보유 종목이 없어 집중도 리스크 없음. 첫 진입에 유리한 상태.\n")
+    # 보유 현황 + 포트폴리오 (PRJ-04 §8)
+    # 예전에는 portfolio 키가 한 번도 채워지지 않아 상시 "신규 포트폴리오"라는 거짓
+    # 문장이 나갔다. 이제 orchestrator가 실제 계좌 보유를 주입하고, 조회 실패는
+    # "미조회"로 구분해 렌더링한다.
+    sections.append(
+        render_holding_section(
+            data.get("holding_context"), current_price=close_price(data)
+        )
+    )
+    sections.append(render_portfolio_section(data.get("portfolio_context")))
 
     sections.append(
         f"위 데이터를 기반으로 종목 {symbol_line}의 매매 리스크를 검증하고 "

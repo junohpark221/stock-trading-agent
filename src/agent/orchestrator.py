@@ -10,8 +10,9 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 
 from src.agent.agents.market_analyst import MarketAnalyst
 from src.agent.agents.risk_manager import RiskManager
@@ -26,6 +27,10 @@ from src.core.models import (
     StockAnalysis,
     TradeDecision,
 )
+
+if TYPE_CHECKING:
+    from src.db.models.strategy import PositionRecord
+    from src.strategy.position_manager import PositionManager
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,7 @@ class PipelineOrchestrator:
         trader: Trader,
         recorder: DecisionRecorder,
         max_concurrency: int = 5,
+        position_manager: PositionManager | None = None,
     ) -> None:
         self._market_analyst = market_analyst
         self._stock_analyst = stock_analyst
@@ -60,6 +66,9 @@ class PipelineOrchestrator:
         self._trader = trader
         self._recorder = recorder
         self._max_concurrency = max_concurrency
+        # PRJ-04 §8: 보유 컨텍스트 주입용. 미주입이면 프롬프트가 "미조회"로 렌더링된다
+        # (보유 없음으로 단정하지 않는다).
+        self._position_manager = position_manager
 
     async def execute(
         self,
@@ -91,6 +100,10 @@ class PipelineOrchestrator:
             account_id=account_id,
         )
 
+        # 0. 보유 컨텍스트 조회 (PRJ-04 §8) — 계좌당 1회. 조회 실패는 삼키고
+        #    "미조회"로 진행한다(학습 메모리 주입과 동일한 best-effort 규율).
+        holdings, portfolio_ctx = await self._load_holding_contexts(account_id)
+
         # 1. 시장 분석 — 실패 시 전체 중단
         try:
             market_condition, market_decision_id = await self._run_market_analysis(
@@ -117,6 +130,8 @@ class PipelineOrchestrator:
                 risk_tolerance=risk_tolerance,
                 account_id=account_id,
                 name=(names or {}).get(symbol),
+                holdings=holdings,
+                portfolio_ctx=portfolio_ctx,
             )
             for symbol in symbols
         ]
@@ -159,6 +174,89 @@ class PipelineOrchestrator:
         result.completed_at = datetime.now(UTC)
         return result
 
+    # ── 보유 컨텍스트 (PRJ-04 §8) ───────────────────────────
+
+    async def _load_holding_contexts(
+        self, account_id: str
+    ) -> tuple[dict[str, dict[str, Any]] | None, dict[str, Any]]:
+        """계좌 open 포지션 → (종목별 보유 dict | None, 포트폴리오 요약).
+
+        반환 첫 값이 ``None``이면 **미조회**(position_manager 미주입 또는 조회 실패)로,
+        프롬프트가 "보유 없음"이 아니라 "확인 불가"로 렌더링한다. 조회 장애가 분석을
+        막지 않도록 예외는 삼킨다.
+        """
+        if self._position_manager is None:
+            return None, {"known": False}
+        try:
+            from src.strategy.position_manager import open_by_symbol
+
+            positions = await self._position_manager.get_open(account_id=account_id)
+            by_symbol = open_by_symbol(positions, context="orchestrator")
+        except Exception as exc:
+            logger.warning(
+                "orchestrator.holdings_lookup_failed account_id=%s: %s",
+                account_id, exc, exc_info=True,
+            )
+            return None, {"known": False}
+
+        holdings = {
+            symbol: self._position_to_context(pos)
+            for symbol, pos in by_symbol.items()
+        }
+        return holdings, self._build_portfolio_context(by_symbol)
+
+    @staticmethod
+    def _position_to_context(pos: PositionRecord) -> dict[str, Any]:
+        """PositionRecord → 프롬프트 렌더러가 읽는 보유 dict (금액은 Decimal 유지)."""
+        realized = pos.realized_pnl or Decimal(0)
+        holding_days: int | None = None
+        if pos.entry_date is not None:
+            holding_days = (date.today() - pos.entry_date).days
+        return {
+            "position_id": pos.id,
+            "symbol": pos.symbol,
+            "strategy_type": pos.strategy_type,
+            "quantity": pos.quantity,
+            "avg_cost": pos.avg_cost,
+            "entry_date": pos.entry_date.isoformat() if pos.entry_date else None,
+            "holding_days": holding_days,
+            "max_holding_days": pos.max_holding_days,
+            "stop_loss_price": pos.stop_loss_price,
+            "take_profit_price": pos.take_profit_price,
+            "trailing_stop_pct": pos.trailing_stop_pct,
+            "highest_price": pos.highest_price,
+            "realized_pnl": realized,
+            # 부분익절 러너 — 병합 시 트레일링 보호가 풀린다는 경고의 트리거.
+            "is_runner": realized > Decimal(0),
+            "entry_trigger": list(pos.entry_trigger) if pos.entry_trigger else None,
+            "entry_thesis": pos.entry_analysis_snapshot,
+        }
+
+    @staticmethod
+    def _build_portfolio_context(
+        by_symbol: dict[str, PositionRecord]
+    ) -> dict[str, Any]:
+        """계좌 보유 전량 요약 — RiskManager의 집중도 정성 판단 근거."""
+        rows: list[dict[str, Any]] = []
+        total = Decimal(0)
+        for symbol, pos in sorted(by_symbol.items()):
+            cost = (pos.avg_cost or Decimal(0)) * Decimal(str(pos.quantity or 0))
+            total += cost
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "quantity": pos.quantity,
+                    "avg_cost": pos.avg_cost,
+                    "cost_krw": cost,
+                }
+            )
+        return {
+            "known": True,
+            "count": len(rows),
+            "total_cost_krw": total,
+            "positions": rows,
+        }
+
     # ── 내부 메서드 ─────────────────────────────────────────
 
     async def _run_market_analysis(
@@ -183,12 +281,22 @@ class PipelineOrchestrator:
         risk_tolerance: str = "moderate",
         account_id: str = "default",
         name: str | None = None,
+        holdings: dict[str, dict[str, Any]] | None = None,
+        portfolio_ctx: dict[str, Any] | None = None,
     ) -> _SymbolResult:
         """종목별 Stock → Risk → Trade 파이프라인 실행."""
         async with semaphore:
             sr = _SymbolResult(symbol=symbol)
             # F-19: 종목명이 있으면 분석/리스크/트레이드 데이터에 실어 프롬프트에 노출.
             _name_kv = {"name": name} if name else {}
+            # PRJ-04 §8: 보유 컨텍스트를 3개 에이전트 전부에 동일하게 싣는다.
+            # holdings가 None이면 미조회 — "미보유"와 구분한다.
+            _holding_kv = {
+                "holding_context": {
+                    "known": holdings is not None,
+                    "position": (holdings or {}).get(symbol),
+                }
+            }
 
             # ── StockAnalyst ──
             try:
@@ -196,6 +304,7 @@ class PipelineOrchestrator:
                     data={
                         "symbol": symbol,
                         **_name_kv,
+                        **_holding_kv,
                         "market_condition": market_condition.model_dump(),
                     },
                     session_id=session_id,
@@ -219,6 +328,8 @@ class PipelineOrchestrator:
                     data={
                         "symbol": symbol,
                         **_name_kv,
+                        **_holding_kv,
+                        "portfolio_context": portfolio_ctx or {"known": False},
                         "stock_analysis": sa.model_dump(),  # type: ignore[union-attr]
                         "market_condition": market_condition.model_dump(),
                         "risk_tolerance": risk_tolerance,
@@ -244,6 +355,7 @@ class PipelineOrchestrator:
                     data={
                         "symbol": symbol,
                         **_name_kv,
+                        **_holding_kv,
                         "risk_assessment": ra.model_dump(),  # type: ignore[union-attr]
                         "stock_analysis": sa.model_dump(),  # type: ignore[union-attr]
                         "market_condition": market_condition.model_dump(),

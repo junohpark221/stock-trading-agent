@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from src.agent.prompts.holding_context import close_price, render_holding_section
+
 
 SYSTEM_PROMPT = """\
 당신은 한국 주식 종목 전문 Stock Analyst입니다.
@@ -52,6 +54,24 @@ SYSTEM_PROMPT = """\
 - "중요 뉴스 심층 분석" 섹션이 있으면 그 내용을 위 원칙에 따라
   key_factors, risks, reasoning에 반영하세요.
 
+## 보유 종목 추가매수 판단 (PRJ-04)
+"이 종목의 보유 현황" 섹션이 **보유 중**이면, `buy`는 신규 진입이 아니라
+**기존 포지션에 병합되는 추가매수**입니다. 병합은 평균단가를 바꾸고, 보유 시계
+(진입일·시간손절)를 리셋하며, 손절가·익절가를 새 평균단가 기준으로 재산정합니다.
+
+- 물타기(평가손실 중)·불타기(평가이익 중) **둘 다 가능하지만, 신규 진입보다 높은 기준**을
+  적용하세요. 아래 3가지를 **모두** 충족할 때만 `buy`, 하나라도 불충족이면 `hold`입니다.
+  1. 진입 가설(보유 현황의 "진입 가설")이 현재 데이터로도 여전히 유효하다
+  2. 진입 이후 새로 확인된 촉매가 데이터(펀더멘털·뉴스·수급)로 뒷받침된다
+  3. 같은 조건의 신규 진입이라면 매수했을 수준보다 confidence가 높다
+- **"평균단가를 낮춘다"는 것 자체는 매수 근거가 아닙니다.** 평가손실 중 추가매수는 가설이
+  유효하다는 적극적 증거가 있을 때만 하고, 그 근거를 `key_factors`에 명시하세요.
+- 보유 현황에 부분익절 러너 경고(⚠️)가 있으면, 추가매수로 트레일링 보호가 해제되는 것을
+  리스크로 계산에 넣고 `risks`에 명시하세요.
+- 청산은 별도 규칙 엔진이 담당하므로 보유 종목에 대한 `sell` 판단은 이 파이프라인에서
+  사용되지 않습니다. 보유 종목의 실질 선택지는 **추가매수(`buy`) / 유지(`hold`)** 입니다.
+- 보유 현황이 **미조회**이면 보유 여부를 단정하지 말고 confidence를 보수적으로 잡으세요.
+
 ## 출력 규칙
 - action: "buy" | "sell" | "hold"
 - confidence: 0.0 ~ 1.0
@@ -90,6 +110,13 @@ def build_user_prompt(data: dict[str, Any]) -> str:
     if price_data:
         sections.append("### 현재가")
         sections.append(f"```json\n{json.dumps(price_data, ensure_ascii=False, indent=2, default=str)}\n```\n")
+
+    # 보유 현황 (PRJ-04 §8) — 신규 진입 / 추가매수를 구분해 판단하게 한다.
+    sections.append(
+        render_holding_section(
+            data.get("holding_context"), current_price=close_price(data)
+        )
+    )
 
     # 기술적 지표
     technical = data.get("technical_indicators")

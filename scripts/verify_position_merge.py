@@ -298,10 +298,20 @@ async def case_width_fallback(
 async def case_jsonb_array_realized(
     pm: PositionManager, factory: async_sessionmaker[AsyncSession], rpt: Report
 ) -> None:
-    """T4 — JSONB 스냅샷 교체 · ARRAY union · 부분청산 realized_pnl 보존."""
+    """T4 — JSONB 스냅샷 교체 · ARRAY union · 부분청산 realized_pnl 보존.
+
+    F-14 `entry_trigger`는 별도 파라미터가 아니라 **스냅샷 배관**으로 전달된다
+    (`merge_or_create`가 `entry_analysis_snapshot["entry_trigger"]`를 꺼내 전용 컬럼으로
+    승격 — `position_manager.py:142`). 운영 경로도 동일하다(`jobs.py:601`).
+    """
     symbol = "VRF003"
     c = rpt.case("T4 JSONB·ARRAY·realized_pnl 영속")
 
+    snapshot_1 = {
+        "action": "buy",
+        "confidence": 0.7,
+        "entry_trigger": ["rsi_oversold"],
+    }
     rec, _ = await pm.merge_or_create(
         symbol=symbol,
         strategy_type="swing",
@@ -310,8 +320,13 @@ async def case_jsonb_array_realized(
         stop_loss_price=_d("9500"),
         take_profit_price=_d("11000"),
         account_id=ACCOUNT_ID,
-        entry_analysis_snapshot={"action": "buy", "confidence": 0.7},
-        entry_trigger=["rsi_oversold"],
+        entry_analysis_snapshot=snapshot_1,
+    )
+    rows = await _fetch(factory, symbol)
+    c.check(
+        "신규 생성 시 entry_trigger 승격",
+        list(rows[0].entry_trigger or []),
+        ["rsi_oversold"],
     )
     # 부분익절 → realized_pnl 발생 (병합 후에도 보존되어야 함)
     await pm.reduce(
@@ -324,6 +339,12 @@ async def case_jsonb_array_realized(
     realized_before = rows[0].realized_pnl
     c.check("부분청산 realized_pnl", str(realized_before), "10000.00")  # (11,000-10,000)×10
 
+    snapshot_2 = {
+        "action": "buy",
+        "confidence": 0.9,
+        "note": "add",
+        "entry_trigger": ["macd_golden_cross", "rsi_oversold"],
+    }
     await pm.merge_or_create(
         symbol=symbol,
         strategy_type="swing",
@@ -332,17 +353,16 @@ async def case_jsonb_array_realized(
         stop_loss_price=_d("11400"),
         take_profit_price=_d("13200"),
         account_id=ACCOUNT_ID,
-        entry_analysis_snapshot={"action": "buy", "confidence": 0.9, "note": "add"},
-        entry_trigger=["macd_golden_cross", "rsi_oversold"],
+        entry_analysis_snapshot=snapshot_2,
     )
     rows = await _fetch(factory, symbol)
     c.check("open 행수", len(rows), 1)
     row = rows[0]
     c.check("realized_pnl 보존", str(row.realized_pnl), "10000.00")
     c.check("quantity", row.quantity, 20)
-    c.check("snapshot 최신 교체", row.entry_analysis_snapshot, {
-        "action": "buy", "confidence": 0.9, "note": "add",
-    })
+    c.check("avg_cost 가중평균", str(row.avg_cost), "11000.00")  # (10,000×10 + 12,000×10)/20
+    c.check("snapshot 최신 교체(JSONB 왕복)", row.entry_analysis_snapshot, snapshot_2)
+    # 기존 태그 뒤에 신규 태그만 append — 중복 없이 순서 보존
     c.check(
         "entry_trigger union(순서 보존)",
         list(row.entry_trigger or []),
